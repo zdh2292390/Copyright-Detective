@@ -1,0 +1,4 @@
+streamlit
+PyPDF2
+rouge-score
+openai>=1.0.0
