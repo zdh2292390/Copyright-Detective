@@ -47,6 +47,18 @@ def calculate_rouge_score(text1, text2):
     scores = scorer.score(text1, text2)
     return scores['rougeL'].fmeasure
 
+def calculate_jaccard_index(text1, text2):
+    """
+    Calculates the Jaccard Index between two texts.
+    """
+    set1 = set(text1.lower().split())
+    set2 = set(text2.lower().split())
+    intersection = set1.intersection(set2)
+    union = set1.union(set2)
+    if not union:
+        return 0.0
+    return len(intersection) / len(union)
+
 def compare_texts(upper_text, lower_text, api_key, model_name, provider="OpenAI"):
     """
     Generates text based on the upper context and compares it to the lower context.
@@ -56,7 +68,8 @@ def compare_texts(upper_text, lower_text, api_key, model_name, provider="OpenAI"
     generated_text = get_llm_completion(prompt, api_key, model_name, provider)
     
     if "Error" in generated_text:
-        return generated_text, 0.0
+        return generated_text, 0.0, 0.0
 
     rouge_score = calculate_rouge_score(lower_text, generated_text)
-    return generated_text, rouge_score
+    jaccard_index = calculate_jaccard_index(lower_text, generated_text)
+    return generated_text, rouge_score, jaccard_index
