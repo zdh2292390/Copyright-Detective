@@ -6,7 +6,6 @@ from src.copyright_detective.pdf_utils import extract_text_from_pdf, split_text_
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-    @import url('https://fonts.googleapis.com/icon?family=Material+Icons');
     
     * {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
@@ -94,16 +93,12 @@ st.markdown("""
         color: white;
         border-radius: 8px;
         border: none;
-        padding: 0.75rem 1.5rem;
+        padding: 0.6rem 1.2rem;
         font-weight: 600;
         font-size: 0.95rem;
         letter-spacing: 0.3px;
-        transition: all 0.3s ease;
+        transition: all 0.2s ease;
         box-shadow: 0 2px 4px rgba(31, 119, 180, 0.2);
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 0.5rem;
     }
     
     .stButton>button:hover {
@@ -176,74 +171,23 @@ st.markdown("""
         color: #2c3e50;
         margin-bottom: 1rem;
     }
-    
-    .icon-text {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-    }
-    
-    .material-icons {
-        font-family: 'Material Icons';
-        font-weight: normal;
-        font-style: normal;
-        font-size: 1.2em;
-        line-height: 1;
-        letter-spacing: normal;
-        text-transform: none;
-        display: inline-block;
-        white-space: nowrap;
-        word-wrap: normal;
-        direction: ltr;
-    }
-    
-    .card {
-        background: white;
-        border-radius: 12px;
-        padding: 1.5rem;
-        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-        margin-bottom: 1rem;
-        border: 1px solid #e9ecef;
-    }
-    
-    .gradient-bg {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-    }
-    
-    @media (max-width: 768px) {
-        .main-header {
-            font-size: 2.2rem;
-        }
-        
-        .card {
-            padding: 1rem;
-        }
-        
-        .stButton>button {
-            padding: 0.6rem 1rem;
-            font-size: 0.9rem;
-        }
-    }
 </style>
 """, unsafe_allow_html=True)
 
 # Main header
-st.markdown('<div class="card gradient-bg" style="text-align: center; margin-bottom: 2rem;">', unsafe_allow_html=True)
-st.markdown('<h1 class="main-header"><span class="material-icons" style="vertical-align: middle; margin-right: 0.5rem;">search</span>Copyright Detective</h1>', unsafe_allow_html=True)
+st.markdown('<h1 class="main-header">🔍 Copyright Detective</h1>', unsafe_allow_html=True)
 st.markdown('<p class="subtitle">Advanced AI-powered tool for detecting potential copyright infringement in large language models</p>', unsafe_allow_html=True)
-st.markdown('</div>', unsafe_allow_html=True)
 
 # --- API Key Management ---
 with st.sidebar:
-    st.markdown('<div class="icon-text"><span class="material-icons">key</span><h3>API Configuration</h3></div>', unsafe_allow_html=True)
+    st.markdown("### 🔑 API Configuration")
     st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
     openai_api_key = st.text_input("OpenAI API Key", type="password", help="Enter your OpenAI API key")
     openrouter_api_key = st.text_input("OpenRouter API Key", type="password", help="Enter your OpenRouter API key")
     st.markdown('</div>', unsafe_allow_html=True)
 
     # --- Model Selection ---
-    st.markdown('<div class="icon-text"><span class="material-icons">smart_toy</span><h3>Model Selection</h3></div>', unsafe_allow_html=True)
+    st.markdown("### 🤖 Model Selection")
     st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
     provider = st.selectbox("Select Provider", ["OpenAI", "OpenRouter"], help="Choose your AI provider")
 
@@ -267,15 +211,15 @@ with st.sidebar:
     st.markdown('</div>', unsafe_allow_html=True)
 
     # --- Page Navigation ---
-    st.markdown('<div class="icon-text"><span class="material-icons">navigation</span><h3>Navigation</h3></div>', unsafe_allow_html=True)
+    st.markdown("### 🧭 Navigation")
     st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
     page = st.radio("Go to", ["Text Snippet Analysis", "Whole PDF Analysis"], label_visibility="collapsed")
     st.markdown('</div>', unsafe_allow_html=True)
 
 if page == "Text Snippet Analysis":
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="icon-text" style="margin-bottom: 1rem;"><span class="material-icons">text_snippet</span><h3>Text Snippet Analysis</h3></div>', unsafe_allow_html=True)
-    st.markdown('<p style="color: #666; margin-bottom: 1.5rem;">Analyze text snippets to detect potential copyright infringement by comparing generated text with ground truth.</p>', unsafe_allow_html=True)
+    st.markdown('<div class="feature-card">', unsafe_allow_html=True)
+    st.markdown("### 📝 Text Snippet Analysis")
+    st.markdown("Analyze text snippets to detect potential copyright infringement by comparing generated text with ground truth.")
     st.markdown('</div>', unsafe_allow_html=True)
     
     col1, col2 = st.columns(2)
@@ -286,6 +230,7 @@ if page == "Text Snippet Analysis":
         st.markdown("**Ground Truth**")
         text2 = st.text_area("Ground Truth", height=150, placeholder="Enter the ground truth text to compare against...", label_visibility="collapsed")
 
+    st.markdown("---")
     col_center = st.columns([1, 2, 1])[1]
     with col_center:
         run_comparison = st.button("🚀 Run Comparison", use_container_width=True)
@@ -336,9 +281,9 @@ if page == "Text Snippet Analysis":
                         st.info("✅ **Low to moderate similarity.** The generated text appears sufficiently different.")
 
 elif page == "Whole PDF Analysis":
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="icon-text" style="margin-bottom: 1rem;"><span class="material-icons">picture_as_pdf</span><h3>Whole PDF Analysis</h3></div>', unsafe_allow_html=True)
-    st.markdown('<p style="color: #666; margin-bottom: 1.5rem;">Upload a whole PDF document to automatically analyze text chunks for potential copyright infringement.</p>', unsafe_allow_html=True)
+    st.markdown('<div class="feature-card">', unsafe_allow_html=True)
+    st.markdown("### 📄 Whole PDF Analysis")
+    st.markdown("Upload a whole PDF document to automatically analyze text chunks for potential copyright infringement.")
     st.markdown('</div>', unsafe_allow_html=True)
     
     col1, col2 = st.columns([2, 1])
@@ -353,7 +298,7 @@ elif page == "Whole PDF Analysis":
     st.markdown("---")
     col_center = st.columns([1, 2, 1])[1]
     with col_center:
-        analyze_pdf = st.button('<span class="material-icons" style="vertical-align: middle; margin-right: 0.5rem;">search</span>Analyze PDF', use_container_width=True)
+        analyze_pdf = st.button("🔍 Analyze PDF", use_container_width=True)
 
     if analyze_pdf:
         if not api_key:
