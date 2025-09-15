@@ -1,5 +1,6 @@
 import openai
 from rouge_score import rouge_scorer
+from Levenshtein import distance
 
 def get_llm_completion(prompt, api_key, model_name, provider="OpenAI"):
     """
@@ -68,8 +69,9 @@ def compare_texts(upper_text, lower_text, api_key, model_name, provider="OpenAI"
     generated_text = get_llm_completion(prompt, api_key, model_name, provider)
     
     if "Error" in generated_text:
-        return generated_text, 0.0, 0.0
+        return generated_text, 0.0, 0.0, 0
 
     rouge_score = calculate_rouge_score(lower_text, generated_text)
     jaccard_index = calculate_jaccard_index(lower_text, generated_text)
-    return generated_text, rouge_score, jaccard_index
+    levenshtein_dist = distance(lower_text, generated_text)
+    return generated_text, rouge_score, jaccard_index, levenshtein_dist
