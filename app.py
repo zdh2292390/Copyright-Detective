@@ -185,52 +185,32 @@ st.markdown("""
         transition: transform 0.3s ease !important;
     }
 
-    /* Custom sidebar toggle button - positioned outside sidebar */
-    .sidebar-toggle-btn {
-        position: fixed !important;
-        top: 50% !important;
-        transform: translateY(-50%) !important;
-        background: #1f77b4 !important;
-        border: none !important;
-        color: white !important;
-        width: 36px !important;
-        height: 60px !important;
-        border-radius: 0 4px 4px 0 !important;
-        cursor: pointer !important;
-        z-index: 10001 !important;
-        display: flex !important;
-        align-items: center !important;
-        justify-content: center !important;
-        transition: all 0.3s ease !important;
-        box-shadow: 2px 2px 8px rgba(0,0,0,0.15) !important;
-        font-size: 1.2rem !important;
-    }
 
-    .sidebar-toggle-btn:hover {
-        background: #0e5a8a !important;
-        transform: translateY(-50%) scale(1.05) !important;
-        box-shadow: 4px 4px 12px rgba(0,0,0,0.2) !important;
-    }
-
-    .sidebar-toggle-btn .material-icons {
-        font-size: 1.4rem !important;
-        line-height: 1 !important;
-    }
-
-    /* Position button based on sidebar state */
-    .sidebar-toggle-btn.sidebar-collapsed {
-        left: 0 !important;
-    }
-
-    .sidebar-toggle-btn.sidebar-expanded {
-        left: 300px !important; /* Match sidebar width */
-    }
-
-    /* Hide original Streamlit toggle buttons */
-    button[title="Toggle sidebar"],
-    button[title="Collapse sidebar"],
-    button[title="Expand sidebar"] {
+    /* Hide all sidebar collapse/expand buttons (Streamlit and custom) */
+    .sidebar-toggle-btn,
+    [data-testid="stSidebarCollapseButton"] {
         display: none !important;
+    }
+
+    /* Force Streamlit's default sidebar collapse icon to use Material Icons font and show menu icon */
+    [data-testid="stSidebarCollapseButton"] span[data-testid="stIconMaterial"] {
+        font-family: 'Material Icons' !important;
+        font-style: normal !important;
+        font-weight: normal !important;
+        font-size: 1.4rem !important;
+        letter-spacing: normal !important;
+        text-transform: none !important;
+        display: inline-block !important;
+        white-space: nowrap !important;
+        word-wrap: normal !important;
+        direction: ltr !important;
+        -webkit-font-feature-settings: 'liga';
+        -webkit-font-smoothing: antialiased;
+        color: #1f77b4 !important;
+    }
+    [data-testid="stSidebarCollapseButton"] span[data-testid="stIconMaterial"]::before {
+        content: "menu";
+        font-family: 'Material Icons' !important;
     }
 
     /* Add left padding to main content so it's not covered by the fixed sidebar */
@@ -307,107 +287,7 @@ st.markdown("""
             });
         }
         
-        // Function to create custom sidebar toggle button
-        function createSidebarToggleButton() {
-            // Remove existing button if it exists
-            const existingBtn = document.querySelector('.sidebar-toggle-btn');
-            if (existingBtn) {
-                existingBtn.remove();
-            }
-            
-            // Create new button
-            customToggleBtn = document.createElement('button');
-            customToggleBtn.className = 'sidebar-toggle-btn';
-            customToggleBtn.innerHTML = '<span class="material-icons">menu</span>';
-            customToggleBtn.title = 'Toggle Sidebar';
-            
-            // Add click event listener
-            customToggleBtn.addEventListener('click', toggleSidebar);
-            
-            // Add to body
-            document.body.appendChild(customToggleBtn);
-            
-            // Update button state
-            updateToggleButton();
-        }
-        
-        // Function to toggle sidebar
-        function toggleSidebar() {
-            const sidebar = document.querySelector('.css-1oe6wy4.e1fqkh3o0, .css-1d391kg.egzxvld2, .css-18e3th9.e1fqkh3o0');
-            const mainContent = document.querySelector('.main > div[role="main"]');
-            
-            if (sidebar && mainContent) {
-                sidebarCollapsed = !sidebarCollapsed;
-                
-                if (sidebarCollapsed) {
-                    // Collapse sidebar
-                    sidebar.style.transform = 'translateX(-100%)';
-                    mainContent.style.marginLeft = '0';
-                } else {
-                    // Expand sidebar
-                    sidebar.style.transform = 'translateX(0)';
-                    mainContent.style.marginLeft = '300px';
-                }
-                
-                updateToggleButton();
-                
-                // Store state in localStorage
-                localStorage.setItem('sidebarCollapsed', sidebarCollapsed);
-            }
-        }
-        
-        // Function to update toggle button appearance
-        function updateToggleButton() {
-            if (!customToggleBtn) return;
-            
-            // Update position class based on sidebar state
-            if (sidebarCollapsed) {
-                customToggleBtn.className = 'sidebar-toggle-btn sidebar-collapsed';
-            } else {
-                customToggleBtn.className = 'sidebar-toggle-btn sidebar-expanded';
-            }
-            // Icon remains the same (menu icon)
-            customToggleBtn.innerHTML = '<span class="material-icons">menu</span>';
-        }
-        
-        // Function to restore sidebar state from localStorage
-        function restoreSidebarState() {
-            const storedState = localStorage.getItem('sidebarCollapsed');
-            if (storedState === 'true') {
-                sidebarCollapsed = true;
-                const sidebar = document.querySelector('.css-1oe6wy4.e1fqkh3o0, .css-1d391kg.egzxvld2, .css-18e3th9.e1fqkh3o0');
-                const mainContent = document.querySelector('.main > div[role="main"]');
-                
-                if (sidebar) sidebar.style.transform = 'translateX(-100%)';
-                if (mainContent) mainContent.style.marginLeft = '0';
-            }
-        }
-        
-        // Initialize
-        setTimeout(function() {
-            fixMaterialIcons();
-            restoreSidebarState();
-            createSidebarToggleButton();
-        }, 1000);
-        
-        // Also run on any DOM changes (for dynamic content)
-        const observer = new MutationObserver(function(mutations) {
-            mutations.forEach(function(mutation) {
-                if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
-                    setTimeout(function() {
-                        fixMaterialIcons();
-                        if (!customToggleBtn) {
-                            createSidebarToggleButton();
-                        }
-                    }, 100);
-                }
-            });
-        });
-        
-        observer.observe(document.body, {
-            childList: true,
-            subtree: true
-        });
+        // Only run icon fix for ligatures, no sidebar collapse logic
     });
 </script>
 """, unsafe_allow_html=True)
