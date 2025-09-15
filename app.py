@@ -6,9 +6,32 @@ from src.copyright_detective.pdf_utils import extract_text_from_pdf, split_text_
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/icon?family=Material+Icons');
     
     * {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+    }
+
+    /* Material Icons override - ensure ligatures like "keyboard_double_arrow_right" render as icons
+       This must come after the global * rule which forces 'Inter' with !important. */
+    .material-icons,
+    .material-icons-outlined,
+    .material-icons-round,
+    .material-icons-sharp,
+    .material-icons-two-tone {
+        font-family: 'Material Icons' !important;
+        font-weight: normal;
+        font-style: normal;
+        font-size: 1.1rem; /* adjust size as needed */
+        line-height: 1;
+        letter-spacing: normal;
+        text-transform: none;
+        display: inline-block;
+        white-space: nowrap;
+        word-wrap: normal;
+        direction: ltr;
+        -webkit-font-feature-settings: 'liga';
+        -webkit-font-smoothing: antialiased;
     }
     
     .main-header {
@@ -74,18 +97,18 @@ st.markdown("""
     }
     
     .sidebar-section {
-        padding: 1.2rem 0;
-        margin-bottom: 1.2rem;
+        padding: 0.5rem 0; /* reduced vertical padding */
+        margin-bottom: 0.4rem; /* reduce gap between sidebar sections */
     }
     
     .sidebar-section h3 {
-        font-size: 1rem;
+        font-size: 0.95rem;
         font-weight: 600;
         color: #2c3e50;
-        margin-bottom: 1rem;
+        margin-bottom: 0.35rem; /* tighten space under heading */
         display: flex;
         align-items: center;
-        gap: 0.5rem;
+        gap: 0.4rem;
     }
     
     .stButton>button {
@@ -147,6 +170,79 @@ st.markdown("""
     .stProgress .st-bo {
         background-color: #1f77b4;
     }
+
+    /* Make Streamlit sidebar fixed and disable collapse/drag controls */
+    /* Targets Streamlit's typical sidebar container and hides the collapse button */
+    .css-1oe6wy4.e1fqkh3o0, /* old class fallback */
+    .css-1d391kg.egzxvld2, /* another possible sidebar wrapper */
+    .css-18e3th9.e1fqkh3o0 {
+        position: fixed !important;
+        left: 0 !important;
+        top: 0 !important;
+        height: 100vh !important;
+        overflow: auto !important;
+        z-index: 9999 !important;
+        transition: transform 0.3s ease !important;
+    }
+
+    /* Custom sidebar toggle button - positioned outside sidebar */
+    .sidebar-toggle-btn {
+        position: fixed !important;
+        top: 50% !important;
+        transform: translateY(-50%) !important;
+        background: #1f77b4 !important;
+        border: none !important;
+        color: white !important;
+        width: 36px !important;
+        height: 60px !important;
+        border-radius: 0 4px 4px 0 !important;
+        cursor: pointer !important;
+        z-index: 10001 !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        transition: all 0.3s ease !important;
+        box-shadow: 2px 2px 8px rgba(0,0,0,0.15) !important;
+        font-size: 1.2rem !important;
+    }
+
+    .sidebar-toggle-btn:hover {
+        background: #0e5a8a !important;
+        transform: translateY(-50%) scale(1.05) !important;
+        box-shadow: 4px 4px 12px rgba(0,0,0,0.2) !important;
+    }
+
+    .sidebar-toggle-btn .material-icons {
+        font-size: 1.4rem !important;
+        line-height: 1 !important;
+    }
+
+    /* Position button based on sidebar state */
+    .sidebar-toggle-btn.sidebar-collapsed {
+        left: 0 !important;
+    }
+
+    .sidebar-toggle-btn.sidebar-expanded {
+        left: 300px !important; /* Match sidebar width */
+    }
+
+    /* Hide original Streamlit toggle buttons */
+    button[title="Toggle sidebar"],
+    button[title="Collapse sidebar"],
+    button[title="Expand sidebar"] {
+        display: none !important;
+    }
+
+    /* Add left padding to main content so it's not covered by the fixed sidebar */
+    .main > div[role="main"] {
+        margin-left: 300px; /* adjust based on your sidebar width */
+        transition: margin-left 0.3s ease !important;
+    }
+
+    /* When sidebar is collapsed, reduce main content margin */
+    .sidebar-collapsed ~ .main > div[role="main"] {
+        margin-left: 0 !important;
+    }
     
     .stAlert {
         border-radius: 8px;
@@ -172,6 +268,148 @@ st.markdown("""
         margin-bottom: 1rem;
     }
 </style>
+""", unsafe_allow_html=True)
+
+# JavaScript fallback for Material Icons in deployed environments
+st.markdown("""
+<script>
+    // Fallback for Material Icons ligatures in deployed environments
+    document.addEventListener('DOMContentLoaded', function() {
+        let sidebarCollapsed = false;
+        let customToggleBtn = null;
+        
+        // Function to add material-icons class to elements containing icon ligatures
+        function fixMaterialIcons() {
+            // Find all text nodes containing icon ligatures
+            const walker = document.createTreeWalker(
+                document.body,
+                NodeFilter.SHOW_TEXT,
+                null,
+                false
+            );
+            
+            const nodes = [];
+            let node;
+            while (node = walker.nextNode()) {
+                if (node.textContent.includes('keyboard_double_arrow_right') || 
+                    node.textContent.includes('keyboard_double_arrow_left') ||
+                    node.textContent.includes('menu')) {
+                    nodes.push(node);
+                }
+            }
+            
+            // Wrap each found text node with a span having material-icons class
+            nodes.forEach(textNode => {
+                const span = document.createElement('span');
+                span.className = 'material-icons';
+                span.textContent = textNode.textContent;
+                textNode.parentNode.replaceChild(span, textNode);
+            });
+        }
+        
+        // Function to create custom sidebar toggle button
+        function createSidebarToggleButton() {
+            // Remove existing button if it exists
+            const existingBtn = document.querySelector('.sidebar-toggle-btn');
+            if (existingBtn) {
+                existingBtn.remove();
+            }
+            
+            // Create new button
+            customToggleBtn = document.createElement('button');
+            customToggleBtn.className = 'sidebar-toggle-btn';
+            customToggleBtn.innerHTML = '<span class="material-icons">menu</span>';
+            customToggleBtn.title = 'Toggle Sidebar';
+            
+            // Add click event listener
+            customToggleBtn.addEventListener('click', toggleSidebar);
+            
+            // Add to body
+            document.body.appendChild(customToggleBtn);
+            
+            // Update button state
+            updateToggleButton();
+        }
+        
+        // Function to toggle sidebar
+        function toggleSidebar() {
+            const sidebar = document.querySelector('.css-1oe6wy4.e1fqkh3o0, .css-1d391kg.egzxvld2, .css-18e3th9.e1fqkh3o0');
+            const mainContent = document.querySelector('.main > div[role="main"]');
+            
+            if (sidebar && mainContent) {
+                sidebarCollapsed = !sidebarCollapsed;
+                
+                if (sidebarCollapsed) {
+                    // Collapse sidebar
+                    sidebar.style.transform = 'translateX(-100%)';
+                    mainContent.style.marginLeft = '0';
+                } else {
+                    // Expand sidebar
+                    sidebar.style.transform = 'translateX(0)';
+                    mainContent.style.marginLeft = '300px';
+                }
+                
+                updateToggleButton();
+                
+                // Store state in localStorage
+                localStorage.setItem('sidebarCollapsed', sidebarCollapsed);
+            }
+        }
+        
+        // Function to update toggle button appearance
+        function updateToggleButton() {
+            if (!customToggleBtn) return;
+            
+            // Update position class based on sidebar state
+            if (sidebarCollapsed) {
+                customToggleBtn.className = 'sidebar-toggle-btn sidebar-collapsed';
+            } else {
+                customToggleBtn.className = 'sidebar-toggle-btn sidebar-expanded';
+            }
+            // Icon remains the same (menu icon)
+            customToggleBtn.innerHTML = '<span class="material-icons">menu</span>';
+        }
+        
+        // Function to restore sidebar state from localStorage
+        function restoreSidebarState() {
+            const storedState = localStorage.getItem('sidebarCollapsed');
+            if (storedState === 'true') {
+                sidebarCollapsed = true;
+                const sidebar = document.querySelector('.css-1oe6wy4.e1fqkh3o0, .css-1d391kg.egzxvld2, .css-18e3th9.e1fqkh3o0');
+                const mainContent = document.querySelector('.main > div[role="main"]');
+                
+                if (sidebar) sidebar.style.transform = 'translateX(-100%)';
+                if (mainContent) mainContent.style.marginLeft = '0';
+            }
+        }
+        
+        // Initialize
+        setTimeout(function() {
+            fixMaterialIcons();
+            restoreSidebarState();
+            createSidebarToggleButton();
+        }, 1000);
+        
+        // Also run on any DOM changes (for dynamic content)
+        const observer = new MutationObserver(function(mutations) {
+            mutations.forEach(function(mutation) {
+                if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
+                    setTimeout(function() {
+                        fixMaterialIcons();
+                        if (!customToggleBtn) {
+                            createSidebarToggleButton();
+                        }
+                    }, 100);
+                }
+            });
+        });
+        
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+    });
+</script>
 """, unsafe_allow_html=True)
 
 # Main header
