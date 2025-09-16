@@ -53,15 +53,45 @@ def render_sidebar():
 def render_text_analysis_page(api_key, model_choice, provider):
     """Render the text snippet analysis page."""
     st.markdown("### 📝 Text Snippet Analysis")
+
+    # Prompt Selection (moved from sidebar to main page)
+    prompt_type = st.selectbox(
+        "Choose the Prompt Type:",
+        [
+            "Sequential Reproduction Probe",
+            "Preceding Context Reconstruction",
+            "Copyright Attribution Elicitation"
+        ],
+        help="Select the type of prompt to guide the Text Snippet Analysis. (Choose only; typing custom values is not allowed.)"
+    )
+
+    # Explanatory notes for each prompt type
+    if prompt_type == "Sequential Reproduction Probe":
+        st.markdown("_Sequential Reproduction Probe: Provide the prefix (previous sentence) and ask the model to continue by generating the next sentence. This probes whether the model reproduces or closely follows memorized sequences from source texts._")
+    elif prompt_type == "Preceding Context Reconstruction":
+        st.markdown("_Preceding Context Reconstruction: Provide the continuation or subsequent sentence and ask the model to generate the most likely preceding sentence. This helps detect whether the model can reconstruct prior context, which may indicate memorization of original works._")
+    elif prompt_type == "Copyright Attribution Elicitation":
+        st.markdown("_Copyright Attribution Elicitation: Based on the provided text snippet, ask the model to infer a likely title or attribution for the work (for example, a classic novel or another copyrighted source). Useful for identifying potential origins of the snippet._")
+
     st.markdown("Analyze text snippets to detect potential copyright infringement by comparing generated text with ground truth.")
     
     col1, col2 = st.columns(2)
     with col1:
-        st.markdown("**Prefix Text**")
-        text1 = st.text_area("Prefix Text", height=150, placeholder="Enter the prefix text that will be used to generate continuation...", label_visibility="collapsed")
+        st.markdown("**Input Text**")
+        text1 = st.text_area(
+            "Input Text",
+            height=150,
+            placeholder="Enter the input snippet (e.g., a previous sentence, a continuation, or an excerpt). The role of this field depends on the selected prompt type.",
+            label_visibility="collapsed"
+        )
     with col2:
         st.markdown("**Ground Truth**")
-        text2 = st.text_area("Ground Truth", height=150, placeholder="Enter the ground truth text to compare against...", label_visibility="collapsed")
+        text2 = st.text_area(
+            "Ground Truth",
+            height=150,
+            placeholder="Enter the ground truth text or expected target to compare against (e.g., the known reference or target continuation). Leave blank if not applicable.",
+            label_visibility="collapsed"
+        )
 
     st.markdown("---")
     st.markdown("**Inference Time Scaling**")
@@ -78,10 +108,21 @@ def render_text_analysis_page(api_key, model_choice, provider):
         elif not text1 or not text2:
             st.warning("⚠️ Please enter both prefix text and ground truth.")
         else:
+            # Modify the analysis logic to incorporate the prompt type
+            if prompt_type == "Sequential Reproduction Probe":
+                # Logic for continuing the next sentence
+                pass
+            elif prompt_type == "Preceding Context Reconstruction":
+                # Logic for inferring the previous sentence
+                pass
+            elif prompt_type == "Copyright Attribution Elicitation":
+                # Logic for generating the title of the work
+                pass
+
             if inference_runs == 1:
                 # Single run: Original Analysis Results
                 with st.spinner(f"🔄 Generating text with {model_choice} and calculating scores..."):
-                    result = compare_texts(text1, text2, api_key, model_name=model_choice, provider=provider)
+                    result = compare_texts(text1, text2, api_key, model_name=model_choice, provider=provider, prompt_type=prompt_type)
                     if isinstance(result, str) and result.startswith("Error"):
                         st.error(f"❌ {result}")
                     else:
@@ -126,7 +167,7 @@ def render_text_analysis_page(api_key, model_choice, provider):
                 progress_bar = st.progress(0, text="Starting inference runs...")
                 for i in range(inference_runs):
                     progress_bar.progress((i) / inference_runs, text=f"🔄 Generating text for run {i+1}/{inference_runs}...")
-                    result = compare_texts(text1, text2, api_key, model_name=model_choice, provider=provider)
+                    result = compare_texts(text1, text2, api_key, model_name=model_choice, provider=provider, prompt_type=prompt_type)
                     if isinstance(result, str) and result.startswith("Error"):
                         st.error(f"❌ {result}")
                         break
