@@ -1,42 +1,65 @@
 import openai
 from rouge_score import rouge_scorer
 from Levenshtein import distance
+import anthropic
+import google.generativeai as genai
 
 def get_llm_completion(prompt, api_key, model_name, provider="OpenAI"):
     """
     Gets a completion from the specified LLM.
     """
-    client_params = {
-        "api_key": api_key
-    }
-    if provider == "OpenRouter":
-        client_params["base_url"] = "https://openrouter.ai/api/v1"
-
-    client = openai.OpenAI(**client_params)
-
     try:
-        messages = [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": prompt}
-        ]
-        
-        if provider == "OpenRouter":
-             # Add custom headers for OpenRouter
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                extra_headers={
-                    "HTTP-Referer": "http://localhost", # Replace with your actual site URL
-                    "X-Title": "Copyright Detective" # Replace with your actual app name
-                }
-            )
-        else:
+        if provider == "OpenAI":
+            client = openai.OpenAI(api_key=api_key)
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": prompt}
+            ]
             response = client.chat.completions.create(
                 model=model_name,
                 messages=messages
             )
-            
-        return response.choices[0].message.content.strip()
+            return response.choices[0].message.content.strip()
+        
+        elif provider == "OpenRouter":
+            client = openai.OpenAI(
+                api_key=api_key,
+                base_url="https://openrouter.ai/api/v1"
+            )
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": prompt}
+            ]
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                extra_headers={
+                    "HTTP-Referer": "http://localhost",
+                    "X-Title": "Copyright Detective"
+                }
+            )
+            return response.choices[0].message.content.strip()
+        
+        elif provider == "Anthropic":
+            client = anthropic.Anthropic(api_key=api_key)
+            response = client.messages.create(
+                model=model_name,
+                max_tokens=1000,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            return response.content[0].text.strip()
+        
+        elif provider == "Google Gemini":
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            return response.text.strip()
+        
+        else:
+            return f"Error: Unsupported provider {provider}"
+    
     except Exception as e:
         return f"Error calling API: {e}"
 

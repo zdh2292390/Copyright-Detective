@@ -6,3 +6,5 @@ python-Levenshtein
 matplotlib
 ghostscript
 requests
+anthropic
+google-generativeai
