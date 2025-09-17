@@ -298,7 +298,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
             analyze_pdf = st.button("🔍 Analyze PDF", use_container_width=True, type="primary")
         st.markdown("""
         <div class="analysis-note">
-            <small>⚡ Analysis may take several minutes depending on PDF size and selected model</small>
+            ⚡ Analysis may take several minutes depending on PDF size and selected model
         </div>
         """, unsafe_allow_html=True)
     else:
@@ -308,15 +308,19 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
         if not api_key:
             st.error(f"⚠️ Please enter your API key in the sidebar.")
         elif uploaded_file is not None:
-            with st.spinner(f"🔄 Analyzing PDF with {model_choice}... This may take a while."):
+            with st.spinner(""):
+                spinner_placeholder = st.empty()
+                spinner_placeholder.markdown(f'<div style="font-size: 1rem;">🔄 Analyzing PDF with {model_choice}... This may take a while.</div>', unsafe_allow_html=True)
                 try:
                     pdf_text = extract_text_from_pdf(uploaded_file)
                     if "Error" in pdf_text:
                         st.error(f"❌ {pdf_text}")
+                        spinner_placeholder.empty()
                     else:
                         chunk_pairs = split_text_into_chunks(pdf_text, chunk_size=chunk_size)
                         if not chunk_pairs:
                             st.warning("⚠️ Could not split the PDF into enough text chunks for analysis.")
+                            spinner_placeholder.empty()
                         else:
                             results = []
                             progress_bar = st.progress(0, text="Processing text chunks...")
@@ -339,7 +343,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
 
                             st.markdown("---")
                             st.markdown('<div class="results-section">', unsafe_allow_html=True)
-                            st.markdown(f"### 🏆 Top 5 Most Similar Sections")
+                            st.markdown('<h3 style="font-size: 1.4rem; font-weight: 600; color: #2c3e50; margin-bottom: 0.5rem;">🏆 Top 5 Most Similar Sections</h3>', unsafe_allow_html=True)
                             st.markdown(f'<div class="results-subtitle">Ranked by {score_type}</div>', unsafe_allow_html=True)
                             
                             for i, (texts, rouge, jaccard, levenshtein) in enumerate(results[:5]):
@@ -366,9 +370,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                 
                                 col1, col2 = st.columns([1, 3])
                                 with col1:
-                                    st.markdown('<div class="metric-card enhanced">', unsafe_allow_html=True)
                                     st.metric(label=f"{score_type}", value=score_display)
-                                    st.markdown('</div>', unsafe_allow_html=True)
                                 with col2:
                                     # Custom expandable section using HTML component
                                     expandable_id = f"expandable_{i}"
@@ -425,9 +427,10 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                         padding: 0.75rem;
                                         border-radius: 4px;
                                         border: 1px solid #e9ecef;
-                                        font-family: 'Courier New', monospace;
-                                        font-size: 0.9rem;
-                                        line-height: 1.4;
+                                        font-family: 'Georgia', 'Times New Roman', serif;
+                                        font-size: 0.95rem;
+                                        line-height: 1.6;
+                                        color: #2c3e50;
                                         white-space: pre-wrap;
                                         word-wrap: break-word;
                                     }}
@@ -466,6 +469,52 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                         font-weight: 600;
                                         color: #1f77b4;
                                         font-size: 0.9rem;
+                                    }}
+                                    .result-card {{
+                                        display: inline-block;
+                                        background: #f8f9fa;
+                                        border: 1px solid #e9ecef;
+                                        border-radius: 6px;
+                                        padding: 0.15rem 0.3rem;
+                                        margin-bottom: 0.5rem;
+                                        font-size: 0.75rem;
+                                        font-weight: 600;
+                                        color: #495057;
+                                        text-align: center;
+                                        min-width: auto;
+                                        width: fit-content;
+                                    }}
+                                    .result-header {{
+                                        display: flex;
+                                        align-items: center;
+                                        gap: 0.25rem;
+                                    }}
+                                    .rank-badge {{
+                                        font-size: 1rem;
+                                    }}
+                                    .rank-title {{
+                                        font-size: 0.8rem;
+                                        color: #6c757d;
+                                    }}
+                                    .metric-card {{
+                                        padding: 0.5rem 0;
+                                        text-align: center;
+                                        border: none;
+                                        background: transparent;
+                                    }}
+                                    .metric-card .metric-label {{
+                                        font-size: 0.8rem;
+                                        font-weight: 500;
+                                        color: #6c757d;
+                                        text-transform: uppercase;
+                                        letter-spacing: 0.5px;
+                                        margin-bottom: 0.25rem;
+                                    }}
+                                    .metric-card .metric-value {{
+                                        font-size: 0.9rem;
+                                        font-weight: 700;
+                                        color: #1f77b4;
+                                        line-height: 1;
                                     }}
                                     </style>
                                     <div class="expandable-section">
@@ -526,7 +575,9 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                     components.html(html_content, height=350)
                             
                             st.markdown('</div>', unsafe_allow_html=True)
+                            spinner_placeholder.empty()
                 except Exception as e:
                     st.error(f"❌ An error occurred during PDF analysis: {e}")
+                    spinner_placeholder.empty()
         else:
             st.warning("⚠️ Please upload a PDF file first.")
