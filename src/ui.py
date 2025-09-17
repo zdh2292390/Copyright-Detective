@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 from src.copyright_detective.comparison import compare_texts
 from src.copyright_detective.pdf_utils import extract_text_from_pdf, split_text_into_chunks
 import matplotlib.pyplot as plt
@@ -369,28 +370,160 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                     st.metric(label=f"{score_type}", value=score_display)
                                     st.markdown('</div>', unsafe_allow_html=True)
                                 with col2:
-                                    with st.expander("📋 View Details", expanded=False):
-                                            st.markdown("**Prefix Context**")
-                                            st.text_area("Prefix Context", upper, height=80, disabled=True, label_visibility="collapsed")
-                                            st.markdown("**Ground Truth**")
-                                            st.text_area("Ground Truth", lower, height=80, disabled=True, label_visibility="collapsed")
-                                            st.markdown("**🤖 Generated Text**")
-                                            st.markdown(f'<div class="generated-text">{generated}</div>', unsafe_allow_html=True)
-                                            st.markdown("**📊 All Scores**")
-                                            st.markdown(f'<div class="scores-grid">'
-                                                        f'<div class="score-item">'
-                                                        f'<span class="score-label">ROUGE-L:</span>'
-                                                        f'<span class="score-value">{rouge:.4f}</span>'
-                                                        f'</div>'
-                                                        f'<div class="score-item">'
-                                                        f'<span class="score-label">Jaccard:</span>'
-                                                        f'<span class="score-value">{jaccard:.4f}</span>'
-                                                        f'</div>'
-                                                        f'<div class="score-item">'
-                                                        f'<span class="score-label">Levenshtein:</span>'
-                                                        f'<span class="score-value">{levenshtein}</span>'
-                                                        f'</div>'
-                                                        f'</div>', unsafe_allow_html=True)
+                                    # Custom expandable section using HTML component
+                                    expandable_id = f"expandable_{i}"
+                                    html_content = f"""
+                                    <style>
+                                    .expandable-section {{
+                                        border: 1px solid #e9ecef;
+                                        border-radius: 8px;
+                                        margin-bottom: 1rem;
+                                        overflow: hidden;
+                                    }}
+                                    .expandable-header {{
+                                        background: #f8f9fa;
+                                        padding: 0.75rem 1rem;
+                                        cursor: pointer;
+                                        display: flex;
+                                        justify-content: space-between;
+                                        align-items: center;
+                                        font-weight: 500;
+                                        color: #495057;
+                                        transition: background-color 0.2s ease;
+                                    }}
+                                    .expandable-header:hover {{
+                                        background: #e9ecef;
+                                    }}
+                                    .expandable-title {{
+                                        font-size: 0.95rem;
+                                    }}
+                                    .toggle-icon {{
+                                        font-size: 0.8rem;
+                                        color: #6c757d;
+                                        transition: transform 0.2s ease;
+                                    }}
+                                    .expandable-content {{
+                                        background: #ffffff;
+                                        border-top: 1px solid #e9ecef;
+                                        max-height: 300px;
+                                        overflow-y: auto;
+                                    }}
+                                    .expandable-inner {{
+                                        padding: 1rem;
+                                    }}
+                                    .detail-section {{
+                                        margin-bottom: 1rem;
+                                    }}
+                                    .detail-section strong {{
+                                        display: block;
+                                        margin-bottom: 0.5rem;
+                                        color: #2c3e50;
+                                        font-weight: 600;
+                                    }}
+                                    .text-content {{
+                                        background: #f8f9fa;
+                                        padding: 0.75rem;
+                                        border-radius: 4px;
+                                        border: 1px solid #e9ecef;
+                                        font-family: 'Courier New', monospace;
+                                        font-size: 0.9rem;
+                                        line-height: 1.4;
+                                        white-space: pre-wrap;
+                                        word-wrap: break-word;
+                                    }}
+                                    .generated-text {{
+                                        background: #f0f8ff;
+                                        padding: 0.75rem;
+                                        border-radius: 4px;
+                                        border-left: 4px solid #1f77b4;
+                                        font-family: Georgia, serif;
+                                        line-height: 1.6;
+                                        color: #2c3e50;
+                                        white-space: pre-wrap;
+                                        word-wrap: break-word;
+                                    }}
+                                    .scores-grid {{
+                                        display: grid;
+                                        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+                                        gap: 0.5rem;
+                                        margin-top: 0.5rem;
+                                    }}
+                                    .score-item {{
+                                        display: flex;
+                                        justify-content: space-between;
+                                        align-items: center;
+                                        padding: 0.5rem;
+                                        background: #f8f9fa;
+                                        border-radius: 4px;
+                                        border: 1px solid #e9ecef;
+                                    }}
+                                    .score-label {{
+                                        font-weight: 500;
+                                        color: #495057;
+                                        font-size: 0.9rem;
+                                    }}
+                                    .score-value {{
+                                        font-weight: 600;
+                                        color: #1f77b4;
+                                        font-size: 0.9rem;
+                                    }}
+                                    </style>
+                                    <div class="expandable-section">
+                                        <div class="expandable-header" onclick="toggleExpand('{expandable_id}')">
+                                            <span class="expandable-title">📋 View Details</span>
+                                            <span class="toggle-icon" id="icon_{expandable_id}">▶</span>
+                                        </div>
+                                        <div class="expandable-content" id="{expandable_id}" style="display: none;">
+                                            <div class="expandable-inner">
+                                                <div class="detail-section">
+                                                    <strong>Prefix Context</strong>
+                                                    <div class="text-content">{upper.replace(chr(10), '<br>')}</div>
+                                                </div>
+                                                <div class="detail-section">
+                                                    <strong>Ground Truth</strong>
+                                                    <div class="text-content">{lower.replace(chr(10), '<br>')}</div>
+                                                </div>
+                                                <div class="detail-section">
+                                                    <strong>🤖 Generated Text</strong>
+                                                    <div class="generated-text">{generated.replace(chr(10), '<br>')}</div>
+                                                </div>
+                                                <div class="detail-section">
+                                                    <strong>📊 All Scores</strong>
+                                                    <div class="scores-grid">
+                                                        <div class="score-item">
+                                                            <span class="score-label">ROUGE-L:</span>
+                                                            <span class="score-value">{rouge:.4f}</span>
+                                                        </div>
+                                                        <div class="score-item">
+                                                            <span class="score-label">Jaccard:</span>
+                                                            <span class="score-value">{jaccard:.4f}</span>
+                                                        </div>
+                                                        <div class="score-item">
+                                                            <span class="score-label">Levenshtein:</span>
+                                                            <span class="score-value">{levenshtein}</span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <script>
+                                    function toggleExpand(id) {{
+                                        const content = document.getElementById(id);
+                                        const icon = document.getElementById('icon_' + id);
+                                        if (content && icon) {{
+                                            if (content.style.display === 'none' || content.style.display === '') {{
+                                                content.style.display = 'block';
+                                                icon.textContent = '▼';
+                                            }} else {{
+                                                content.style.display = 'none';
+                                                icon.textContent = '▶';
+                                            }}
+                                        }}
+                                    }}
+                                    </script>
+                                    """
+                                    components.html(html_content, height=350)
                             
                             st.markdown('</div>', unsafe_allow_html=True)
                 except Exception as e:
