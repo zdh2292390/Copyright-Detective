@@ -29,7 +29,9 @@ st.markdown("""
             while (node = walker.nextNode()) {
                 if (node.textContent.includes('keyboard_double_arrow_right') || 
                     node.textContent.includes('keyboard_double_arrow_left') ||
-                    node.textContent.includes('menu')) {
+                    node.textContent.includes('menu') ||
+                    node.textContent.includes('keyboard_arrow_down') ||
+                    node.textContent.includes('keyboard_arrow_right')) {
                     nodes.push(node);
                 }
             }
