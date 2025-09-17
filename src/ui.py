@@ -284,7 +284,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                     if "Error" in pdf_text:
                         st.error(f"❌ {pdf_text}")
                     else:
-                        chunk_pairs = split_text_into_chunks(pdf_text)
+                        chunk_pairs = split_text_into_chunks(pdf_text, chunk_size=100)
                         if not chunk_pairs:
                             st.warning("⚠️ Could not split the PDF into enough text chunks for analysis.")
                         else:
