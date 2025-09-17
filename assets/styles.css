@@ -49,23 +49,10 @@
         margin-right: auto;
     }
     
-    .feature-card {
-        padding: 1.5rem 0;
-        margin-bottom: 1.5rem;
-    }
-    
-    .feature-card h3 {
-        font-size: 1.4rem;
-        font-weight: 600;
-        color: #2c3e50;
-        margin-bottom: 0.5rem;
-    }
-    
-    .feature-card p {
-        font-size: 0.95rem;
-        font-weight: 400;
-        color: #666;
-        line-height: 1.6;
+    .feature-card,
+    .upload-section,
+    .analysis-section {
+        /* Removed - no longer used */
     }
     
     .metric-card {
@@ -102,6 +89,276 @@
         display: flex;
         align-items: center;
         gap: 0.4rem;
+    }
+    
+    .config-section {
+        background: #f8f9fa;
+        border: 1px solid #e9ecef;
+        border-radius: 8px;
+        padding: 1rem;
+        margin-bottom: 1rem;
+    }
+    
+    .config-section h3 {
+        font-size: 0.9rem;
+        font-weight: 600;
+        color: #2c3e50;
+        margin-bottom: 0.75rem;
+        margin-top: 0;
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+    }
+    
+    .chunk-guidance {
+        margin-top: 0.75rem;
+        padding: 0.5rem 0;
+    }
+    
+    .guidance-item {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.5rem;
+        margin-bottom: 0.5rem;
+        padding: 0.25rem 0;
+    }
+    
+    .guidance-item:last-child {
+        margin-bottom: 0;
+    }
+    
+    .guidance-label {
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: #495057;
+        min-width: 120px;
+        flex-shrink: 0;
+    }
+    
+    .guidance-desc {
+        font-size: 0.8rem;
+        color: #6c757d;
+        line-height: 1.4;
+    }
+    
+    .analysis-section {
+        /* Removed - no longer used */
+    }
+    
+    .analysis-note {
+        margin-top: 1rem;
+        color: #6c757d;
+        font-size: 0.85rem;
+    }
+    
+    .analysis-note small {
+        font-weight: 500;
+    }
+    
+    .results-section {
+        margin-top: 2rem;
+    }
+    
+    .results-subtitle {
+        font-size: 0.9rem;
+        color: #6c757d;
+        font-weight: 500;
+        margin-bottom: 1.5rem;
+        text-align: center;
+    }
+    
+    .result-card {
+        background: white;
+        border: 1px solid #e9ecef;
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+    
+    .result-header {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        margin-bottom: 1rem;
+        padding-bottom: 0.75rem;
+        border-bottom: 2px solid #f8f9fa;
+    }
+    
+    .rank-badge {
+        font-size: 1.5rem;
+    }
+    
+    .rank-title {
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: #2c3e50;
+    }
+    
+    .metric-card.enhanced {
+        background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+        border: 1px solid #90caf9;
+        border-radius: 8px;
+        box-shadow: 0 2px 8px rgba(33, 150, 243, 0.15);
+    }
+
+    /* Analysis configuration box */
+    .analysis-config {
+        /* Make the config header inline and remove the boxed panel look */
+        border: none;
+        border-radius: 0;
+        padding: 0 0.2rem 0.4rem 0;
+        margin: 0.15rem 0 0.9rem 0;
+        background: transparent;
+        box-shadow: none;
+        display: flex;
+        align-items: flex-start;
+    }
+
+    .analysis-config-header {
+        font-size: 0.92rem; /* slightly smaller for compactness */
+        font-weight: 700;
+        color: #2c3e50;
+        margin: 0 0 0.35rem 0;
+        padding-right: 0.5rem;
+        display: inline-block;
+    }
+
+    .config-field label { font-size: 0.86rem; color: #374151; font-weight: 600; }
+
+    .config-left {
+        flex: 0 0 300px; /* increased left column width for wider controls */
+        padding-right: 1rem;
+        border-right: 1px solid #f1f5f9;
+        margin-right: 0.5rem;
+    }
+
+    .config-right {
+        flex: 1 1 auto;
+        padding-left: 0.75rem;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end; /* right-align guidance */
+        text-align: right; /* ensure internal HTML aligns right */
+    }
+
+    /* Responsive fallback for narrow viewports: stack vertically */
+    @media (max-width: 700px) {
+        .analysis-config { flex-direction: column; }
+        .config-left { flex: 1 1 auto; border-right: none; padding-right: 0; }
+        .config-right { justify-content: flex-start; text-align: left; padding-left: 0; margin-top: 0.5rem; }
+    }
+
+    /* Match the Ranking Metric label sizing/weight for visual consistency */
+    .config-recs .recs-title, .recs-title {
+        font-size: 0.86rem;
+        font-weight: 600;
+        color: #374151;
+        margin-bottom: 0.25rem;
+    }
+
+    .size-badge { font-size: 0.78rem; padding: 0.2rem 0.5rem; }
+    .size-desc { font-size: 0.86rem; color: #6c757d; }
+
+    
+    .generated-text {
+        padding: 1rem;
+        background: #f8f9fa;
+        border-left: 4px solid #1f77b4;
+        font-family: Georgia, serif;
+        line-height: 1.6;
+        color: #2c3e50;
+        margin: 0.75rem 0;
+        border-radius: 0 8px 8px 0;
+        font-size: 0.95rem;
+    }
+    
+    .scores-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 0.75rem;
+        padding: 1rem;
+        background: #f8f9fa;
+        border-radius: 8px;
+        margin-top: 0.75rem;
+    }
+    
+    .score-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.5rem;
+        background: white;
+        border-radius: 6px;
+        border: 1px solid #e9ecef;
+    }
+    
+    .score-label {
+        font-weight: 600;
+        color: #495057;
+        font-size: 0.85rem;
+    }
+    
+    .score-value {
+        font-weight: 700;
+        color: #1f77b4;
+        font-size: 0.9rem;
+    }
+    
+    /* Removed legacy upload/config wrapper styles (no longer used) */
+    
+    .guidance-content {
+        display: flex;
+        flex-direction: column;
+        gap: 0.6rem; /* slightly increased vertical gap for readability */
+        align-items: flex-end; /* right-align rows inside the guidance block */
+        width: 100%;
+        justify-content: flex-end;
+    }
+
+    .guidance-row {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        padding: 0.2rem 0; /* compact vertical padding */
+        line-height: 1.22; /* slightly increased for readability */
+        justify-content: flex-end; /* push contents to the right within each row */
+    }
+    
+    .size-badge {
+        padding: 0.25rem 0.5rem;
+        border-radius: 4px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        min-width: 70px;
+        text-align: center;
+    }
+    
+    .size-badge.small {
+        background: #e3f2fd;
+        color: #1565c0;
+        border: 1px solid #bbdefb;
+    }
+    
+    .size-badge.medium {
+        background: #fff3e0;
+        color: #ef6c00;
+        border: 1px solid #ffcc02;
+    }
+    
+    .size-badge.large {
+        background: #f3e5f5;
+        color: #7b1fa2;
+        border: 1px solid #ce93d8;
+    }
+    
+    .size-desc {
+        color: #6c757d;
+        font-size: 0.84rem;
+        line-height: 1.18; /* tighter line height */
+        flex: 0 0 auto;
+        max-width: 320px; /* constrain width so right alignment is visible */
+        text-align: right;
     }
     
     .stButton>button {
@@ -240,3 +497,10 @@
         color: #2c3e50;
         margin-bottom: 1rem;
     }
+
+/* Reduce font size for specific section headers */
+.section-header {
+    font-size: 1.1rem !important;
+    font-weight: 600 !important;
+    margin-bottom: 0.8rem !important;
+}

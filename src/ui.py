@@ -255,28 +255,57 @@ def render_text_analysis_page(api_key, model_choice, provider):
 
 def render_pdf_analysis_page(api_key, model_choice, provider):
     """Render the whole PDF analysis page."""
-    st.markdown('<div class="feature-card">', unsafe_allow_html=True)
     st.markdown("### 📄 Whole PDF Analysis")
     st.markdown("Upload a whole PDF document to automatically analyze text chunks for potential copyright infringement.")
-    st.markdown('</div>', unsafe_allow_html=True)
     
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        uploaded_file = st.file_uploader("📎 Choose a PDF file", type="pdf", 
-                                       help="Select a PDF document to analyze")
-    with col2:
-        score_type = st.selectbox("📊 Ranking Metric", 
-                                ["ROUGE-L", "Jaccard Index", "Levenshtein Distance"],
-                                help="Choose how to rank the most similar sections")
-
-    st.markdown("---")
-    col_center = st.columns([1, 2, 1])[1]
-    with col_center:
-        analyze_pdf = st.button("🔍 Analyze PDF", use_container_width=True)
+    # File Upload Section
+    uploaded_file = st.file_uploader("📎 Choose a PDF file", type="pdf", 
+                                   help="Select a PDF document to analyze")
+    
+    # Configuration Section
+    if uploaded_file is not None:
+        st.markdown('<h3 class="section-header">⚙️ Analysis Configuration</h3>', unsafe_allow_html=True)
+        
+        # Controls in a separate section
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            score_type = st.selectbox('Change Ranking Metric', ["ROUGE-L", "Jaccard Index", "Levenshtein Distance"], 
+                                    help='Choose how to rank the most similar sections', 
+                                    key='ranking_metric', index=0)
+            
+        with col2:
+            chunk_size = st.number_input('Change Chunk Size', min_value=50, max_value=1000, value=200, step=25, 
+                                       help='Number of words per text chunk', 
+                                       key='chunk_size')
+        
+        # Recommendations
+        st.markdown('<h3 class="section-header">💡 Size Recommendations</h3>', unsafe_allow_html=True)
+        st.markdown("""
+        <div style="background: #f0f8ff; padding: 1rem; border-radius: 8px; border-left: 4px solid #1f77b4;">
+            <div style="margin-bottom: 0.5rem;"><strong>50-200:</strong> Precise analysis — detects specific phrases</div>
+            <div style="margin-bottom: 0.5rem;"><strong>200-400:</strong> Balanced — general copyright detection</div>
+            <div><strong>400-1000:</strong> Contextual — preserves broader context</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Analysis button - only show when file is uploaded
+    if uploaded_file is not None:
+        st.markdown("---")
+        col_center = st.columns([1, 2, 1])[1]
+        with col_center:
+            analyze_pdf = st.button("🔍 Analyze PDF", use_container_width=True, type="primary")
+        st.markdown("""
+        <div class="analysis-note">
+            <small>⚡ Analysis may take several minutes depending on PDF size and selected model</small>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        analyze_pdf = False
 
     if analyze_pdf:
         if not api_key:
-            st.error(f"⚠️ Please enter your {provider} API key in the sidebar.")
+            st.error(f"⚠️ Please enter your API key in the sidebar.")
         elif uploaded_file is not None:
             with st.spinner(f"🔄 Analyzing PDF with {model_choice}... This may take a while."):
                 try:
@@ -284,7 +313,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                     if "Error" in pdf_text:
                         st.error(f"❌ {pdf_text}")
                     else:
-                        chunk_pairs = split_text_into_chunks(pdf_text, chunk_size=100)
+                        chunk_pairs = split_text_into_chunks(pdf_text, chunk_size=chunk_size)
                         if not chunk_pairs:
                             st.warning("⚠️ Could not split the PDF into enough text chunks for analysis.")
                         else:
@@ -308,16 +337,27 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                 results.sort(key=lambda x: x[3])
 
                             st.markdown("---")
-                            st.markdown(f"### 🏆 Top 5 Most Similar Sections (ranked by {score_type})")
+                            st.markdown('<div class="results-section">', unsafe_allow_html=True)
+                            st.markdown(f"### 🏆 Top 5 Most Similar Sections")
+                            st.markdown(f'<div class="results-subtitle">Ranked by {score_type}</div>', unsafe_allow_html=True)
                             
                             for i, (texts, rouge, jaccard, levenshtein) in enumerate(results[:5]):
                                 upper, lower, generated = texts
                                 
-                                # Rank card
-                                rank_color = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else f"#{i+1}"
-                                st.markdown(f'<div class="rank-header">{rank_color} Rank {i+1}</div>', unsafe_allow_html=True)
+                                # Enhanced rank card with better styling
+                                rank_colors = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+                                rank_color = rank_colors[i] if i < len(rank_colors) else f"#{i+1}"
                                 
-                                # Score display
+                                st.markdown(f"""
+                                <div class="result-card">
+                                    <div class="result-header">
+                                        <span class="rank-badge">{rank_color}</span>
+                                        <span class="rank-title">Rank {i+1}</span>
+                                    </div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                                
+                                # Score display with improved layout
                                 score_value = (rouge if score_type == "ROUGE-L" 
                                              else jaccard if score_type == "Jaccard Index" 
                                              else levenshtein)
@@ -325,34 +365,36 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                 
                                 col1, col2 = st.columns([1, 3])
                                 with col1:
-                                    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                                    st.metric(label=f"{score_type} Score", value=score_display)
+                                    st.markdown('<div class="metric-card enhanced">', unsafe_allow_html=True)
+                                    st.metric(label=f"{score_type}", value=score_display)
                                     st.markdown('</div>', unsafe_allow_html=True)
                                 with col2:
-                                    with st.expander("📋 View Details"):
+                                    with st.expander("📋 View Details", expanded=False):
                                         st.markdown("**Prefix Context**")
-                                        st.text_area("Prefix Context", upper, height=100, disabled=True, label_visibility="collapsed")
+                                        st.text_area("Prefix Context", upper, height=80, disabled=True, label_visibility="collapsed")
                                         st.markdown("**Ground Truth**")
-                                        st.text_area("Ground Truth", lower, height=100, disabled=True, label_visibility="collapsed")
+                                        st.text_area("Ground Truth", lower, height=80, disabled=True, label_visibility="collapsed")
                                         st.markdown("**🤖 Generated Text**")
-                                        st.markdown(f'<div style="padding: 1rem 0; font-family: Georgia, serif; line-height: 1.6; color: #2c3e50; margin-bottom: 1rem;">{generated}</div>', unsafe_allow_html=True)
+                                        st.markdown(f'<div class="generated-text">{generated}</div>', unsafe_allow_html=True)
                                         st.markdown("**📊 All Scores**")
                                         st.markdown(f"""
-                                        <div style="padding: 1rem 0; font-family: Georgia, serif;">
-                                            <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
-                                                <span style="font-weight: 600; color: #2c3e50;">ROUGE-L:</span>
-                                                <span style="font-weight: 700; color: #1f77b4;">{rouge:.4f}</span>
+                                        <div class="scores-grid">
+                                            <div class="score-item">
+                                                <span class="score-label">ROUGE-L:</span>
+                                                <span class="score-value">{rouge:.4f}</span>
                                             </div>
-                                            <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
-                                                <span style="font-weight: 600; color: #2c3e50;">Jaccard Index:</span>
-                                                <span style="font-weight: 700; color: #1f77b4;">{jaccard:.4f}</span>
+                                            <div class="score-item">
+                                                <span class="score-label">Jaccard:</span>
+                                                <span class="score-value">{jaccard:.4f}</span>
                                             </div>
-                                            <div style="display: flex; justify-content: space-between;">
-                                                <span style="font-weight: 600; color: #2c3e50;">Levenshtein Distance:</span>
-                                                <span style="font-weight: 700; color: #1f77b4;">{levenshtein}</span>
+                                            <div class="score-item">
+                                                <span class="score-label">Levenshtein:</span>
+                                                <span class="score-value">{levenshtein}</span>
                                             </div>
                                         </div>
                                         """, unsafe_allow_html=True)
+                            
+                            st.markdown('</div>', unsafe_allow_html=True)
                 except Exception as e:
                     st.error(f"❌ An error occurred during PDF analysis: {e}")
         else:
