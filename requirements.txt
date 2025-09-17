@@ -4,3 +4,5 @@ rouge-score
 openai>=1.0.0
 python-Levenshtein
 matplotlib
+ghostscript
+requests
