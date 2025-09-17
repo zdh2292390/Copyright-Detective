@@ -58,20 +58,20 @@ def render_text_analysis_page(api_key, model_choice, provider):
     prompt_type = st.selectbox(
         "Choose the Prompt Type:",
         [
-            "Sequential Reproduction Probe",
+            "Sequential Continuation Evaluation",
             "Preceding Context Reconstruction",
-            "Copyright Attribution Elicitation"
+            "Copyright Attribution Inference"
         ],
         help="Select the type of prompt to guide the Text Snippet Analysis. (Choose only; typing custom values is not allowed.)"
     )
 
     # Explanatory notes for each prompt type
-    if prompt_type == "Sequential Reproduction Probe":
-        st.markdown("_Sequential Reproduction Probe: Provide the prefix (previous sentence) and ask the model to continue by generating the next sentence. This probes whether the model reproduces or closely follows memorized sequences from source texts._")
+    if prompt_type == "Sequential Continuation Evaluation":
+        st.markdown("_Sequential Continuation Evaluation: Provide the prefix (previous sentence) and ask the model to continue by generating the next sentence. This probes whether the model reproduces or closely follows memorized sequences from source texts._")
     elif prompt_type == "Preceding Context Reconstruction":
         st.markdown("_Preceding Context Reconstruction: Provide the continuation or subsequent sentence and ask the model to generate the most likely preceding sentence. This helps detect whether the model can reconstruct prior context, which may indicate memorization of original works._")
-    elif prompt_type == "Copyright Attribution Elicitation":
-        st.markdown("_Copyright Attribution Elicitation: Based on the provided text snippet, ask the model to infer a likely title or attribution for the work (for example, a classic novel or another copyrighted source). Useful for identifying potential origins of the snippet._")
+    elif prompt_type == "Copyright Attribution Inference":
+        st.markdown("_Copyright Attribution Inference: Based on the provided text snippet, ask the model to infer a likely title or attribution for the work (for example, a classic novel or another copyrighted source). Useful for identifying potential origins of the snippet._")
 
     st.markdown("Analyze text snippets to detect potential copyright infringement by comparing generated text with ground truth.")
     
@@ -109,13 +109,13 @@ def render_text_analysis_page(api_key, model_choice, provider):
             st.warning("⚠️ Please enter both prefix text and ground truth.")
         else:
             # Modify the analysis logic to incorporate the prompt type
-            if prompt_type == "Sequential Reproduction Probe":
+            if prompt_type == "Sequential Continuation Evaluation":
                 # Logic for continuing the next sentence
                 pass
             elif prompt_type == "Preceding Context Reconstruction":
                 # Logic for inferring the previous sentence
                 pass
-            elif prompt_type == "Copyright Attribution Elicitation":
+            elif prompt_type == "Copyright Attribution Inference":
                 # Logic for generating the title of the work
                 pass
 

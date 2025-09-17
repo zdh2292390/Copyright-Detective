@@ -60,13 +60,13 @@ def calculate_jaccard_index(text1, text2):
         return 0.0
     return len(intersection) / len(union)
 
-def compare_texts(input_text, reference_text, api_key, model_name, provider="OpenAI", prompt_type="Sequential Reproduction Probe"):
+def compare_texts(input_text, reference_text, api_key, model_name, provider="OpenAI", prompt_type="Sequential Continuation Evaluation"):
     """
     Generates text based on the input_text according to prompt_type and compares it to reference_text.
     prompt_type choices:
-      - "Sequential Reproduction Probe": continue from the given prefix (input_text)
+      - "Sequential Continuation Evaluation": continue from the given prefix (input_text)
       - "Preceding Context Reconstruction": infer the preceding sentence given a continuation (input_text)
-      - "Copyright Attribution Elicitation": infer a likely title/attribution from the snippet (input_text)
+      - "Copyright Attribution Inference": infer a likely title/attribution from the snippet (input_text)
     """
     # Determine target length for generation
     if reference_text and prompt_type != "Copyright Attribution Elicitation":
@@ -76,7 +76,7 @@ def compare_texts(input_text, reference_text, api_key, model_name, provider="Ope
         target_word_count = 8
 
     # Build prompt according to selected probe
-    if prompt_type == "Sequential Reproduction Probe":
+    if prompt_type == "Sequential Continuation Evaluation":
         # Strong constraint: return only the continuation sentence, no commentary or formatting
         prompt = (
             f"Provide only the continuation (a single sentence) for the last given prefix. Do NOT include any commentary, explanations, labels, or extra formatting. "
@@ -88,7 +88,7 @@ def compare_texts(input_text, reference_text, api_key, model_name, provider="Ope
             f"Provide only the single most likely preceding sentence for the given continuation. Do NOT include any commentary, explanations, or extra formatting. "
             f"Aim for approximately {target_word_count} words.\n\nContinuation:\n{input_text}"
         )
-    else:  # Copyright Attribution Elicitation
+    else:  # Copyright Attribution Inference
         # Strong constraint: return only a short title or attribution string
         prompt = (
             "Provide only a short, likely title or attribution for the following text snippet. Do NOT include commentary, summaries, or extra formatting — return only the inferred title/attribution.\n\nSnippet:\n" + input_text
