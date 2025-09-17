@@ -1,4 +1,4 @@
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
     @import url('https://fonts.googleapis.com/icon?family=Material+Icons');
     
     * {
@@ -156,41 +156,41 @@
     }
     
     .results-section {
-        margin-top: 2rem;
+        margin-top: 1.5rem;
     }
     
     .results-subtitle {
         font-size: 0.9rem;
         color: #6c757d;
         font-weight: 500;
-        margin-bottom: 1.5rem;
+        margin-bottom: 1rem;
         text-align: center;
     }
     
     .result-card {
         background: white;
         border: 1px solid #e9ecef;
-        border-radius: 12px;
-        padding: 1.5rem;
-        margin-bottom: 1.5rem;
+        border-radius: 8px;
+        padding: 1rem;
+        margin-bottom: 1rem;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
     
     .result-header {
         display: flex;
         align-items: center;
-        gap: 0.75rem;
-        margin-bottom: 1rem;
-        padding-bottom: 0.75rem;
+        gap: 0.5rem;
+        margin-bottom: 0.75rem;
+        padding-bottom: 0.5rem;
         border-bottom: 2px solid #f8f9fa;
     }
     
     .rank-badge {
-        font-size: 1.5rem;
+        font-size: 1.2rem;
     }
     
     .rank-title {
-        font-size: 1.1rem;
+        font-size: 1rem;
         font-weight: 600;
         color: #2c3e50;
     }
@@ -503,4 +503,20 @@
     font-size: 1.1rem !important;
     font-weight: 600 !important;
     margin-bottom: 0.8rem !important;
+}
+
+/* Ensure Material Icons ligatures always render correctly */
+.material-icons {
+    font-family: 'Material Icons' !important;
+    font-style: normal !important;
+    font-weight: normal !important;
+    font-size: 1.2rem !important;
+    letter-spacing: normal !important;
+    text-transform: none !important;
+    display: inline-block !important;
+    white-space: nowrap !important;
+    direction: ltr !important;
+    -webkit-font-feature-settings: 'liga';
+    font-feature-settings: 'liga';
+    -webkit-font-smoothing: antialiased;
 }

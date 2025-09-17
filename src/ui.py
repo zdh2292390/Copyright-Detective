@@ -370,29 +370,27 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                     st.markdown('</div>', unsafe_allow_html=True)
                                 with col2:
                                     with st.expander("📋 View Details", expanded=False):
-                                        st.markdown("**Prefix Context**")
-                                        st.text_area("Prefix Context", upper, height=80, disabled=True, label_visibility="collapsed")
-                                        st.markdown("**Ground Truth**")
-                                        st.text_area("Ground Truth", lower, height=80, disabled=True, label_visibility="collapsed")
-                                        st.markdown("**🤖 Generated Text**")
-                                        st.markdown(f'<div class="generated-text">{generated}</div>', unsafe_allow_html=True)
-                                        st.markdown("**📊 All Scores**")
-                                        st.markdown(f"""
-                                        <div class="scores-grid">
-                                            <div class="score-item">
-                                                <span class="score-label">ROUGE-L:</span>
-                                                <span class="score-value">{rouge:.4f}</span>
-                                            </div>
-                                            <div class="score-item">
-                                                <span class="score-label">Jaccard:</span>
-                                                <span class="score-value">{jaccard:.4f}</span>
-                                            </div>
-                                            <div class="score-item">
-                                                <span class="score-label">Levenshtein:</span>
-                                                <span class="score-value">{levenshtein}</span>
-                                            </div>
-                                        </div>
-                                        """, unsafe_allow_html=True)
+                                            st.markdown("**Prefix Context**")
+                                            st.text_area("Prefix Context", upper, height=80, disabled=True, label_visibility="collapsed")
+                                            st.markdown("**Ground Truth**")
+                                            st.text_area("Ground Truth", lower, height=80, disabled=True, label_visibility="collapsed")
+                                            st.markdown("**🤖 Generated Text**")
+                                            st.markdown(f'<div class="generated-text">{generated}</div>', unsafe_allow_html=True)
+                                            st.markdown("**📊 All Scores**")
+                                            st.markdown(f'<div class="scores-grid">'
+                                                        f'<div class="score-item">'
+                                                        f'<span class="score-label">ROUGE-L:</span>'
+                                                        f'<span class="score-value">{rouge:.4f}</span>'
+                                                        f'</div>'
+                                                        f'<div class="score-item">'
+                                                        f'<span class="score-label">Jaccard:</span>'
+                                                        f'<span class="score-value">{jaccard:.4f}</span>'
+                                                        f'</div>'
+                                                        f'<div class="score-item">'
+                                                        f'<span class="score-label">Levenshtein:</span>'
+                                                        f'<span class="score-value">{levenshtein}</span>'
+                                                        f'</div>'
+                                                        f'</div>', unsafe_allow_html=True)
                             
                             st.markdown('</div>', unsafe_allow_html=True)
                 except Exception as e:
