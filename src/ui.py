@@ -4,10 +4,24 @@ from src.copyright_detective.comparison import compare_texts
 from src.copyright_detective.pdf_utils import extract_text_from_pdf, split_text_into_chunks
 import matplotlib.pyplot as plt
 
+
 def render_header():
-    """Render the main header and subtitle."""
+    """Render the main header and subtitle with feature chips."""
     st.markdown('<h1 class="main-header">🔍 Copyright Detective</h1>', unsafe_allow_html=True)
     st.markdown('<p class="subtitle">Advanced AI-powered tool for detecting potential copyright infringement in large language models</p>', unsafe_allow_html=True)
+    # Feature chips row
+    st.markdown(
+        """
+        <div class="chip-row">
+            <span class="chip">AI Models</span>
+            <span class="chip">PDF Analyzer</span>
+            <span class="chip">Similarity Metrics</span>
+            <span class="chip">Prompt Strategies</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 
 def render_sidebar():
     """Render the sidebar with API configuration, model selection, and navigation."""
@@ -32,9 +46,9 @@ def render_sidebar():
             api_key = openai_api_key
         elif provider == "OpenRouter":
             model_choice = st.selectbox(
-                "Choose a model", 
+                "Choose a model",
                 [
-                    "moonshotai/kimi-k2:free", 
+                    "moonshotai/kimi-k2:free",
                     "meta-llama/llama-3.1-405b-instruct:free",
                     "qwen/qwen3-235b-a22b:free",
                     "meta-llama/llama-3.3-70b-instruct:free",
@@ -43,8 +57,8 @@ def render_sidebar():
                     "nvidia/nemotron-nano-9b-v2:free",
                     "microsoft/wizardlm-2-8x22b:free",
                     "google/gemma-7b-it:free",
-                    "meta-llama/llama-3.2-3b-instruct:free"
-                ]
+                    "meta-llama/llama-3.2-3b-instruct:free",
+                ],
             )
             api_key = openrouter_api_key
         elif provider == "Anthropic":
@@ -63,6 +77,7 @@ def render_sidebar():
 
     return api_key, model_choice, provider, page
 
+
 def render_text_analysis_page(api_key, model_choice, provider):
     """Render the text snippet analysis page."""
     st.markdown("### 📝 Text Snippet Analysis")
@@ -73,21 +88,29 @@ def render_text_analysis_page(api_key, model_choice, provider):
         [
             "Sequential Continuation Evaluation",
             "Preceding Context Reconstruction",
-            "Copyright Attribution Inference"
+            "Copyright Attribution Inference",
         ],
-        help="Select the type of prompt to guide the Text Snippet Analysis. (Choose only; typing custom values is not allowed.)"
+        help="Select the type of prompt to guide the Text Snippet Analysis. (Choose only; typing custom values is not allowed.)",
     )
 
     # Explanatory notes for each prompt type
     if prompt_type == "Sequential Continuation Evaluation":
-        st.markdown("_Sequential Continuation Evaluation: Provide the prefix (previous sentence) and ask the model to continue by generating the next sentence. This probes whether the model reproduces or closely follows memorized sequences from source texts._")
+        st.markdown(
+            "_Sequential Continuation Evaluation: Provide the prefix (previous sentence) and ask the model to continue by generating the next sentence. This probes whether the model reproduces or closely follows memorized sequences from source texts._"
+        )
     elif prompt_type == "Preceding Context Reconstruction":
-        st.markdown("_Preceding Context Reconstruction: Provide the continuation or subsequent sentence and ask the model to generate the most likely preceding sentence. This helps detect whether the model can reconstruct prior context, which may indicate memorization of original works._")
+        st.markdown(
+            "_Preceding Context Reconstruction: Provide the continuation or subsequent sentence and ask the model to generate the most likely preceding sentence. This helps detect whether the model can reconstruct prior context, which may indicate memorization of original works._"
+        )
     elif prompt_type == "Copyright Attribution Inference":
-        st.markdown("_Copyright Attribution Inference: Based on the provided text snippet, ask the model to infer a likely title or attribution for the work (for example, a classic novel or another copyrighted source). Useful for identifying potential origins of the snippet._")
+        st.markdown(
+            "_Copyright Attribution Inference: Based on the provided text snippet, ask the model to infer a likely title or attribution for the work (for example, a classic novel or another copyrighted source). Useful for identifying potential origins of the snippet._"
+        )
 
-    st.markdown("Analyze text snippets to detect potential copyright infringement by comparing generated text with ground truth.")
-    
+    st.markdown(
+        "Analyze text snippets to detect potential copyright infringement by comparing generated text with ground truth."
+    )
+
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("**Input Text**")
@@ -95,7 +118,7 @@ def render_text_analysis_page(api_key, model_choice, provider):
             "Input Text",
             height=150,
             placeholder="Enter the input snippet (e.g., a previous sentence, a continuation, or an excerpt). The role of this field depends on the selected prompt type.",
-            label_visibility="collapsed"
+            label_visibility="collapsed",
         )
     with col2:
         st.markdown("**Ground Truth**")
@@ -103,12 +126,19 @@ def render_text_analysis_page(api_key, model_choice, provider):
             "Ground Truth",
             height=150,
             placeholder="Enter the ground truth text or expected target to compare against (e.g., the known reference or target continuation). Leave blank if not applicable.",
-            label_visibility="collapsed"
+            label_visibility="collapsed",
         )
 
     st.markdown("---")
     st.markdown("**Inference Time Scaling**")
-    inference_runs = st.number_input("Number of Inference Runs", min_value=1, max_value=100, value=1, step=1, help="Specify how many times to run the inference for statistical analysis.")
+    inference_runs = st.number_input(
+        "Number of Inference Runs",
+        min_value=1,
+        max_value=100,
+        value=1,
+        step=1,
+        help="Specify how many times to run the inference for statistical analysis.",
+    )
 
     st.markdown("---")
     col_center = st.columns([1, 2, 1])[1]
@@ -134,44 +164,68 @@ def render_text_analysis_page(api_key, model_choice, provider):
 
             if inference_runs == 1:
                 # Single run: Original Analysis Results
-                with st.spinner(f"🔄 Generating text with {model_choice} and calculating scores..."):
-                    result = compare_texts(text1, text2, api_key, model_name=model_choice, provider=provider, prompt_type=prompt_type)
+                with st.spinner(
+                    f"🔄 Generating text with {model_choice} and calculating scores..."
+                ):
+                    result = compare_texts(
+                        text1,
+                        text2,
+                        api_key,
+                        model_name=model_choice,
+                        provider=provider,
+                        prompt_type=prompt_type,
+                    )
                     if isinstance(result, str) and result.startswith("Error"):
                         st.error(f"❌ {result}")
                     else:
                         generated_text, rouge_score, jaccard_index, levenshtein_dist = result
-                        
+
                         # Results section
                         st.markdown("---")
                         st.markdown("### 📊 Analysis Results")
-                        
+
                         # Generated text
                         st.markdown("**🤖 Generated Text**")
-                        st.markdown(f'<div class="generated-text">{generated_text}</div>', unsafe_allow_html=True)
-                        
+                        st.markdown(
+                            f'<div class="generated-text">{generated_text}</div>',
+                            unsafe_allow_html=True,
+                        )
+
                         # Similarity scores in cards
                         st.markdown("**📈 Similarity Scores**")
                         col1, col2, col3 = st.columns(3)
                         with col1:
                             st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                            st.metric(label="ROUGE-L Score", value=f"{rouge_score:.4f}", 
-                                    delta="High" if rouge_score > 0.5 else "Low")
+                            st.metric(
+                                label="ROUGE-L Score",
+                                value=f"{rouge_score:.4f}",
+                                delta="High" if rouge_score > 0.5 else "Low",
+                            )
                             st.markdown('</div>', unsafe_allow_html=True)
                         with col2:
                             st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                            st.metric(label="Jaccard Index", value=f"{jaccard_index:.4f}",
-                                    delta="High" if jaccard_index > 0.5 else "Low")
+                            st.metric(
+                                label="Jaccard Index",
+                                value=f"{jaccard_index:.4f}",
+                                delta="High" if jaccard_index > 0.5 else "Low",
+                            )
                             st.markdown('</div>', unsafe_allow_html=True)
                         with col3:
                             st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                            st.metric(label="Levenshtein Distance", value=f"{levenshtein_dist}")
+                            st.metric(
+                                label="Levenshtein Distance", value=f"{levenshtein_dist}"
+                            )
                             st.markdown('</div>', unsafe_allow_html=True)
 
                         # Conclusion
                         if rouge_score > 0.5 or jaccard_index > 0.5:
-                            st.success("🎯 **High similarity detected!** This may indicate potential copyright concerns.")
+                            st.success(
+                                "🎯 **High similarity detected!** This may indicate potential copyright concerns."
+                            )
                         else:
-                            st.info("✅ **Low to moderate similarity.** The generated text appears sufficiently different.")
+                            st.info(
+                                "✅ **Low to moderate similarity.** The generated text appears sufficiently different."
+                            )
             else:
                 # Multiple runs: Inference Results Over Multiple Runs
                 st.markdown("### 🔄 Inference Results Over Multiple Runs")
@@ -179,18 +233,30 @@ def render_text_analysis_page(api_key, model_choice, provider):
                 generated_texts = []  # Store generated texts for each run
                 progress_bar = st.progress(0, text="Starting inference runs...")
                 for i in range(inference_runs):
-                    progress_bar.progress((i) / inference_runs, text=f"🔄 Generating text for run {i+1}/{inference_runs}...")
-                    result = compare_texts(text1, text2, api_key, model_name=model_choice, provider=provider, prompt_type=prompt_type)
+                    progress_bar.progress(
+                        (i) / inference_runs,
+                        text=f"🔄 Generating text for run {i+1}/{inference_runs}...",
+                    )
+                    result = compare_texts(
+                        text1,
+                        text2,
+                        api_key,
+                        model_name=model_choice,
+                        provider=provider,
+                        prompt_type=prompt_type,
+                    )
                     if isinstance(result, str) and result.startswith("Error"):
                         st.error(f"❌ {result}")
                         break
                     else:
                         generated_text, rouge_score, jaccard_index, levenshtein_dist = result
-                        similarity_scores.append({
-                            "rouge": rouge_score,
-                            "jaccard": jaccard_index,
-                            "levenshtein": levenshtein_dist
-                        })
+                        similarity_scores.append(
+                            {
+                                "rouge": rouge_score,
+                                "jaccard": jaccard_index,
+                                "levenshtein": levenshtein_dist,
+                            }
+                        )
                         generated_texts.append(generated_text)  # Append generated text
                 progress_bar.progress(1.0, text="✅ All runs completed!")
 
@@ -199,7 +265,10 @@ def render_text_analysis_page(api_key, model_choice, provider):
                     st.markdown("### 🤖 Generated Texts for Each Run")
                     for i, text in enumerate(generated_texts):
                         st.markdown(f"**Run {i+1}:**")
-                        st.markdown(f'<div class="generated-text">{text}</div>', unsafe_allow_html=True)
+                        st.markdown(
+                            f'<div class="generated-text">{text}</div>',
+                            unsafe_allow_html=True,
+                        )
 
                     # Calculate statistics
                     rouge_scores = [score["rouge"] for score in similarity_scores]
@@ -210,18 +279,18 @@ def render_text_analysis_page(api_key, model_choice, provider):
                         "rouge": {
                             "max": max(rouge_scores),
                             "min": min(rouge_scores),
-                            "avg": sum(rouge_scores) / len(rouge_scores)
+                            "avg": sum(rouge_scores) / len(rouge_scores),
                         },
                         "jaccard": {
                             "max": max(jaccard_scores),
                             "min": min(jaccard_scores),
-                            "avg": sum(jaccard_scores) / len(jaccard_scores)
+                            "avg": sum(jaccard_scores) / len(jaccard_scores),
                         },
                         "levenshtein": {
                             "max": max(levenshtein_scores),
                             "min": min(levenshtein_scores),
-                            "avg": sum(levenshtein_scores) / len(levenshtein_scores)
-                        }
+                            "avg": sum(levenshtein_scores) / len(levenshtein_scores),
+                        },
                     }
 
                     st.markdown("---")
@@ -254,53 +323,73 @@ def render_text_analysis_page(api_key, model_choice, provider):
 
                     st.pyplot(fig)
 
+
 def render_pdf_analysis_page(api_key, model_choice, provider):
     """Render the whole PDF analysis page."""
     st.markdown("### 📄 Whole PDF Analysis")
-    st.markdown("Upload a whole PDF document to automatically analyze text chunks for potential copyright infringement.")
-    
+    st.markdown(
+        "Upload a whole PDF document to automatically analyze text chunks for potential copyright infringement."
+    )
+
     # File Upload Section
-    uploaded_file = st.file_uploader("📎 Choose a PDF file", type="pdf", 
-                                   help="Select a PDF document to analyze")
-    
+    uploaded_file = st.file_uploader(
+        "📎 Choose a PDF file", type="pdf", help="Select a PDF document to analyze"
+    )
+
     # Configuration Section
     if uploaded_file is not None:
         st.markdown('<h3 class="section-header">⚙️ Analysis Configuration</h3>', unsafe_allow_html=True)
-        
+
         # Controls in a separate section
         col1, col2 = st.columns([1, 1])
-        
+
         with col1:
-            score_type = st.selectbox('Change Ranking Metric', ["ROUGE-L", "Jaccard Index", "Levenshtein Distance"], 
-                                    help='Choose how to rank the most similar sections', 
-                                    key='ranking_metric', index=0)
-            
+            score_type = st.selectbox(
+                'Change Ranking Metric',
+                ["ROUGE-L", "Jaccard Index", "Levenshtein Distance"],
+                help='Choose how to rank the most similar sections',
+                key='ranking_metric',
+                index=0,
+            )
+
         with col2:
-            chunk_size = st.number_input('Change Chunk Size', min_value=50, max_value=1000, value=200, step=25, 
-                                       help='Number of words per text chunk', 
-                                       key='chunk_size')
-        
+            chunk_size = st.number_input(
+                'Change Chunk Size',
+                min_value=50,
+                max_value=1000,
+                value=200,
+                step=25,
+                help='Number of words per text chunk',
+                key='chunk_size',
+            )
+
         # Recommendations
         st.markdown('<h3 class="section-header">💡 Size Recommendations</h3>', unsafe_allow_html=True)
-        st.markdown("""
+        st.markdown(
+            """
         <div class="hint">
             <div style="margin-bottom: 0.5rem;"><strong>50-200:</strong> Precise analysis — detects specific phrases</div>
             <div style="margin-bottom: 0.5rem;"><strong>200-400:</strong> Balanced — general copyright detection</div>
             <div><strong>400-1000:</strong> Contextual — preserves broader context</div>
         </div>
-        """, unsafe_allow_html=True)
-    
+        """,
+            unsafe_allow_html=True,
+        )
+
     # Analysis button - only show when file is uploaded
     if uploaded_file is not None:
         st.markdown("---")
         col_center = st.columns([1, 2, 1])[1]
         with col_center:
             analyze_pdf = st.button("🔍 Analyze PDF", use_container_width=True, type="primary")
-        st.markdown("""
+        st.markdown(
+            """
         <div class="analysis-note">
             ⚡ Analysis may take several minutes depending on PDF size and selected model
         </div>
-        """, unsafe_allow_html=True)
+        """,
+            unsafe_allow_html=True,
+        )
     else:
         analyze_pdf = False
 
@@ -310,7 +399,10 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
         elif uploaded_file is not None:
             with st.spinner(""):
                 spinner_placeholder = st.empty()
-                spinner_placeholder.markdown(f'<div style="font-size: 0.85rem;">🔄 Analyzing PDF with {model_choice}... This may take a while.</div>', unsafe_allow_html=True)
+                spinner_placeholder.markdown(
+                    f'<div style="font-size: 0.85rem;">🔄 Analyzing PDF with {model_choice}... This may take a while.</div>',
+                    unsafe_allow_html=True,
+                )
                 try:
                     pdf_text = extract_text_from_pdf(uploaded_file)
                     if "Error" in pdf_text:
@@ -325,13 +417,15 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                             results = []
                             progress_bar = st.progress(0, text="Processing text chunks...")
                             total_chunks = len(chunk_pairs)
-                            
+
                             for i, (upper, lower) in enumerate(chunk_pairs):
                                 generated_text, rouge_score, jaccard_index, levenshtein_dist = compare_texts(
-                                    upper, lower, api_key, model_name=model_choice, provider=provider, chunk_size=chunk_size)
+                                    upper, lower, api_key, model_name=model_choice, provider=provider, chunk_size=chunk_size
+                                )
                                 results.append(((upper, lower, generated_text), rouge_score, jaccard_index, levenshtein_dist))
-                                progress_bar.progress((i + 1) / total_chunks, 
-                                                    text=f"🔄 Processing chunk {i+1}/{total_chunks}")
+                                progress_bar.progress(
+                                    (i + 1) / total_chunks, text=f"🔄 Processing chunk {i+1}/{total_chunks}"
+                                )
 
                             # Sort results by the selected score type
                             if score_type == "ROUGE-L":
@@ -342,14 +436,17 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                 results.sort(key=lambda x: x[3])
 
                             st.markdown("---")
-                            st.markdown("""
+                            st.markdown(
+                                """
                             <div style="margin: 2rem 0;">
                                 <h3 style="font-size: 1.5rem; font-weight: 700; color: #1e293b; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
                                     🏆 Top 5 Most Similar Sections
                                 </h3>
                                 <p style="color: #64748b; font-size: 0.95rem; margin-bottom: 1.5rem;">Ranked by {score_type}</p>
                             </div>
-                            """.format(score_type=score_type), unsafe_allow_html=True)
+                            """.format(score_type=score_type),
+                                unsafe_allow_html=True,
+                            )
 
                             # Define rank styling
                             rank_styles = [
@@ -357,7 +454,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                 {"bg": "linear-gradient(135deg, #c0c0c0, #a8a8a8)", "color": "#696969", "shadow": "0 4px 15px rgba(192, 192, 192, 0.3)"},
                                 {"bg": "linear-gradient(135deg, #cd7f32, #a0522d)", "color": "#8b4513", "shadow": "0 4px 15px rgba(205, 127, 50, 0.3)"},
                                 {"bg": "linear-gradient(135deg, #e8f4fd, #b3d9ff)", "color": "#1e40af", "shadow": "0 4px 15px rgba(59, 130, 246, 0.2)"},
-                                {"bg": "linear-gradient(135deg, #f0f9ff, #bae6fd)", "color": "#0369a1", "shadow": """ + '0 4px 15px rgba(14, 165, 233, 0.2)' + """}
+                                {"bg": "linear-gradient(135deg, #f0f9ff, #bae6fd)", "color": "#0369a1", "shadow": "0 4px 15px rgba(14, 165, 233, 0.2)"},
                             ]
 
                             # Build all rank cards and render once with global controls
@@ -371,10 +468,18 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                 escaped_lower = lower.replace('\n', '<br>')
 
                                 # Get score value and display
-                                score_value = (rouge if score_type == "ROUGE-L"
-                                             else jaccard if score_type == "Jaccard Index"
-                                             else levenshtein)
-                                score_display = f"{score_value:.4f}" if score_type != "Levenshtein Distance" else f"{score_value}"
+                                score_value = (
+                                    rouge
+                                    if score_type == "ROUGE-L"
+                                    else jaccard
+                                    if score_type == "Jaccard Index"
+                                    else levenshtein
+                                )
+                                score_display = (
+                                    f"{score_value:.4f}"
+                                    if score_type != "Levenshtein Distance"
+                                    else f"{score_value}"
+                                )
 
                                 # Determine score color based on value
                                 if score_type == "Levenshtein Distance":
@@ -694,3 +799,20 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                     spinner_placeholder.empty()
         else:
             st.warning("⚠️ Please upload a PDF file first.")
+
+
+def render_footer():
+    """Render a small, unobtrusive footer."""
+    st.markdown(
+        """
+        <div class="app-footer">
+            <div class="footer-left">© 2025 Copyright Detective</div>
+            <div class="footer-right">
+                <a href="https://github.com/changhu73/Copyright-Detective" target="_blank" rel="noopener">GitHub</a>
+                <span>·</span>
+                <a href="#" onclick="window.scrollTo({top: 0, behavior: 'smooth'}); return false;">Back to top</a>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
