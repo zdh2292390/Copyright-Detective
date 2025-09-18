@@ -74,6 +74,27 @@
     margin-right: auto;
 }
 
+/* App header (title + emoji icon) */
+.app-header { display: flex; flex-direction: column; align-items: center; margin: 0.5rem 0 1rem; }
+.app-header .title {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        font-size: 3rem;
+        font-weight: 900;
+        letter-spacing: -0.02em;
+        line-height: 1.1;
+        text-align: center;
+        background: linear-gradient(90deg, var(--text), var(--primary-800));
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+}
+@media (max-width: 700px) {
+    .app-header .title { font-size: 2.2rem; }
+}
+
 /* Feature chips below title */
 .chip-row { display: flex; gap: 0.5rem; justify-content: center; margin: 0 0 1rem; flex-wrap: wrap; }
 .chip { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.25rem 0.6rem; border-radius: 999px; background: #f8fafc; border: 1px solid var(--border); color: #0f172a; font-weight: 600; font-size: 0.78rem; }
@@ -167,6 +188,9 @@ section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] button { displa
 [role="banner"] button[kind="header"] { display: none !important; }
 section[data-testid="stSidebar"] { min-width: 18rem !important; width: 18rem !important; }
 [data-testid="stAppViewContainer"] > .main { padding-left: 1rem; }
+
+/* Prevent the sticky Streamlit top banner from intercepting mouse wheel events */
+header[data-testid="stHeader"] { pointer-events: none; background: transparent; }
 
 /* Alerts and text */
 .stAlert { border-radius: 12px; border: 1px solid var(--border); box-shadow: 0 2px 8px rgba(2,6,23,0.04); }

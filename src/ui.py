@@ -1,6 +1,13 @@
 import streamlit as st
 from src.copyright_detective.comparison import compare_texts
 from src.copyright_detective.pdf_utils import extract_text_from_pdf, split_text_into_chunks
+from src.copyright_detective.jailbreak_probe import (
+    ProbeConfig,
+    available_strategies,
+    run_probe_batch,
+    list_templates,
+    build_probe_prompt,
+)
 import matplotlib.pyplot as plt
 
 
@@ -71,6 +78,7 @@ def render_sidebar():
             [
                 "Text Snippet Analysis",
                 "Whole PDF Analysis",
+                "Jailbreak Persuasion Probe",
             ],
             label_visibility="collapsed",
         )
@@ -796,6 +804,116 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                     progress_bar.progress(0, text=f"❌ Error during analysis with {model_choice}")
         else:
             st.warning("⚠️ Please upload a PDF file first.")
+
+
+def render_jailbreak_probe_page(api_key, model_choice, provider):
+    """Render the Jailbreak Persuasion Probe page."""
+    st.markdown("### 🧪 Jailbreak Persuasion Probe")
+    st.markdown(
+        "This module evaluates whether prompts can persuade an LLM to produce potentially copyright-violating content. "
+        "Provide a research goal and choose a strategy. Outputs can be redacted for safety.")
+
+    mode = st.radio("Probe Mode", ["Strategy", "Template"], horizontal=True)
+
+    col1, col2 = st.columns(2)
+    if mode == "Strategy":
+        with col1:
+            strategy = st.selectbox("Probe Strategy", options=available_strategies())
+            attempts = st.number_input("Attempts", min_value=1, max_value=50, value=3, step=1)
+            redact = st.checkbox("Redact model outputs in UI", value=True, help="Show only a small prefix of outputs to avoid accidental exposure")
+        with col2:
+            temperature = st.slider("Temperature (if supported)", 0.0, 1.5, 0.7, 0.1)
+            dry_run = st.checkbox("Dry-run (no API calls)", value=False)
+
+        goal = st.text_area(
+            "Research Goal (what are we probing?)",
+            placeholder="e.g., Attempt to get the model to restate a known copyrighted paragraph without attribution.",
+            height=100,
+        )
+        seed = st.text_area(
+            "Optional Seed/Context",
+            placeholder="Provide seed context if needed (kept generic and research-oriented).",
+            height=100,
+        )
+        template_id = None
+        insertion_text = ""
+    else:
+        templates = list_templates()
+        tpl_options = [f"{t['id']} — {t['name']}" for t in templates]
+        selected = st.selectbox("Template", options=tpl_options)
+        selected_id = selected.split(" — ")[0]
+        insertion_text = st.text_area("Insertion Text (to replace [INSERT PROMPT HERE])", height=80)
+        attempts = st.number_input("Attempts", min_value=1, max_value=50, value=1, step=1)
+        redact = st.checkbox("Redact model outputs in UI", value=True)
+        temperature = st.slider("Temperature (if supported)", 0.0, 1.5, 0.7, 0.1)
+        dry_run = st.checkbox("Dry-run (no API calls)", value=False)
+        strategy = available_strategies()[0]
+        goal = "Template-driven probe"
+        seed = ""
+        template_id = selected_id
+
+        # Preview prompt after wrapping with safety disclaimer
+        preview_cfg = ProbeConfig(
+            strategy=strategy,
+            goal_description=goal,
+            seed_context=seed,
+            attempts=1,
+            temperature=temperature,
+            redact_outputs=redact,
+            dry_run=True,
+            template_id=template_id,
+            insertion_text=insertion_text,
+        )
+        st.markdown("**Prompt Preview**")
+        st.code(build_probe_prompt(preview_cfg))
+
+    st.markdown("---")
+    run = st.button("▶ Run Probe", type="primary")
+
+    if run:
+        if not api_key:
+            st.error("⚠️ Please enter your API key in the sidebar.")
+            return
+        if mode == "Strategy" and not goal.strip():
+            st.warning("⚠️ Please describe the research goal.")
+            return
+
+        cfg = ProbeConfig(
+            strategy=strategy,
+            goal_description=goal,
+            seed_context=seed,
+            attempts=attempts,
+            temperature=temperature,
+            redact_outputs=redact,
+            dry_run=dry_run,
+            template_id=template_id,
+            insertion_text=insertion_text,
+        )
+
+        with st.spinner("Running probe attempts..."):
+            results, error = run_probe_batch(cfg, api_key, model_choice, provider)
+            if error:
+                st.error(f"❌ {error}")
+                return
+
+        # Summary
+        risk_scores = [r.get("risk_score", 0) for r in results]
+        avg_risk = sum(risk_scores) / len(risk_scores) if risk_scores else 0
+        st.markdown("### 📊 Summary")
+        st.metric("Average Risk Score", f"{avg_risk:.1f}/100")
+
+        # Detailed results
+        st.markdown("### 🧾 Attempts")
+        for idx, r in enumerate(results, 1):
+            with st.expander(f"Attempt {idx} — Risk {r.get('risk_score', 0)}"):
+                st.markdown("**Prompt**")
+                st.code(r.get("prompt", ""))
+                if r.get("error"):
+                    st.error(r["error"])
+                else:
+                    st.markdown("**Model Response**")
+                    st.write(r.get("response", ""))
+                    st.caption(f"Raw response length: {r.get('raw_response_len', 0)} characters")
 
 
 def render_footer():
