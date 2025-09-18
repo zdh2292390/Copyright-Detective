@@ -399,24 +399,18 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
             st.error(f"⚠️ Please enter your API key in the sidebar.")
         elif uploaded_file is not None:
             with st.spinner(""):
-                spinner_placeholder = st.empty()
-                spinner_placeholder.markdown(
-                    f'<div style="font-size: 0.85rem;">🔄 Analyzing PDF with {model_choice}... This may take a while.</div>',
-                    unsafe_allow_html=True,
-                )
+                # Unified progress/status line
+                progress_bar = st.progress(0, text=f"🔄 Analyzing PDF with {model_choice}... Preparing document...")
                 try:
                     pdf_text = extract_text_from_pdf(uploaded_file)
                     if "Error" in pdf_text:
                         st.error(f"❌ {pdf_text}")
-                        spinner_placeholder.empty()
                     else:
                         chunk_pairs = split_text_into_chunks(pdf_text, chunk_size=chunk_size)
                         if not chunk_pairs:
                             st.warning("⚠️ Could not split the PDF into enough text chunks for analysis.")
-                            spinner_placeholder.empty()
                         else:
                             results = []
-                            progress_bar = st.progress(0, text="Processing text chunks...")
                             total_chunks = len(chunk_pairs)
 
                             for i, (upper, lower) in enumerate(chunk_pairs):
@@ -425,7 +419,8 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                 )
                                 results.append(((upper, lower, generated_text), rouge_score, jaccard_index, levenshtein_dist))
                                 progress_bar.progress(
-                                    (i + 1) / total_chunks, text=f"🔄 Processing chunk {i+1}/{total_chunks}"
+                                    (i + 1) / total_chunks,
+                                    text=f"🔄 Analyzing PDF with {model_choice}... Processing chunk {i+1}/{total_chunks}"
                                 )
 
                             # Sort results by the selected score type
@@ -794,10 +789,10 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                             )
 
                             components.html(combined_html, height=2000, scrolling=True)
-                            spinner_placeholder.empty()
+                            progress_bar.progress(1.0, text=f"✅ Completed analysis with {model_choice}. Processed {total_chunks} chunks.")
                 except Exception as e:
                     st.error(f"❌ An error occurred during PDF analysis: {e}")
-                    spinner_placeholder.empty()
+                    progress_bar.progress(0, text=f"❌ Error during analysis with {model_choice}")
         else:
             st.warning("⚠️ Please upload a PDF file first.")
 
