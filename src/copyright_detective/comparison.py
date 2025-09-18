@@ -83,7 +83,7 @@ def calculate_jaccard_index(text1, text2):
         return 0.0
     return len(intersection) / len(union)
 
-def compare_texts(input_text, reference_text, api_key, model_name, provider="OpenAI", prompt_type="Sequential Continuation Evaluation"):
+def compare_texts(input_text, reference_text, api_key, model_name, provider="OpenAI", prompt_type="Sequential Continuation Evaluation", chunk_size=None):
     """
     Generates text based on the input_text according to prompt_type and compares it to reference_text.
     prompt_type choices:
@@ -92,7 +92,9 @@ def compare_texts(input_text, reference_text, api_key, model_name, provider="Ope
       - "Copyright Attribution Inference": infer a likely title/attribution from the snippet (input_text)
     """
     # Determine target length for generation
-    if reference_text and prompt_type != "Copyright Attribution Elicitation":
+    if chunk_size is not None:
+        target_word_count = chunk_size
+    elif reference_text and prompt_type != "Copyright Attribution Inference":
         target_word_count = max(5, len(reference_text.split()))
     else:
         # Default small size for titles or missing reference

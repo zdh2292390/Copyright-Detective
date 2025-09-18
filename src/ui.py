@@ -328,7 +328,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                             
                             for i, (upper, lower) in enumerate(chunk_pairs):
                                 generated_text, rouge_score, jaccard_index, levenshtein_dist = compare_texts(
-                                    upper, lower, api_key, model_name=model_choice, provider=provider)
+                                    upper, lower, api_key, model_name=model_choice, provider=provider, chunk_size=chunk_size)
                                 results.append(((upper, lower, generated_text), rouge_score, jaccard_index, levenshtein_dist))
                                 progress_bar.progress((i + 1) / total_chunks, 
                                                     text=f"🔄 Processing chunk {i+1}/{total_chunks}")
@@ -363,6 +363,11 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                             for i, (texts, rouge, jaccard, levenshtein) in enumerate(results[:5]):
                                 upper, lower, generated = texts
 
+                                # Escape strings for HTML
+                                escaped_generated = generated.replace('"', '&quot;')
+                                escaped_upper = upper.replace('\n', '<br>')
+                                escaped_lower = lower.replace('\n', '<br>')
+
                                 # Get score value and display
                                 score_value = (rouge if score_type == "ROUGE-L"
                                              else jaccard if score_type == "Jaccard Index"
@@ -383,19 +388,22 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                 .similarity-card-{i} {{
                                     background: white;
                                     border: 1px solid #e2e8f0;
-                                    border-radius: 12px;
+                                    border-radius: 8px;
                                     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
-                                    margin-bottom: 1.5rem;
+                                    margin-bottom: 0.5rem;
                                     overflow: hidden;
-                                    transition: all 0.2s ease;
+                                    transition: all 0.3s ease-in-out;
                                 }}
                                 .similarity-card-{i}:hover {{
                                     box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07), 0 2px 4px rgba(0, 0, 0, 0.06);
                                     transform: translateY(-1px);
                                 }}
+                                .similarity-card-{i}.expanded {{
+                                    margin-bottom: 1.5rem;
+                                }}
                                 .card-header-{i} {{
                                     background: {rank_style["bg"]};
-                                    padding: 1rem 1.25rem;
+                                    padding: 0.75rem 1rem;
                                     display: flex;
                                     align-items: center;
                                     justify-content: space-between;
@@ -404,17 +412,17 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                 .rank-info-{i} {{
                                     display: flex;
                                     align-items: center;
-                                    gap: 0.75rem;
+                                    gap: 0.5rem;
                                 }}
                                 .rank-badge-{i} {{
                                     background: rgba(255, 255, 255, 0.9);
                                     border-radius: 50%;
-                                    width: 40px;
-                                    height: 40px;
+                                    width: 32px;
+                                    height: 32px;
                                     display: flex;
                                     align-items: center;
                                     justify-content: center;
-                                    font-size: 1.25rem;
+                                    font-size: 1rem;
                                     font-weight: 700;
                                     color: {rank_style["color"]};
                                     box-shadow: {rank_style["shadow"]};
@@ -422,95 +430,83 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                 }}
                                 .rank-text-{i} {{
                                     color: white;
-                                    font-size: 1.1rem;
+                                    font-size: 1rem;
                                     font-weight: 600;
                                     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
                                 }}
                                 .score-display-{i} {{
                                     background: rgba(255, 255, 255, 0.95);
-                                    padding: 0.5rem 1rem;
-                                    border-radius: 20px;
+                                    padding: 0.4rem 0.8rem;
+                                    border-radius: 16px;
                                     display: flex;
                                     flex-direction: column;
                                     align-items: center;
-                                    min-width: 100px;
+                                    min-width: 90px;
                                 }}
                                 .score-label-{i} {{
-                                    font-size: 0.75rem;
+                                    font-size: 0.7rem;
                                     font-weight: 500;
                                     color: #64748b;
                                     text-transform: uppercase;
                                     letter-spacing: 0.5px;
-                                    margin-bottom: 0.25rem;
+                                    margin-bottom: 0.15rem;
                                 }}
                                 .score-value-{i} {{
-                                    font-size: 1.1rem;
+                                    font-size: 1rem;
                                     font-weight: 700;
                                     color: {score_color};
                                 }}
                                 .card-content-{i} {{
-                                    padding: 1.25rem;
-                                }}
-                                .text-preview-{i} {{
-                                    background: #f8fafc;
-                                    border: 1px solid #e2e8f0;
-                                    border-radius: 8px;
-                                    padding: 1rem;
-                                    margin-bottom: 1rem;
-                                    font-family: 'Georgia', 'Times New Roman', serif;
-                                    font-size: 0.9rem;
-                                    line-height: 1.6;
-                                    color: #334155;
-                                    max-height: 120px;
-                                    overflow: hidden;
-                                    position: relative;
-                                }}
-                                .text-preview-{i}::after {{
-                                    content: '';
-                                    position: absolute;
-                                    bottom: 0;
-                                    left: 0;
-                                    right: 0;
-                                    height: 40px;
-                                    background: linear-gradient(transparent, #f8fafc);
-                                    pointer-events: none;
+                                    padding: 0.75rem 1rem;
                                 }}
                                 .expand-btn-{i} {{
-                                    background: #f1f5f9;
+                                    background: linear-gradient(135deg, #f8fafc, #f1f5f9);
                                     border: 1px solid #cbd5e1;
-                                    border-radius: 6px;
-                                    padding: 0.5rem 1rem;
+                                    border-radius: 8px;
+                                    padding: 0.6rem 1rem;
                                     font-size: 0.85rem;
-                                    font-weight: 500;
+                                    font-weight: 600;
                                     color: #475569;
                                     cursor: pointer;
-                                    transition: all 0.3s ease;
+                                    transition: all 0.25s ease;
                                     display: flex;
                                     align-items: center;
                                     gap: 0.5rem;
                                     width: 100%;
                                     justify-content: center;
+                                    outline: none;
+                                    user-select: none;
                                 }}
                                 .expand-btn-{i}:hover {{
-                                    background: #e2e8f0;
+                                    background: linear-gradient(135deg, #e2e8f0, #cbd5e1);
                                     border-color: #94a3b8;
                                     transform: translateY(-1px);
-                                    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+                                    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.15);
+                                }}
+                                .expand-btn-{i}:active {{
+                                    transform: translateY(0);
+                                    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
                                 }}
                                 .expand-icon-{i} {{
-                                    transition: transform 0.3s ease;
+                                    transition: transform 0.25s ease;
+                                    font-size: 0.75rem;
+                                }}
+                                .expand-icon-{i}.rotated {{
+                                    transform: rotate(90deg);
                                 }}
                                 .details-panel-{i} {{
-                                    margin-top: 1rem;
-                                    padding-top: 1rem;
-                                    border-top: 1px solid #e2e8f0;
                                     max-height: 0;
                                     overflow: hidden;
-                                    transition: max-height 0.4s ease-in-out, padding-top 0.4s ease-in-out;
+                                    transition: max-height 0.35s ease-in-out, margin-top 0.35s ease-in-out, padding-top 0.35s ease-in-out;
+                                    margin-top: 0;
+                                    padding-top: 0;
                                 }}
                                 .details-panel-{i}.expanded {{
                                     max-height: 800px;
+                                    margin-top: 1rem;
                                     padding-top: 1rem;
+                                    border-top: 1px solid #e2e8f0;
+                                    overflow-y: auto;
                                 }}
                                 .detail-section-{i} {{
                                     margin-bottom: 1.25rem;
@@ -533,8 +529,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                     color: #334155;
                                     white-space: pre-wrap;
                                     word-wrap: break-word;
-                                    max-height: 200px;
-                                    overflow-y: auto;
+                                    min-height: 120px;
                                 }}
                                 .generated-text-{i} {{
                                     background: #eff6ff;
@@ -545,8 +540,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                     font-size: 0.85rem;
                                     line-height: 1.6;
                                     color: #1e40af;
-                                    max-height: 200px;
-                                    overflow-y: auto;
+                                    min-height: 120px;
                                 }}
                                 .scores-grid-{i} {{
                                     display: grid;
@@ -588,7 +582,6 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                         </div>
                                     </div>
                                     <div class="card-content-{i}">
-                                        <div class="text-preview-{i}">{generated[:200]}{"..." if len(generated) > 200 else ""}</div>
                                         <button class="expand-btn-{i}" onclick="toggleDetails{i}()">
                                             <span>📋 View Full Details</span>
                                             <span class="expand-icon-{i}" id="icon-{i}">▶</span>
@@ -596,15 +589,15 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                         <div class="details-panel-{i}" id="details-{i}">
                                             <div class="detail-section-{i}">
                                                 <span class="detail-label-{i}">📝 Prefix Context</span>
-                                                <div class="detail-text-{i}">{upper.replace(chr(10), '<br>')}</div>
+                                                <div class="detail-text-{i}">{escaped_upper}</div>
                                             </div>
                                             <div class="detail-section-{i}">
                                                 <span class="detail-label-{i}">🎯 Ground Truth</span>
-                                                <div class="detail-text-{i}">{lower.replace(chr(10), '<br>')}</div>
+                                                <div class="detail-text-{i}">{escaped_lower}</div>
                                             </div>
                                             <div class="detail-section-{i}">
                                                 <span class="detail-label-{i}">🤖 Generated Text</span>
-                                                <div class="generated-text-{i}">{generated.replace(chr(10), '<br>')}</div>
+                                                <div class="generated-text-{i}">{escaped_generated}</div>
                                             </div>
                                             <div class="detail-section-{i}">
                                                 <span class="detail-label-{i}">📊 All Similarity Scores</span>
@@ -632,15 +625,20 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                     const panel = document.getElementById('details-{i}');
                                     const icon = document.getElementById('icon-{i}');
                                     const btn = document.querySelector('.expand-btn-{i}');
+                                    const card = document.querySelector('.similarity-card-{i}');
 
                                     if (panel.classList.contains('expanded')) {{
                                         panel.classList.remove('expanded');
+                                        card.classList.remove('expanded');
+                                        icon.classList.remove('rotated');
                                         icon.textContent = '▶';
                                         btn.innerHTML = '<span>📋 View Full Details</span><span class="expand-icon-{i}" id="icon-{i}">▶</span>';
                                     }} else {{
                                         panel.classList.add('expanded');
+                                        card.classList.add('expanded');
+                                        icon.classList.add('rotated');
                                         icon.textContent = '▼';
-                                        btn.innerHTML = '<span>📋 Hide Details</span><span class="expand-icon-{i}" id="icon-{i}">▼</span>';
+                                        btn.innerHTML = '<span>📋 Hide Details</span><span class="expand-icon-{i} rotated" id="icon-{i}">▼</span>';
                                     }}
                                 }}
                                 </script>
