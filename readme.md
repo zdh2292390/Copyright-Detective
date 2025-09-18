@@ -49,6 +49,12 @@ Streamlit will start a local server and open the application in a new tab in you
 
 You can now interact with the "Copyright Detective" tool. Make sure you have a valid OpenAI API key to use the model-based features.
 
+## Jailbreak Persuasion Probe
+
+This new page helps you design and evaluate jailbreak/persuasion prompts in a safety-first manner. It analyzes prompts for risky indicators (e.g., location-based extraction or exact-length replication) and provides compliant alternatives and refusal templates. The probe only performs meta-analysis and does not request or display copyrighted text.
+
+The page also includes a small, curated library of well-known jailbreak prompts (for analysis only). You can filter, preview, and load any into the evaluator textbox to see risk detections — again, it never asks the model to output copyrighted content.
+
 ## PDF Analysis Notes
 
 - Chunk size is specified in words. During Whole PDF Analysis, the Generated Text produced for each chunk is enforced to be exactly the same number of words as the selected chunk size. This ensures fair, length-controlled comparisons across chunks.
