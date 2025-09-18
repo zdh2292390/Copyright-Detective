@@ -147,7 +147,7 @@ def render_text_analysis_page(api_key, model_choice, provider):
                         
                         # Generated text
                         st.markdown("**🤖 Generated Text**")
-                        st.markdown(f'<div style="padding: 1rem 0; font-family: Georgia, serif; line-height: 1.6; color: #2c3e50;">{generated_text}</div>', unsafe_allow_html=True)
+                        st.markdown(f'<div class="generated-text">{generated_text}</div>', unsafe_allow_html=True)
                         
                         # Similarity scores in cards
                         st.markdown("**📈 Similarity Scores**")
@@ -199,7 +199,7 @@ def render_text_analysis_page(api_key, model_choice, provider):
                     st.markdown("### 🤖 Generated Texts for Each Run")
                     for i, text in enumerate(generated_texts):
                         st.markdown(f"**Run {i+1}:**")
-                        st.markdown(f'<div style="padding: 1rem 0; font-family: Georgia, serif; line-height: 1.6; color: #2c3e50;">{text}</div>', unsafe_allow_html=True)
+                        st.markdown(f'<div class="generated-text">{text}</div>', unsafe_allow_html=True)
 
                     # Calculate statistics
                     rouge_scores = [score["rouge"] for score in similarity_scores]
@@ -283,7 +283,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
         # Recommendations
         st.markdown('<h3 class="section-header">💡 Size Recommendations</h3>', unsafe_allow_html=True)
         st.markdown("""
-        <div style="background: #f0f8ff; padding: 1rem; border-radius: 8px; border-left: 4px solid #1f77b4;">
+        <div class="hint">
             <div style="margin-bottom: 0.5rem;"><strong>50-200:</strong> Precise analysis — detects specific phrases</div>
             <div style="margin-bottom: 0.5rem;"><strong>200-400:</strong> Balanced — general copyright detection</div>
             <div><strong>400-1000:</strong> Contextual — preserves broader context</div>
@@ -357,9 +357,11 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                 {"bg": "linear-gradient(135deg, #c0c0c0, #a8a8a8)", "color": "#696969", "shadow": "0 4px 15px rgba(192, 192, 192, 0.3)"},
                                 {"bg": "linear-gradient(135deg, #cd7f32, #a0522d)", "color": "#8b4513", "shadow": "0 4px 15px rgba(205, 127, 50, 0.3)"},
                                 {"bg": "linear-gradient(135deg, #e8f4fd, #b3d9ff)", "color": "#1e40af", "shadow": "0 4px 15px rgba(59, 130, 246, 0.2)"},
-                                {"bg": "linear-gradient(135deg, #f0f9ff, #bae6fd)", "color": "#0369a1", "shadow": "0 4px 15px rgba(14, 165, 233, 0.2)"}
+                                {"bg": "linear-gradient(135deg, #f0f9ff, #bae6fd)", "color": "#0369a1", "shadow": """ + '0 4px 15px rgba(14, 165, 233, 0.2)' + """}
                             ]
 
+                            # Build all rank cards and render once with global controls
+                            cards_html = []
                             for i, (texts, rouge, jaccard, levenshtein) in enumerate(results[:5]):
                                 upper, lower, generated = texts
 
@@ -502,11 +504,11 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                     padding-top: 0;
                                 }}
                                 .details-panel-{i}.expanded {{
-                                    max-height: 800px;
+                                    max-height: none;
                                     margin-top: 1rem;
                                     padding-top: 1rem;
                                     border-top: 1px solid #e2e8f0;
-                                    overflow-y: auto;
+                                    overflow: visible;
                                 }}
                                 .detail-section-{i} {{
                                     margin-bottom: 1.25rem;
@@ -570,7 +572,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                 }}
                                 </style>
 
-                                <div class="similarity-card-{i}">
+                                <div class="similarity-card-{i} similarity-card">
                                     <div class="card-header-{i}">
                                         <div class="rank-info-{i}">
                                             <div class="rank-badge-{i}">{i+1}</div>
@@ -582,11 +584,11 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                         </div>
                                     </div>
                                     <div class="card-content-{i}">
-                                        <button class="expand-btn-{i}" onclick="toggleDetails{i}()">
+                                        <button class="expand-btn-{i} expand-btn" onclick="toggleDetails{i}()">
                                             <span>📋 View Full Details</span>
-                                            <span class="expand-icon-{i}" id="icon-{i}">▶</span>
+                                            <span class="expand-icon-{i} expand-icon" id="icon-{i}">▶</span>
                                         </button>
-                                        <div class="details-panel-{i}" id="details-{i}">
+                                        <div class="details-panel-{i} details-panel" id="details-{i}">
                                             <div class="detail-section-{i}">
                                                 <span class="detail-label-{i}">📝 Prefix Context</span>
                                                 <div class="detail-text-{i}">{escaped_upper}</div>
@@ -632,19 +634,57 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                         card.classList.remove('expanded');
                                         icon.classList.remove('rotated');
                                         icon.textContent = '▶';
-                                        btn.innerHTML = '<span>📋 View Full Details</span><span class="expand-icon-{i}" id="icon-{i}">▶</span>';
+                                        btn.innerHTML = '<span>📋 View Full Details</span><span class="expand-icon-{i} expand-icon" id="icon-{i}">▶</span>';
                                     }} else {{
                                         panel.classList.add('expanded');
                                         card.classList.add('expanded');
                                         icon.classList.add('rotated');
                                         icon.textContent = '▼';
-                                        btn.innerHTML = '<span>📋 Hide Details</span><span class="expand-icon-{i} rotated" id="icon-{i}">▼</span>';
+                                        btn.innerHTML = '<span>📋 Hide Details</span><span class="expand-icon-{i} expand-icon rotated" id="icon-{i}">▼</span>';
                                     }}
                                 }}
                                 </script>
                                 """
+                                cards_html.append(card_html)
 
-                                components.html(card_html, height=600)
+                            # Global controls and combined render
+                            cards_joined = ''.join(cards_html)
+                            combined_html = (
+                                "<style>"
+                                ".bulk-controls { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }"
+                                ".bulk-btn { background: linear-gradient(135deg, #f8fafc, #f1f5f9); border: 1px solid #cbd5e1; border-radius: 8px; padding: 0.5rem 0.9rem; font-size: 0.85rem; font-weight: 600; color: #475569; cursor: pointer; transition: all 0.2s ease; }"
+                                ".bulk-btn:hover { background: linear-gradient(135deg, #e2e8f0, #cbd5e1); border-color: #94a3b8; transform: translateY(-1px); }"
+                                "</style>"
+                                '<div class="bulk-controls">'
+                                '<button class="bulk-btn" onclick="expandAll()">展开全部</button>'
+                                '<button class="bulk-btn" onclick="collapseAll()">折叠全部</button>'
+                                "</div>"
+                                + cards_joined +
+                                "<script>"
+                                "function expandAll(){"
+                                "document.querySelectorAll('.details-panel').forEach(p => p.classList.add('expanded'));"
+                                "document.querySelectorAll('.similarity-card').forEach(c => c.classList.add('expanded'));"
+                                "document.querySelectorAll('.expand-btn').forEach(btn => {"
+                                " const label = btn.querySelector('span:first-child');"
+                                " if (label) label.textContent = '📋 Hide Details';"
+                                " const icon = btn.querySelector('.expand-icon');"
+                                " if (icon) { icon.classList.add('rotated'); icon.textContent = '▼'; }"
+                                "});"
+                                "}"
+                                "function collapseAll(){"
+                                "document.querySelectorAll('.details-panel').forEach(p => p.classList.remove('expanded'));"
+                                "document.querySelectorAll('.similarity-card').forEach(c => c.classList.remove('expanded'));"
+                                "document.querySelectorAll('.expand-btn').forEach(btn => {"
+                                " const label = btn.querySelector('span:first-child');"
+                                " if (label) label.textContent = '📋 View Full Details';"
+                                " const icon = btn.querySelector('.expand-icon');"
+                                " if (icon) { icon.classList.remove('rotated'); icon.textContent = '▶'; }"
+                                "});"
+                                "}"
+                                "</script>"
+                            )
+
+                            components.html(combined_html, height=2000, scrolling=True)
                             spinner_placeholder.empty()
                 except Exception as e:
                     st.error(f"❌ An error occurred during PDF analysis: {e}")
