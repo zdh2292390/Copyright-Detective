@@ -310,7 +310,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
         elif uploaded_file is not None:
             with st.spinner(""):
                 spinner_placeholder = st.empty()
-                spinner_placeholder.markdown(f'<div style="font-size: 1rem;">🔄 Analyzing PDF with {model_choice}... This may take a while.</div>', unsafe_allow_html=True)
+                spinner_placeholder.markdown(f'<div style="font-size: 0.85rem;">🔄 Analyzing PDF with {model_choice}... This may take a while.</div>', unsafe_allow_html=True)
                 try:
                     pdf_text = extract_text_from_pdf(uploaded_file)
                     if "Error" in pdf_text:
