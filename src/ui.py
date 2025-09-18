@@ -338,7 +338,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
 
     # Configuration Section
     if uploaded_file is not None:
-        st.markdown('<h3 class="section-header">⚙️ Analysis Configuration</h3>', unsafe_allow_html=True)
+        st.markdown('<h3 class="section-header sm">⚙️ Analysis Configuration</h3>', unsafe_allow_html=True)
 
         # Controls in a separate section
         col1, col2 = st.columns([1, 1])
@@ -354,7 +354,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
 
         with col2:
             chunk_size = st.number_input(
-                'Change Chunk Size',
+                'Change Chunk Size (words)',
                 min_value=50,
                 max_value=1000,
                 value=200,
@@ -364,7 +364,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
             )
 
         # Recommendations
-        st.markdown('<h3 class="section-header">💡 Size Recommendations</h3>', unsafe_allow_html=True)
+        st.markdown('<h3 class="section-header sm">💡 Size Recommendations</h3>', unsafe_allow_html=True)
         st.markdown(
             """
         <div class="hint">
@@ -385,7 +385,8 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
         st.markdown(
             """
         <div class="analysis-note">
-            ⚡ Analysis may take several minutes depending on PDF size and selected model
+            ⚡ Analysis may take several minutes depending on PDF size and selected model.<br/>
+            ✨ Generated Text length will be enforced to exactly match the selected chunk size (in words).
         </div>
         """,
             unsafe_allow_html=True,

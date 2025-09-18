@@ -170,6 +170,8 @@ p { line-height: 1.7; color: #334155; }
 
 /* Section headers and cards */
 .section-header { font-size: 1.05rem; font-weight: 800; color: #0f172a; margin: 0.25rem 0 0.75rem; }
+/* Smaller variant for tighter sections */
+.section-header.sm { font-size: 0.92rem; font-weight: 700; }
 .section-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1rem; box-shadow: 0 2px 8px rgba(2,6,23,0.04); }
 .hint { background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 12px; padding: 1rem; }
 

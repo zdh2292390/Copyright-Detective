@@ -48,3 +48,7 @@ streamlit run app.py
 Streamlit will start a local server and open the application in a new tab in your default web browser.
 
 You can now interact with the "Copyright Detective" tool. Make sure you have a valid OpenAI API key to use the model-based features.
+
+## PDF Analysis Notes
+
+- Chunk size is specified in words. During Whole PDF Analysis, the Generated Text produced for each chunk is enforced to be exactly the same number of words as the selected chunk size. This ensures fair, length-controlled comparisons across chunks.
