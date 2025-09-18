@@ -656,11 +656,12 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                 ".bulk-btn:hover { background: linear-gradient(135deg, #e2e8f0, #cbd5e1); border-color: #94a3b8; transform: translateY(-1px); }"
                                 "</style>"
                                 '<div class="bulk-controls">'
-                                '<button class="bulk-btn" onclick="expandAll()">展开全部</button>'
-                                '<button class="bulk-btn" onclick="collapseAll()">折叠全部</button>'
+                                '<button id="bulk-btn" class="bulk-btn" onclick="toggleAll()">Expand All</button>'
                                 "</div>"
                                 + cards_joined +
                                 "<script>"
+                                "function allExpanded(){ return Array.from(document.querySelectorAll('.details-panel')).length>0 && Array.from(document.querySelectorAll('.details-panel')).every(p => p.classList.contains('expanded')); }"
+                                "function updateBulkButton(){ const bulkBtn = document.getElementById('bulk-btn'); if (!bulkBtn) return; bulkBtn.textContent = allExpanded() ? 'Collapse All' : 'Expand All'; }"
                                 "function expandAll(){"
                                 "document.querySelectorAll('.details-panel').forEach(p => p.classList.add('expanded'));"
                                 "document.querySelectorAll('.similarity-card').forEach(c => c.classList.add('expanded'));"
@@ -669,7 +670,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                 " if (label) label.textContent = '📋 Hide Details';"
                                 " const icon = btn.querySelector('.expand-icon');"
                                 " if (icon) { icon.classList.add('rotated'); icon.textContent = '▼'; }"
-                                "});"
+                                "}); updateBulkButton();"
                                 "}"
                                 "function collapseAll(){"
                                 "document.querySelectorAll('.details-panel').forEach(p => p.classList.remove('expanded'));"
@@ -679,8 +680,10 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                 " if (label) label.textContent = '📋 View Full Details';"
                                 " const icon = btn.querySelector('.expand-icon');"
                                 " if (icon) { icon.classList.remove('rotated'); icon.textContent = '▶'; }"
-                                "});"
+                                "}); updateBulkButton();"
                                 "}"
+                                "function toggleAll(){ if (allExpanded()) { collapseAll(); } else { expandAll(); } }"
+                                "document.addEventListener('DOMContentLoaded', updateBulkButton); updateBulkButton();"
                                 "</script>"
                             )
 
