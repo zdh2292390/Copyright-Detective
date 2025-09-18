@@ -354,11 +354,37 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                 rank_color = rank_colors[i] if i < len(rank_colors) else f"#{i+1}"
                                 
                                 st.markdown(f"""
+                                <style>
+                                .result-card {{
+                                    display: flex;
+                                    align-items: center;
+                                    justify-content: flex-start;
+                                    background: #f8f9fa;
+                                    border: 1px solid #e9ecef;
+                                    border-radius: 8px;
+                                    box-shadow: 0 2px 8px rgba(60,60,60,0.04);
+                                    padding: 0.18rem 0.7rem 0.18rem 0.5rem;
+                                    margin-bottom: 0.5rem;
+                                    font-size: 0.85rem;
+                                    font-weight: 500;
+                                    color: #495057;
+                                    min-width: 120px;
+                                    width: fit-content;
+                                    gap: 0.5rem;
+                                }}
+                                .result-card .rank-badge {{
+                                    font-size: 1.15rem;
+                                    margin-right: 0.3rem;
+                                }}
+                                .result-card .rank-title {{
+                                    font-size: 0.9rem;
+                                    color: #1f77b4;
+                                    font-weight: 600;
+                                }}
+                                </style>
                                 <div class="result-card">
-                                    <div class="result-header">
-                                        <span class="rank-badge">{rank_color}</span>
-                                        <span class="rank-title">Rank {i+1}</span>
-                                    </div>
+                                    <span class="rank-badge">{rank_color}</span>
+                                    <span class="rank-title">Rank {i+1}</span>
                                 </div>
                                 """, unsafe_allow_html=True)
                                 
