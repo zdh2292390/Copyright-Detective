@@ -342,265 +342,311 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                                 results.sort(key=lambda x: x[3])
 
                             st.markdown("---")
-                            st.markdown('<div class="results-section">', unsafe_allow_html=True)
-                            st.markdown('<h3 style="font-size: 1.4rem; font-weight: 600; color: #2c3e50; margin-bottom: 0.5rem;">🏆 Top 5 Most Similar Sections</h3>', unsafe_allow_html=True)
-                            st.markdown(f'<div class="results-subtitle">Ranked by {score_type}</div>', unsafe_allow_html=True)
-                            
+                            st.markdown("""
+                            <div style="margin: 2rem 0;">
+                                <h3 style="font-size: 1.5rem; font-weight: 700; color: #1e293b; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+                                    🏆 Top 5 Most Similar Sections
+                                </h3>
+                                <p style="color: #64748b; font-size: 0.95rem; margin-bottom: 1.5rem;">Ranked by {score_type}</p>
+                            </div>
+                            """.format(score_type=score_type), unsafe_allow_html=True)
+
+                            # Define rank styling
+                            rank_styles = [
+                                {"bg": "linear-gradient(135deg, #ffd700, #ffb347)", "color": "#8b4513", "shadow": "0 4px 15px rgba(255, 215, 0, 0.3)"},
+                                {"bg": "linear-gradient(135deg, #c0c0c0, #a8a8a8)", "color": "#696969", "shadow": "0 4px 15px rgba(192, 192, 192, 0.3)"},
+                                {"bg": "linear-gradient(135deg, #cd7f32, #a0522d)", "color": "#8b4513", "shadow": "0 4px 15px rgba(205, 127, 50, 0.3)"},
+                                {"bg": "linear-gradient(135deg, #e8f4fd, #b3d9ff)", "color": "#1e40af", "shadow": "0 4px 15px rgba(59, 130, 246, 0.2)"},
+                                {"bg": "linear-gradient(135deg, #f0f9ff, #bae6fd)", "color": "#0369a1", "shadow": "0 4px 15px rgba(14, 165, 233, 0.2)"}
+                            ]
+
                             for i, (texts, rouge, jaccard, levenshtein) in enumerate(results[:5]):
                                 upper, lower, generated = texts
-                                
-                                # Enhanced rank card with better styling
-                                rank_colors = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
-                                rank_color = rank_colors[i] if i < len(rank_colors) else f"#{i+1}"
-                                
-                                st.markdown(f"""
-                                <style>
-                                .result-card {{
-                                    display: flex;
-                                    align-items: center;
-                                    justify-content: flex-start;
-                                    background: #f8f9fa;
-                                    border: 1px solid #e9ecef;
-                                    border-radius: 8px;
-                                    box-shadow: 0 2px 8px rgba(60,60,60,0.04);
-                                    padding: 0.18rem 0.7rem 0.18rem 0.5rem;
-                                    margin-bottom: 0.5rem;
-                                    font-size: 0.85rem;
-                                    font-weight: 500;
-                                    color: #495057;
-                                    min-width: 120px;
-                                    width: fit-content;
-                                    gap: 0.5rem;
-                                }}
-                                .result-card .rank-badge {{
-                                    font-size: 1.15rem;
-                                    margin-right: 0.3rem;
-                                }}
-                                .result-card .rank-title {{
-                                    font-size: 0.9rem;
-                                    color: #1f77b4;
-                                    font-weight: 600;
-                                }}
-                                </style>
-                                <div class="result-card">
-                                    <span class="rank-badge">{rank_color}</span>
-                                    <span class="rank-title">Rank {i+1}</span>
-                                </div>
-                                """, unsafe_allow_html=True)
-                                
-                                # Score display with improved layout
-                                score_value = (rouge if score_type == "ROUGE-L" 
-                                             else jaccard if score_type == "Jaccard Index" 
+
+                                # Get score value and display
+                                score_value = (rouge if score_type == "ROUGE-L"
+                                             else jaccard if score_type == "Jaccard Index"
                                              else levenshtein)
                                 score_display = f"{score_value:.4f}" if score_type != "Levenshtein Distance" else f"{score_value}"
-                                
-                                col1, col2 = st.columns([1, 3])
-                                with col1:
-                                    st.metric(label=f"{score_type}", value=score_display)
-                                with col2:
-                                    # Custom expandable section using HTML component
-                                    expandable_id = f"expandable_{i}"
-                                    html_content = f"""
-                                    <style>
-                                    .expandable-section {{
-                                        border: 1px solid #e9ecef;
-                                        border-radius: 8px;
-                                        margin-bottom: 1rem;
-                                        overflow: hidden;
-                                    }}
-                                    .expandable-header {{
-                                        background: #f8f9fa;
-                                        padding: 0.75rem 1rem;
-                                        cursor: pointer;
-                                        display: flex;
-                                        justify-content: space-between;
-                                        align-items: center;
-                                        font-weight: 500;
-                                        color: #495057;
-                                        transition: background-color 0.2s ease;
-                                    }}
-                                    .expandable-header:hover {{
-                                        background: #e9ecef;
-                                    }}
-                                    .expandable-title {{
-                                        font-size: 0.95rem;
-                                    }}
-                                    .toggle-icon {{
-                                        font-size: 0.8rem;
-                                        color: #6c757d;
-                                        transition: transform 0.2s ease;
-                                    }}
-                                    .expandable-content {{
-                                        background: #ffffff;
-                                        border-top: 1px solid #e9ecef;
-                                        max-height: 300px;
-                                        overflow-y: auto;
-                                    }}
-                                    .expandable-inner {{
-                                        padding: 1rem;
-                                    }}
-                                    .detail-section {{
-                                        margin-bottom: 1rem;
-                                    }}
-                                    .detail-section strong {{
-                                        display: block;
-                                        margin-bottom: 0.5rem;
-                                        color: #2c3e50;
-                                        font-weight: 600;
-                                    }}
-                                    .text-content {{
-                                        background: #f8f9fa;
-                                        padding: 0.75rem;
-                                        border-radius: 4px;
-                                        border: 1px solid #e9ecef;
-                                        font-family: 'Georgia', 'Times New Roman', serif;
-                                        font-size: 0.95rem;
-                                        line-height: 1.6;
-                                        color: #2c3e50;
-                                        white-space: pre-wrap;
-                                        word-wrap: break-word;
-                                    }}
-                                    .generated-text {{
-                                        background: #f0f8ff;
-                                        padding: 0.75rem;
-                                        border-radius: 4px;
-                                        border-left: 4px solid #1f77b4;
-                                        font-family: Georgia, serif;
-                                        line-height: 1.6;
-                                        color: #2c3e50;
-                                        white-space: pre-wrap;
-                                        word-wrap: break-word;
-                                    }}
-                                    .scores-grid {{
-                                        display: grid;
-                                        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-                                        gap: 0.5rem;
-                                        margin-top: 0.5rem;
-                                    }}
-                                    .score-item {{
-                                        display: flex;
-                                        justify-content: space-between;
-                                        align-items: center;
-                                        padding: 0.5rem;
-                                        background: #f8f9fa;
-                                        border-radius: 4px;
-                                        border: 1px solid #e9ecef;
-                                    }}
-                                    .score-label {{
-                                        font-weight: 500;
-                                        color: #495057;
-                                        font-size: 0.9rem;
-                                    }}
-                                    .score-value {{
-                                        font-weight: 600;
-                                        color: #1f77b4;
-                                        font-size: 0.9rem;
-                                    }}
-                                    .result-card {{
-                                        display: inline-block;
-                                        background: #f8f9fa;
-                                        border: 1px solid #e9ecef;
-                                        border-radius: 6px;
-                                        padding: 0.15rem 0.3rem;
-                                        margin-bottom: 0.5rem;
-                                        font-size: 0.75rem;
-                                        font-weight: 600;
-                                        color: #495057;
-                                        text-align: center;
-                                        min-width: auto;
-                                        width: fit-content;
-                                    }}
-                                    .result-header {{
-                                        display: flex;
-                                        align-items: center;
-                                        gap: 0.25rem;
-                                    }}
-                                    .rank-badge {{
-                                        font-size: 1rem;
-                                    }}
-                                    .rank-title {{
-                                        font-size: 0.8rem;
-                                        color: #6c757d;
-                                    }}
-                                    .metric-card {{
-                                        padding: 0.5rem 0;
-                                        text-align: center;
-                                        border: none;
-                                        background: transparent;
-                                    }}
-                                    .metric-card .metric-label {{
-                                        font-size: 0.8rem;
-                                        font-weight: 500;
-                                        color: #6c757d;
-                                        text-transform: uppercase;
-                                        letter-spacing: 0.5px;
-                                        margin-bottom: 0.25rem;
-                                    }}
-                                    .metric-card .metric-value {{
-                                        font-size: 0.9rem;
-                                        font-weight: 700;
-                                        color: #1f77b4;
-                                        line-height: 1;
-                                    }}
-                                    </style>
-                                    <div class="expandable-section">
-                                        <div class="expandable-header" onclick="toggleExpand('{expandable_id}')">
-                                            <span class="expandable-title">📋 View Details</span>
-                                            <span class="toggle-icon" id="icon_{expandable_id}">▶</span>
+
+                                # Determine score color based on value
+                                if score_type == "Levenshtein Distance":
+                                    score_color = "#ef4444" if score_value > 50 else "#f59e0b" if score_value > 25 else "#10b981"
+                                else:
+                                    score_color = "#ef4444" if score_value > 0.7 else "#f59e0b" if score_value > 0.4 else "#10b981"
+
+                                rank_style = rank_styles[i] if i < len(rank_styles) else rank_styles[-1]
+
+                                # Create modern card layout
+                                card_html = f"""
+                                <style>
+                                .similarity-card-{i} {{
+                                    background: white;
+                                    border: 1px solid #e2e8f0;
+                                    border-radius: 12px;
+                                    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
+                                    margin-bottom: 1.5rem;
+                                    overflow: hidden;
+                                    transition: all 0.2s ease;
+                                }}
+                                .similarity-card-{i}:hover {{
+                                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07), 0 2px 4px rgba(0, 0, 0, 0.06);
+                                    transform: translateY(-1px);
+                                }}
+                                .card-header-{i} {{
+                                    background: {rank_style["bg"]};
+                                    padding: 1rem 1.25rem;
+                                    display: flex;
+                                    align-items: center;
+                                    justify-content: space-between;
+                                    border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+                                }}
+                                .rank-info-{i} {{
+                                    display: flex;
+                                    align-items: center;
+                                    gap: 0.75rem;
+                                }}
+                                .rank-badge-{i} {{
+                                    background: rgba(255, 255, 255, 0.9);
+                                    border-radius: 50%;
+                                    width: 40px;
+                                    height: 40px;
+                                    display: flex;
+                                    align-items: center;
+                                    justify-content: center;
+                                    font-size: 1.25rem;
+                                    font-weight: 700;
+                                    color: {rank_style["color"]};
+                                    box-shadow: {rank_style["shadow"]};
+                                    border: 2px solid rgba(255, 255, 255, 0.8);
+                                }}
+                                .rank-text-{i} {{
+                                    color: white;
+                                    font-size: 1.1rem;
+                                    font-weight: 600;
+                                    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+                                }}
+                                .score-display-{i} {{
+                                    background: rgba(255, 255, 255, 0.95);
+                                    padding: 0.5rem 1rem;
+                                    border-radius: 20px;
+                                    display: flex;
+                                    flex-direction: column;
+                                    align-items: center;
+                                    min-width: 100px;
+                                }}
+                                .score-label-{i} {{
+                                    font-size: 0.75rem;
+                                    font-weight: 500;
+                                    color: #64748b;
+                                    text-transform: uppercase;
+                                    letter-spacing: 0.5px;
+                                    margin-bottom: 0.25rem;
+                                }}
+                                .score-value-{i} {{
+                                    font-size: 1.1rem;
+                                    font-weight: 700;
+                                    color: {score_color};
+                                }}
+                                .card-content-{i} {{
+                                    padding: 1.25rem;
+                                }}
+                                .text-preview-{i} {{
+                                    background: #f8fafc;
+                                    border: 1px solid #e2e8f0;
+                                    border-radius: 8px;
+                                    padding: 1rem;
+                                    margin-bottom: 1rem;
+                                    font-family: 'Georgia', 'Times New Roman', serif;
+                                    font-size: 0.9rem;
+                                    line-height: 1.6;
+                                    color: #334155;
+                                    max-height: 120px;
+                                    overflow: hidden;
+                                    position: relative;
+                                }}
+                                .text-preview-{i}::after {{
+                                    content: '';
+                                    position: absolute;
+                                    bottom: 0;
+                                    left: 0;
+                                    right: 0;
+                                    height: 40px;
+                                    background: linear-gradient(transparent, #f8fafc);
+                                    pointer-events: none;
+                                }}
+                                .expand-btn-{i} {{
+                                    background: #f1f5f9;
+                                    border: 1px solid #cbd5e1;
+                                    border-radius: 6px;
+                                    padding: 0.5rem 1rem;
+                                    font-size: 0.85rem;
+                                    font-weight: 500;
+                                    color: #475569;
+                                    cursor: pointer;
+                                    transition: all 0.3s ease;
+                                    display: flex;
+                                    align-items: center;
+                                    gap: 0.5rem;
+                                    width: 100%;
+                                    justify-content: center;
+                                }}
+                                .expand-btn-{i}:hover {{
+                                    background: #e2e8f0;
+                                    border-color: #94a3b8;
+                                    transform: translateY(-1px);
+                                    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+                                }}
+                                .expand-icon-{i} {{
+                                    transition: transform 0.3s ease;
+                                }}
+                                .details-panel-{i} {{
+                                    margin-top: 1rem;
+                                    padding-top: 1rem;
+                                    border-top: 1px solid #e2e8f0;
+                                    max-height: 0;
+                                    overflow: hidden;
+                                    transition: max-height 0.4s ease-in-out, padding-top 0.4s ease-in-out;
+                                }}
+                                .details-panel-{i}.expanded {{
+                                    max-height: 800px;
+                                    padding-top: 1rem;
+                                }}
+                                .detail-section-{i} {{
+                                    margin-bottom: 1.25rem;
+                                }}
+                                .detail-label-{i} {{
+                                    font-weight: 600;
+                                    color: #1e293b;
+                                    margin-bottom: 0.5rem;
+                                    display: block;
+                                    font-size: 0.9rem;
+                                }}
+                                .detail-text-{i} {{
+                                    background: #f8fafc;
+                                    border: 1px solid #e2e8f0;
+                                    border-radius: 6px;
+                                    padding: 0.75rem;
+                                    font-family: 'Georgia', 'Times New Roman', serif;
+                                    font-size: 0.85rem;
+                                    line-height: 1.6;
+                                    color: #334155;
+                                    white-space: pre-wrap;
+                                    word-wrap: break-word;
+                                    max-height: 200px;
+                                    overflow-y: auto;
+                                }}
+                                .generated-text-{i} {{
+                                    background: #eff6ff;
+                                    border-left: 4px solid #3b82f6;
+                                    padding: 0.75rem;
+                                    border-radius: 0 6px 6px 0;
+                                    font-family: 'Georgia', 'Times New Roman', serif;
+                                    font-size: 0.85rem;
+                                    line-height: 1.6;
+                                    color: #1e40af;
+                                    max-height: 200px;
+                                    overflow-y: auto;
+                                }}
+                                .scores-grid-{i} {{
+                                    display: grid;
+                                    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+                                    gap: 0.75rem;
+                                    margin-top: 0.5rem;
+                                }}
+                                .score-card-{i} {{
+                                    background: #f8fafc;
+                                    border: 1px solid #e2e8f0;
+                                    border-radius: 6px;
+                                    padding: 0.75rem;
+                                    text-align: center;
+                                }}
+                                .score-name-{i} {{
+                                    font-size: 0.8rem;
+                                    font-weight: 500;
+                                    color: #64748b;
+                                    margin-bottom: 0.25rem;
+                                    text-transform: uppercase;
+                                    letter-spacing: 0.5px;
+                                }}
+                                .score-number-{i} {{
+                                    font-size: 1rem;
+                                    font-weight: 700;
+                                    color: #1e293b;
+                                }}
+                                </style>
+
+                                <div class="similarity-card-{i}">
+                                    <div class="card-header-{i}">
+                                        <div class="rank-info-{i}">
+                                            <div class="rank-badge-{i}">{i+1}</div>
+                                            <div class="rank-text-{i}">Rank {i+1}</div>
                                         </div>
-                                        <div class="expandable-content" id="{expandable_id}" style="display: none;">
-                                            <div class="expandable-inner">
-                                                <div class="detail-section">
-                                                    <strong>Prefix Context</strong>
-                                                    <div class="text-content">{upper.replace(chr(10), '<br>')}</div>
-                                                </div>
-                                                <div class="detail-section">
-                                                    <strong>Ground Truth</strong>
-                                                    <div class="text-content">{lower.replace(chr(10), '<br>')}</div>
-                                                </div>
-                                                <div class="detail-section">
-                                                    <strong>🤖 Generated Text</strong>
-                                                    <div class="generated-text">{generated.replace(chr(10), '<br>')}</div>
-                                                </div>
-                                                <div class="detail-section">
-                                                    <strong>📊 All Scores</strong>
-                                                    <div class="scores-grid">
-                                                        <div class="score-item">
-                                                            <span class="score-label">ROUGE-L:</span>
-                                                            <span class="score-value">{rouge:.4f}</span>
-                                                        </div>
-                                                        <div class="score-item">
-                                                            <span class="score-label">Jaccard:</span>
-                                                            <span class="score-value">{jaccard:.4f}</span>
-                                                        </div>
-                                                        <div class="score-item">
-                                                            <span class="score-label">Levenshtein:</span>
-                                                            <span class="score-value">{levenshtein}</span>
-                                                        </div>
+                                        <div class="score-display-{i}">
+                                            <div class="score-label-{i}">{score_type}</div>
+                                            <div class="score-value-{i}">{score_display}</div>
+                                        </div>
+                                    </div>
+                                    <div class="card-content-{i}">
+                                        <div class="text-preview-{i}">{generated[:200]}{"..." if len(generated) > 200 else ""}</div>
+                                        <button class="expand-btn-{i}" onclick="toggleDetails{i}()">
+                                            <span>📋 View Full Details</span>
+                                            <span class="expand-icon-{i}" id="icon-{i}">▶</span>
+                                        </button>
+                                        <div class="details-panel-{i}" id="details-{i}">
+                                            <div class="detail-section-{i}">
+                                                <span class="detail-label-{i}">📝 Prefix Context</span>
+                                                <div class="detail-text-{i}">{upper.replace(chr(10), '<br>')}</div>
+                                            </div>
+                                            <div class="detail-section-{i}">
+                                                <span class="detail-label-{i}">🎯 Ground Truth</span>
+                                                <div class="detail-text-{i}">{lower.replace(chr(10), '<br>')}</div>
+                                            </div>
+                                            <div class="detail-section-{i}">
+                                                <span class="detail-label-{i}">🤖 Generated Text</span>
+                                                <div class="generated-text-{i}">{generated.replace(chr(10), '<br>')}</div>
+                                            </div>
+                                            <div class="detail-section-{i}">
+                                                <span class="detail-label-{i}">📊 All Similarity Scores</span>
+                                                <div class="scores-grid-{i}">
+                                                    <div class="score-card-{i}">
+                                                        <div class="score-name-{i}">ROUGE-L</div>
+                                                        <div class="score-number-{i}">{rouge:.4f}</div>
+                                                    </div>
+                                                    <div class="score-card-{i}">
+                                                        <div class="score-name-{i}">Jaccard</div>
+                                                        <div class="score-number-{i}">{jaccard:.4f}</div>
+                                                    </div>
+                                                    <div class="score-card-{i}">
+                                                        <div class="score-name-{i}">Levenshtein</div>
+                                                        <div class="score-number-{i}">{levenshtein}</div>
                                                     </div>
                                                 </div>
                                             </div>
                                         </div>
                                     </div>
-                                    <script>
-                                    function toggleExpand(id) {{
-                                        const content = document.getElementById(id);
-                                        const icon = document.getElementById('icon_' + id);
-                                        if (content && icon) {{
-                                            if (content.style.display === 'none' || content.style.display === '') {{
-                                                content.style.display = 'block';
-                                                icon.textContent = '▼';
-                                            }} else {{
-                                                content.style.display = 'none';
-                                                icon.textContent = '▶';
-                                            }}
-                                        }}
+                                </div>
+
+                                <script>
+                                function toggleDetails{i}() {{
+                                    const panel = document.getElementById('details-{i}');
+                                    const icon = document.getElementById('icon-{i}');
+                                    const btn = document.querySelector('.expand-btn-{i}');
+
+                                    if (panel.classList.contains('expanded')) {{
+                                        panel.classList.remove('expanded');
+                                        icon.textContent = '▶';
+                                        btn.innerHTML = '<span>📋 View Full Details</span><span class="expand-icon-{i}" id="icon-{i}">▶</span>';
+                                    }} else {{
+                                        panel.classList.add('expanded');
+                                        icon.textContent = '▼';
+                                        btn.innerHTML = '<span>📋 Hide Details</span><span class="expand-icon-{i}" id="icon-{i}">▼</span>';
                                     }}
-                                    </script>
-                                    """
-                                    components.html(html_content, height=350)
-                            
-                            st.markdown('</div>', unsafe_allow_html=True)
+                                }}
+                                </script>
+                                """
+
+                                components.html(card_html, height=600)
                             spinner_placeholder.empty()
                 except Exception as e:
                     st.error(f"❌ An error occurred during PDF analysis: {e}")
