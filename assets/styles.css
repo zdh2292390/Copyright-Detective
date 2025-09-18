@@ -367,6 +367,27 @@
     background: linear-gradient(180deg, #ffffff, #fbfdff);
     border-right: 1px solid var(--border);
 }
+
+/* Fix the sidebar: hide collapse toggle and keep width stable */
+/* Hide the built-in sidebar collapse/expand button */
+[data-testid="collapsedControl"] { display: none !important; }
+/* On some Streamlit versions the toggle is a button in the header */
+section[data-testid="stSidebar"] button[kind="header"] { display: none !important; }
+/* Additional selectors seen in other Streamlit versions */
+button[title="Hide sidebar"], button[title="Show sidebar"] { display: none !important; }
+button[aria-label="Hide sidebar"], button[aria-label="Show sidebar"] { display: none !important; }
+/* Hide any button whose aria-label/title contains 'sidebar' */
+button[aria-label*="sidebar" i], button[title*="sidebar" i] { display: none !important; }
+/* Hide collapse button inside sidebar header (newer versions) */
+section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] button { display: none !important; }
+/* Sometimes the toggle lives outside the sidebar in the app header */
+[role="banner"] button[aria-label*="sidebar" i], [role="banner"] button[title*="sidebar" i] { display: none !important; }
+/* Fallback: hide any header-kind buttons in the app header */
+[role="banner"] button[kind="header"] { display: none !important; }
+/* Keep sidebar width fixed and prevent content overlap */
+section[data-testid="stSidebar"] { min-width: 18rem !important; width: 18rem !important; }
+/* Ensure main content accounts for fixed sidebar width */
+[data-testid="stAppViewContainer"] > .main { padding-left: 1rem; }
     
 .stAlert { border-radius: 12px; border: 1px solid var(--border); box-shadow: 0 2px 8px rgba(2,6,23,0.04); }
     
