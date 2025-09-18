@@ -110,6 +110,12 @@
     word-wrap: break-word;
 }
 
+/* Smaller variant for dense multi-run results */
+.generated-text.sm { font-size: 0.85rem; line-height: 1.6; padding: 0.75rem; }
+
+/* Smaller section heading helper */
+.multi-run-title { font-size: 1rem !important; font-weight: 700; margin-top: 0.5rem; }
+
 /* Scores grid */
 .scores-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; padding: 1rem; background: #f8fafc; border: 1px solid var(--border); border-radius: 12px; margin-top: 0.75rem; }
 .score-item { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem; background: white; border-radius: 8px; border: 1px solid var(--border); }

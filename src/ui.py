@@ -228,7 +228,7 @@ def render_text_analysis_page(api_key, model_choice, provider):
                             )
             else:
                 # Multiple runs: Inference Results Over Multiple Runs
-                st.markdown("### 🔄 Inference Results Over Multiple Runs")
+                st.markdown('<h3 class="multi-run-title">🔄 Inference Results Over Multiple Runs</h3>', unsafe_allow_html=True)
                 similarity_scores = []
                 generated_texts = []  # Store generated texts for each run
                 progress_bar = st.progress(0, text="Starting inference runs...")
@@ -262,11 +262,11 @@ def render_text_analysis_page(api_key, model_choice, provider):
 
                 if similarity_scores:
                     # Display generated texts for each run
-                    st.markdown("### 🤖 Generated Texts for Each Run")
+                    st.markdown('<h3 class="section-header sm">🤖 Generated Texts for Each Run</h3>', unsafe_allow_html=True)
                     for i, text in enumerate(generated_texts):
                         st.markdown(f"**Run {i+1}:**")
                         st.markdown(
-                            f'<div class="generated-text">{text}</div>',
+                            f'<div class="generated-text sm">{text}</div>',
                             unsafe_allow_html=True,
                         )
 
