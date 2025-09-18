@@ -4,7 +4,6 @@ from src.ui import (
     render_sidebar,
     render_text_analysis_page,
     render_pdf_analysis_page,
-    render_jailbreak_persuasion_page,
     render_footer,
 )
 
@@ -34,8 +33,6 @@ if page == "Text Snippet Analysis":
     render_text_analysis_page(api_key, model_choice, provider)
 elif page == "Whole PDF Analysis":
     render_pdf_analysis_page(api_key, model_choice, provider)
-elif page == "Jailbreak Persuasion Probe":
-    render_jailbreak_persuasion_page(api_key, model_choice, provider)
 
 # Footer
 render_footer()
