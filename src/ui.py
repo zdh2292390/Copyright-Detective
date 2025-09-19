@@ -839,10 +839,69 @@ def render_jailbreak_probe_page(api_key, model_choice, provider):
         insertion_text = ""
     else:
         templates = list_templates()
-        tpl_options = [f"{t['id']} — {t['name']}" for t in templates]
-        selected = st.selectbox("Template", options=tpl_options)
-        selected_id = selected.split(" — ")[0]
-        insertion_text = st.text_area("Insertion Text (to replace [INSERT PROMPT HERE])", height=80)
+        # Flatten all patterns to build groups
+        pattern_to_templates = {}
+        for t in templates:
+            pats = t.get("pattern") or ["(None)"]
+            for p in pats:
+                pattern_to_templates.setdefault(p, []).append(t)
+
+        with st.expander("🔎 Template Filters", expanded=True):
+            colf1, colf2 = st.columns([1, 1])
+            with colf1:
+                selected_group = st.selectbox(
+                    "Primary Group (Pattern)",
+                    options=["All"] + sorted(pattern_to_templates.keys()),
+                    help="Filter by pattern tag group",
+                )
+            with colf2:
+                search_kw = st.text_input(
+                    "Secondary Search (ID / Name / Text)",
+                    help="Enter keyword to perform secondary full-text filter (case-insensitive)",
+                    placeholder="e.g. DAN / roleplay / internet",
+                ).strip()
+
+        # Apply grouping filter
+        filtered = []
+        for t in templates:
+            if selected_group != "All":
+                pats = t.get("pattern") or []
+                if selected_group not in pats:
+                    continue
+            # Apply keyword search
+            if search_kw:
+                blob = f"{t['id']} {t['name']} {t.get('text','')}".lower()
+                if search_kw.lower() not in blob:
+                    continue
+            filtered.append(t)
+
+        if not filtered:
+            st.info("No templates matched current filters. Adjust criteria.")
+            # Provide a safe default to avoid empty selectbox crash
+            filtered = templates
+
+        # Present selection list with compact labeling and group badge
+        def label_for(t):
+            pats = ", ".join(t.get("pattern") or [])
+            return f"{t['id']} — {t['name']}" + (f"  [{pats}]" if pats else "")
+
+        option_labels = [label_for(t) for t in filtered]
+        selected_label = st.selectbox(
+            "Template", options=option_labels, help="Select a template to apply insertion"
+        )
+        # Extract ID (split at first ' — ')
+        selected_id = selected_label.split(" — ")[0]
+
+        with st.expander("📄 模板原文 / Template Raw Text", expanded=False):
+            tpl_obj = next((t for t in filtered if t["id"] == selected_id), None)
+            if tpl_obj:
+                st.code(tpl_obj.get("text", ""))
+
+        insertion_text = st.text_area(
+            "Insertion Text (replace [INSERT PROMPT HERE])",
+            height=80,
+            placeholder="Enter text that will replace the placeholder in the template",
+        )
         attempts = st.number_input("Attempts", min_value=1, max_value=50, value=1, step=1)
         redact = st.checkbox("Redact model outputs in UI", value=True)
         temperature = st.slider("Temperature (if supported)", 0.0, 1.5, 0.7, 0.1)
@@ -852,7 +911,7 @@ def render_jailbreak_probe_page(api_key, model_choice, provider):
         seed = ""
         template_id = selected_id
 
-        # Preview prompt after wrapping with safety disclaimer
+        # Preview composed prompt with safety wrapper
         preview_cfg = ProbeConfig(
             strategy=strategy,
             goal_description=goal,
