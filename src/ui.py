@@ -473,16 +473,109 @@ def render_text_analysis_page(api_key, model_choice, provider):
                     st.markdown("### 📊 Probe Summary")
                     st.metric("Average Risk Score", f"{avg_risk:.1f}/100")
                     st.markdown("### 🧾 Attempts")
+                    # Build custom cards
+                    card_blocks = []
                     for idx, r in enumerate(results, 1):
-                        with st.expander(f"Attempt {idx} — Risk {r.get('risk_score', 0)}"):
-                            st.markdown("**Prompt**")
-                            st.code(r.get("prompt", ""))
-                            if r.get("error"):
-                                st.error(r["error"])
-                            else:
-                                st.markdown("**Model Response**")
-                                st.write(r.get("response", ""))
-                                st.caption(f"Raw response length: {r.get('raw_response_len', 0)} characters")
+                        risk = r.get('risk_score', 0)
+                        error_text = r.get('error')
+                        prompt_text = (r.get('prompt') or '').replace('`', '\\`')
+                        response_text = (r.get('response') or '').replace('`', '\\`')
+                        raw_len = r.get('raw_response_len', 0)
+                        # Redaction already applied upstream if chosen; still show marker
+                        if redact and not error_text:
+                            display_response = (response_text[:120] + ('...' if len(response_text) > 120 else '')) + "\n[REDACTED PREVIEW]"
+                        else:
+                            display_response = response_text
+                        # Escape HTML special chars
+                        import html as _html
+                        disp_prompt_html = _html.escape(prompt_text)
+                        disp_resp_html = _html.escape(display_response)
+                        status_badge = '🟢' if risk < 30 else '🟠' if risk < 60 else '🔴'
+                        card_blocks.append(f"""
+                        <div class='jb-card' id='jb-card-{idx}'>
+                          <div class='jb-card-header' onclick="toggleJBCard({idx})">
+                             <div class='jb-card-left'>
+                                <span class='jb-attempt-label'>Attempt {idx}</span>
+                                <span class='jb-risk-badge' data-risk='{risk}'>{status_badge} Risk {risk}</span>
+                             </div>
+                             <div class='jb-card-actions'>
+                                <button class='jb-btn small' onclick="copyText(event,'jb-prompt-{idx}')">Copy Prompt</button>
+                                <button class='jb-btn small' onclick="copyText(event,'jb-response-{idx}')">Copy Response</button>
+                                <span class='jb-toggle-icon' id='jb-icon-{idx}'>▶</span>
+                             </div>
+                          </div>
+                          <div class='jb-card-body' id='jb-body-{idx}'>
+                             {('<div class="jb-error">❌ ' + _html.escape(error_text) + '</div>') if error_text else f'''
+                             <div class='jb-section'>
+                                <div class='jb-section-label'>Prompt</div>
+                                <pre class='jb-code' id='jb-prompt-{idx}'>{disp_prompt_html}</pre>
+                             </div>
+                             <div class='jb-section'>
+                                <div class='jb-section-label'>Model Response</div>
+                                <pre class='jb-code' id='jb-response-{idx}'>{disp_resp_html}</pre>
+                                <div class='jb-meta'>Length: {raw_len} chars{' • Redacted preview' if (redact and not error_text) else ''}</div>
+                             </div>
+                             '''}
+                          </div>
+                        </div>
+                        """)
+
+                    custom_css = """
+                    <style>
+                    .jb-cards-wrapper { margin-top: 0.5rem; }
+                    .jb-controls { display:flex; gap:0.5rem; margin-bottom:0.75rem; flex-wrap:wrap; }
+                    .jb-btn { background: linear-gradient(135deg,#f8fafc,#eef2f7); border:1px solid #cbd5e1; border-radius:6px; padding:0.4rem 0.8rem; font-size:0.75rem; font-weight:600; color:#334155; cursor:pointer; transition:.2s; }
+                    .jb-btn:hover { background: linear-gradient(135deg,#e2e8f0,#dce3ea); }
+                    .jb-btn.small { padding:0.3rem 0.6rem; }
+                    .jb-card { border:1px solid #e2e8f0; border-radius:8px; margin-bottom:0.6rem; background:#ffffff; box-shadow:0 1px 2px rgba(0,0,0,0.04); overflow:hidden; }
+                    .jb-card-header { display:flex; justify-content:space-between; align-items:center; padding:0.55rem 0.75rem; cursor:pointer; background:linear-gradient(90deg,#f8fafc,#f1f5f9); }
+                    .jb-card-left { display:flex; align-items:center; gap:0.6rem; }
+                    .jb-attempt-label { font-weight:600; color:#1e293b; }
+                    .jb-risk-badge { font-size:0.75rem; font-weight:600; padding:0.2rem 0.5rem; border-radius:12px; background:#f1f5f9; border:1px solid #cbd5e1; }
+                    .jb-card-actions { display:flex; align-items:center; gap:0.4rem; }
+                    .jb-toggle-icon { font-size:0.7rem; transition:transform .25s ease; }
+                    .jb-card-body { display:none; padding:0.75rem 0.9rem 0.9rem; border-top:1px solid #e2e8f0; }
+                    .jb-card-body.open { display:block; }
+                    .jb-section { margin-bottom:0.9rem; }
+                    .jb-section-label { font-size:0.7rem; text-transform:uppercase; letter-spacing:0.5px; font-weight:600; color:#64748b; margin-bottom:0.25rem; }
+                    .jb-code { background:#0f172a; color:#e2e8f0; padding:0.6rem 0.7rem; border-radius:6px; font-size:0.75rem; line-height:1.4; white-space:pre-wrap; word-break:break-word; }
+                    .jb-meta { font-size:0.65rem; color:#64748b; margin-top:0.3rem; }
+                    .jb-error { background:#fef2f2; color:#b91c1c; border:1px solid #fecaca; padding:0.6rem 0.7rem; border-radius:6px; font-size:0.8rem; }
+                    .jb-card-header:hover { background:linear-gradient(90deg,#eef2f7,#e2e8f0); }
+                    .jb-card.open .jb-toggle-icon { transform:rotate(90deg); }
+                    @media (prefers-color-scheme: dark) {
+                        .jb-card { background:#1e293b; border-color:#334155; }
+                        .jb-card-header { background:linear-gradient(90deg,#243044,#1e293b); }
+                        .jb-card-header:hover { background:linear-gradient(90deg,#2d3a4f,#243044); }
+                        .jb-code { background:#1e293b; }
+                        .jb-risk-badge { background:#243044; border-color:#334155; color:#e2e8f0; }
+                    }
+                    </style>
+                    """
+
+                    controls_js = """
+                    <script>
+                    function toggleJBCard(idx){
+                        const card = document.getElementById('jb-card-'+idx);
+                        const body = document.getElementById('jb-body-'+idx);
+                        const icon = document.getElementById('jb-icon-'+idx);
+                        if(!card || !body) return;
+                        const open = body.classList.toggle('open');
+                        if(open){ card.classList.add('open'); icon.textContent='▼'; } else { card.classList.remove('open'); icon.textContent='▶'; }
+                    }
+                    function expandAllJBCards(){ document.querySelectorAll('.jb-card-body').forEach(b=>b.classList.add('open')); document.querySelectorAll('.jb-card').forEach(c=>c.classList.add('open')); document.querySelectorAll('.jb-toggle-icon').forEach(i=>i.textContent='▼'); }
+                    function collapseAllJBCards(){ document.querySelectorAll('.jb-card-body').forEach(b=>b.classList.remove('open')); document.querySelectorAll('.jb-card').forEach(c=>c.classList.remove('open')); document.querySelectorAll('.jb-toggle-icon').forEach(i=>i.textContent='▶'); }
+                    function copyText(ev,id){ ev.stopPropagation(); const el=document.getElementById(id); if(!el) return; const txt=el.innerText; navigator.clipboard.writeText(txt); const btn=ev.currentTarget; const old=btn.textContent; btn.textContent='Copied!'; setTimeout(()=>btn.textContent=old,1200); }
+                    </script>
+                    """
+
+                    wrapper_html = custom_css + "<div class='jb-controls'>" + \
+                        "<button class='jb-btn' onclick='expandAllJBCards()'>Expand All</button>" + \
+                        "<button class='jb-btn' onclick='collapseAllJBCards()'>Collapse All</button>" + \
+                        ("<span style='font-size:0.7rem; color:#64748b;'>Redacted preview enabled</span>" if redact else "") + \
+                        "</div><div class='jb-cards-wrapper'>" + ''.join(card_blocks) + "</div>" + controls_js
+
+                    st.components.v1.html(wrapper_html, height=600+len(results)*80, scrolling=True)
 
 
 def render_pdf_analysis_page(api_key, model_choice, provider):
