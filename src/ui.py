@@ -8,6 +8,7 @@ from src.copyright_detective.jailbreak_probe import (
     list_templates,
     build_probe_prompt,
 )
+from src.config import DEFAULT_OPENROUTER_KEY
 import matplotlib.pyplot as plt
 
 
@@ -31,7 +32,12 @@ def render_sidebar():
         st.markdown("### 🔑 API Configuration")
         st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
         openai_api_key = st.text_input("OpenAI API Key", type="password", help="Enter your OpenAI API key")
-        openrouter_api_key = st.text_input("OpenRouter API Key", type="password", help="Enter your OpenRouter API key")
+        openrouter_api_key = st.text_input(
+            "OpenRouter API Key",
+            type="password",
+            help="Leave blank to use the built-in default key (for quick testing)",
+            placeholder="Will fallback automatically if empty"
+        )
         anthropic_api_key = st.text_input("Anthropic API Key", type="password", help="Enter your Anthropic API key")
         google_api_key = st.text_input("Google Gemini API Key", type="password", help="Enter your Google Gemini API key")
         st.markdown('</div>', unsafe_allow_html=True)
@@ -61,7 +67,7 @@ def render_sidebar():
                     "meta-llama/llama-3.2-3b-instruct:free",
                 ],
             )
-            api_key = openrouter_api_key
+            api_key = openrouter_api_key.strip() if openrouter_api_key.strip() else DEFAULT_OPENROUTER_KEY
         elif provider == "Anthropic":
             model_choice = st.selectbox("Choose a model", ["claude-3-haiku-20240307", "claude-3-sonnet-20240229", "claude-3-opus-20240229"])
             api_key = anthropic_api_key
@@ -70,15 +76,14 @@ def render_sidebar():
             api_key = google_api_key
         st.markdown('</div>', unsafe_allow_html=True)
 
-        # Page Navigation
-        st.markdown("### 🧭 Navigation")
+        # Detection Mode
+        st.markdown("### 🧭 Detection Mode")
         st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
         page = st.radio(
             "Go to",
             [
                 "Text Snippet Analysis",
                 "Whole PDF Analysis",
-                "Jailbreak Persuasion Probe",
             ],
             label_visibility="collapsed",
         )
@@ -200,31 +205,11 @@ def render_text_analysis_page(api_key, model_choice, provider):
                             unsafe_allow_html=True,
                         )
 
-                        # Similarity scores in cards
+                        # Similarity scores summary (boxes removed per request)
                         st.markdown("**📈 Similarity Scores**")
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                            st.metric(
-                                label="ROUGE-L Score",
-                                value=f"{rouge_score:.4f}",
-                                delta="High" if rouge_score > 0.5 else "Low",
-                            )
-                            st.markdown('</div>', unsafe_allow_html=True)
-                        with col2:
-                            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                            st.metric(
-                                label="Jaccard Index",
-                                value=f"{jaccard_index:.4f}",
-                                delta="High" if jaccard_index > 0.5 else "Low",
-                            )
-                            st.markdown('</div>', unsafe_allow_html=True)
-                        with col3:
-                            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                            st.metric(
-                                label="Levenshtein Distance", value=f"{levenshtein_dist}"
-                            )
-                            st.markdown('</div>', unsafe_allow_html=True)
+                        st.markdown(
+                            f"ROUGE-L: **{rouge_score:.4f}** | Jaccard: **{jaccard_index:.4f}** | Levenshtein: **{levenshtein_dist}**"
+                        )
 
                         # Conclusion
                         if rouge_score > 0.5 or jaccard_index > 0.5:
@@ -332,514 +317,49 @@ def render_text_analysis_page(api_key, model_choice, provider):
 
                     st.pyplot(fig)
 
-
-def render_pdf_analysis_page(api_key, model_choice, provider):
-    """Render the whole PDF analysis page."""
-    st.markdown("### 📄 Whole PDF Analysis")
+    # ------------------------------------------------------------------
+    # Inline Jailbreak Persuasion Probe Section (migrated from standalone)
+    # ------------------------------------------------------------------
+    st.markdown("---")
+    st.markdown("### 🧪 Jailbreak Persuasion Probe (Inline)")
     st.markdown(
-        "Upload a whole PDF document to automatically analyze text chunks for potential copyright infringement."
+        "This section evaluates whether crafted prompts can persuade the selected model to produce potentially copyright-violating content. "
+        "Provide a research goal or apply a pre-defined template. For safety, you can redact model outputs (only a short prefix shown)."
     )
 
-    # File Upload Section
-    uploaded_file = st.file_uploader(
-        "📎 Choose a PDF file", type="pdf", help="Select a PDF document to analyze"
-    )
-
-    # Configuration Section
-    if uploaded_file is not None:
-        st.markdown('<h3 class="section-header sm">⚙️ Analysis Configuration</h3>', unsafe_allow_html=True)
-
-        # Controls in a separate section
-        col1, col2 = st.columns([1, 1])
-
-        with col1:
-            score_type = st.selectbox(
-                'Change Ranking Metric',
-                ["ROUGE-L", "Jaccard Index", "Levenshtein Distance"],
-                help='Choose how to rank the most similar sections',
-                key='ranking_metric',
-                index=0,
-            )
-
-        with col2:
-            chunk_size = st.number_input(
-                'Change Chunk Size (words)',
-                min_value=50,
-                max_value=1000,
-                value=200,
-                step=25,
-                help='Number of words per text chunk',
-                key='chunk_size',
-            )
-
-        # Recommendations
-        st.markdown('<h3 class="section-header sm">💡 Size Recommendations</h3>', unsafe_allow_html=True)
-        st.markdown(
-            """
-        <div class="hint">
-            <div style="margin-bottom: 0.5rem;"><strong>50-200:</strong> Precise analysis — detects specific phrases</div>
-            <div style="margin-bottom: 0.5rem;"><strong>200-400:</strong> Balanced — general copyright detection</div>
-            <div><strong>400-1000:</strong> Contextual — preserves broader context</div>
-        </div>
-        """,
-            unsafe_allow_html=True,
-        )
-
-    # Analysis button - only show when file is uploaded
-    if uploaded_file is not None:
-        st.markdown("---")
-        col_center = st.columns([1, 2, 1])[1]
-        with col_center:
-            analyze_pdf = st.button("🔍 Analyze PDF", use_container_width=True, type="primary")
-        st.markdown(
-            """
-        <div class="analysis-note">
-            ⚡ Analysis may take several minutes depending on PDF size and selected model.<br/>
-            ✨ Generated Text length will be enforced to exactly match the selected chunk size (in words).
-        </div>
-        """,
-            unsafe_allow_html=True,
-        )
-    else:
-        analyze_pdf = False
-
-    if analyze_pdf:
-        if not api_key:
-            st.error(f"⚠️ Please enter your API key in the sidebar.")
-        elif uploaded_file is not None:
-            with st.spinner(""):
-                # Unified progress/status line
-                progress_bar = st.progress(0, text=f"🔄 Analyzing PDF with {model_choice}... Preparing document...")
-                try:
-                    pdf_text = extract_text_from_pdf(uploaded_file)
-                    if "Error" in pdf_text:
-                        st.error(f"❌ {pdf_text}")
-                    else:
-                        chunk_pairs = split_text_into_chunks(pdf_text, chunk_size=chunk_size)
-                        if not chunk_pairs:
-                            st.warning("⚠️ Could not split the PDF into enough text chunks for analysis.")
-                        else:
-                            results = []
-                            total_chunks = len(chunk_pairs)
-
-                            for i, (upper, lower) in enumerate(chunk_pairs):
-                                generated_text, rouge_score, jaccard_index, levenshtein_dist = compare_texts(
-                                    upper, lower, api_key, model_name=model_choice, provider=provider, chunk_size=chunk_size
-                                )
-                                results.append(((upper, lower, generated_text), rouge_score, jaccard_index, levenshtein_dist))
-                                progress_bar.progress(
-                                    (i + 1) / total_chunks,
-                                    text=f"🔄 Analyzing PDF with {model_choice}... Processing chunk {i+1}/{total_chunks}"
-                                )
-
-                            # Sort results by the selected score type
-                            if score_type == "ROUGE-L":
-                                results.sort(key=lambda x: x[1], reverse=True)
-                            elif score_type == "Jaccard Index":
-                                results.sort(key=lambda x: x[2], reverse=True)
-                            else:  # Levenshtein Distance
-                                results.sort(key=lambda x: x[3])
-
-                            st.markdown("---")
-                            st.markdown(
-                                """
-                            <div style="margin: 2rem 0;">
-                                <h3 style="font-size: 1.5rem; font-weight: 700; color: #1e293b; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
-                                    🏆 Top 5 Most Similar Sections
-                                </h3>
-                                <p style="color: #64748b; font-size: 0.95rem; margin-bottom: 1.5rem;">Ranked by {score_type}</p>
-                            </div>
-                            """.format(score_type=score_type),
-                                unsafe_allow_html=True,
-                            )
-
-                            # Define rank styling
-                            rank_styles = [
-                                {"bg": "linear-gradient(135deg, #ffd700, #ffb347)", "color": "#8b4513", "shadow": "0 4px 15px rgba(255, 215, 0, 0.3)"},
-                                {"bg": "linear-gradient(135deg, #c0c0c0, #a8a8a8)", "color": "#696969", "shadow": "0 4px 15px rgba(192, 192, 192, 0.3)"},
-                                {"bg": "linear-gradient(135deg, #cd7f32, #a0522d)", "color": "#8b4513", "shadow": "0 4px 15px rgba(205, 127, 50, 0.3)"},
-                                {"bg": "linear-gradient(135deg, #e8f4fd, #b3d9ff)", "color": "#1e40af", "shadow": "0 4px 15px rgba(59, 130, 246, 0.2)"},
-                                {"bg": "linear-gradient(135deg, #f0f9ff, #bae6fd)", "color": "#0369a1", "shadow": "0 4px 15px rgba(14, 165, 233, 0.2)"},
-                            ]
-
-                            # Build all rank cards and render once with global controls
-                            cards_html = []
-                            for i, (texts, rouge, jaccard, levenshtein) in enumerate(results[:5]):
-                                upper, lower, generated = texts
-
-                                # Escape strings for HTML
-                                escaped_generated = generated.replace('"', '&quot;')
-                                escaped_upper = upper.replace('\n', '<br>')
-                                escaped_lower = lower.replace('\n', '<br>')
-
-                                # Get score value and display
-                                score_value = (
-                                    rouge
-                                    if score_type == "ROUGE-L"
-                                    else jaccard
-                                    if score_type == "Jaccard Index"
-                                    else levenshtein
-                                )
-                                score_display = (
-                                    f"{score_value:.4f}"
-                                    if score_type != "Levenshtein Distance"
-                                    else f"{score_value}"
-                                )
-
-                                # Determine score color based on value
-                                if score_type == "Levenshtein Distance":
-                                    score_color = "#ef4444" if score_value > 50 else "#f59e0b" if score_value > 25 else "#10b981"
-                                else:
-                                    score_color = "#ef4444" if score_value > 0.7 else "#f59e0b" if score_value > 0.4 else "#10b981"
-
-                                rank_style = rank_styles[i] if i < len(rank_styles) else rank_styles[-1]
-
-                                # Create modern card layout
-                                card_html = f"""
-                                <style>
-                                .similarity-card-{i} {{
-                                    background: white;
-                                    border: 1px solid #e2e8f0;
-                                    border-radius: 8px;
-                                    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
-                                    margin-bottom: 0.5rem;
-                                    overflow: hidden;
-                                    transition: all 0.3s ease-in-out;
-                                }}
-                                .similarity-card-{i}:hover {{
-                                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07), 0 2px 4px rgba(0, 0, 0, 0.06);
-                                    transform: translateY(-1px);
-                                }}
-                                .similarity-card-{i}.expanded {{
-                                    margin-bottom: 1.5rem;
-                                }}
-                                .card-header-{i} {{
-                                    background: {rank_style["bg"]};
-                                    padding: 0.75rem 1rem;
-                                    display: flex;
-                                    align-items: center;
-                                    justify-content: space-between;
-                                    border-bottom: 1px solid rgba(255, 255, 255, 0.2);
-                                }}
-                                .rank-info-{i} {{
-                                    display: flex;
-                                    align-items: center;
-                                    gap: 0.5rem;
-                                }}
-                                .rank-badge-{i} {{
-                                    background: rgba(255, 255, 255, 0.9);
-                                    border-radius: 50%;
-                                    width: 32px;
-                                    height: 32px;
-                                    display: flex;
-                                    align-items: center;
-                                    justify-content: center;
-                                    font-size: 1rem;
-                                    font-weight: 700;
-                                    color: {rank_style["color"]};
-                                    box-shadow: {rank_style["shadow"]};
-                                    border: 2px solid rgba(255, 255, 255, 0.8);
-                                }}
-                                .rank-text-{i} {{
-                                    color: white;
-                                    font-size: 1rem;
-                                    font-weight: 600;
-                                    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
-                                }}
-                                .score-display-{i} {{
-                                    background: rgba(255, 255, 255, 0.95);
-                                    padding: 0.4rem 0.8rem;
-                                    border-radius: 16px;
-                                    display: flex;
-                                    flex-direction: column;
-                                    align-items: center;
-                                    min-width: 90px;
-                                }}
-                                .score-label-{i} {{
-                                    font-size: 0.7rem;
-                                    font-weight: 500;
-                                    color: #64748b;
-                                    text-transform: uppercase;
-                                    letter-spacing: 0.5px;
-                                    margin-bottom: 0.15rem;
-                                }}
-                                .score-value-{i} {{
-                                    font-size: 1rem;
-                                    font-weight: 700;
-                                    color: {score_color};
-                                }}
-                                .card-content-{i} {{
-                                    padding: 0.75rem 1rem;
-                                }}
-                                .expand-btn-{i} {{
-                                    background: linear-gradient(135deg, #f8fafc, #f1f5f9);
-                                    border: 1px solid #cbd5e1;
-                                    border-radius: 8px;
-                                    padding: 0.6rem 1rem;
-                                    font-size: 0.85rem;
-                                    font-weight: 600;
-                                    color: #475569;
-                                    cursor: pointer;
-                                    transition: all 0.25s ease;
-                                    display: flex;
-                                    align-items: center;
-                                    gap: 0.5rem;
-                                    width: 100%;
-                                    justify-content: center;
-                                    outline: none;
-                                    user-select: none;
-                                }}
-                                .expand-btn-{i}:hover {{
-                                    background: linear-gradient(135deg, #e2e8f0, #cbd5e1);
-                                    border-color: #94a3b8;
-                                    transform: translateY(-1px);
-                                    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.15);
-                                }}
-                                .expand-btn-{i}:active {{
-                                    transform: translateY(0);
-                                    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-                                }}
-                                .expand-icon-{i} {{
-                                    transition: transform 0.25s ease;
-                                    font-size: 0.75rem;
-                                }}
-                                .expand-icon-{i}.rotated {{
-                                    transform: rotate(90deg);
-                                }}
-                                .details-panel-{i} {{
-                                    max-height: 0;
-                                    overflow: hidden;
-                                    transition: max-height 0.35s ease-in-out, margin-top 0.35s ease-in-out, padding-top 0.35s ease-in-out;
-                                    margin-top: 0;
-                                    padding-top: 0;
-                                }}
-                                .details-panel-{i}.expanded {{
-                                    max-height: none;
-                                    margin-top: 1rem;
-                                    padding-top: 1rem;
-                                    border-top: 1px solid #e2e8f0;
-                                    overflow: visible;
-                                }}
-                                .detail-section-{i} {{
-                                    margin-bottom: 1.25rem;
-                                }}
-                                .detail-label-{i} {{
-                                    font-weight: 600;
-                                    color: #1e293b;
-                                    margin-bottom: 0.5rem;
-                                    display: block;
-                                    font-size: 0.9rem;
-                                }}
-                                .detail-text-{i} {{
-                                    background: #f8fafc;
-                                    border: 1px solid #e2e8f0;
-                                    border-radius: 6px;
-                                    padding: 0.75rem;
-                                    font-family: 'Georgia', 'Times New Roman', serif;
-                                    font-size: 0.85rem;
-                                    line-height: 1.6;
-                                    color: #334155;
-                                    white-space: pre-wrap;
-                                    word-wrap: break-word;
-                                    min-height: 120px;
-                                }}
-                                .generated-text-{i} {{
-                                    background: #eff6ff;
-                                    border-left: 4px solid #3b82f6;
-                                    padding: 0.75rem;
-                                    border-radius: 0 6px 6px 0;
-                                    font-family: 'Georgia', 'Times New Roman', serif;
-                                    font-size: 0.85rem;
-                                    line-height: 1.6;
-                                    color: #1e40af;
-                                    min-height: 120px;
-                                }}
-                                .scores-grid-{i} {{
-                                    display: grid;
-                                    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-                                    gap: 0.75rem;
-                                    margin-top: 0.5rem;
-                                }}
-                                .score-card-{i} {{
-                                    background: #f8fafc;
-                                    border: 1px solid #e2e8f0;
-                                    border-radius: 6px;
-                                    padding: 0.75rem;
-                                    text-align: center;
-                                }}
-                                .score-name-{i} {{
-                                    font-size: 0.8rem;
-                                    font-weight: 500;
-                                    color: #64748b;
-                                    margin-bottom: 0.25rem;
-                                    text-transform: uppercase;
-                                    letter-spacing: 0.5px;
-                                }}
-                                .score-number-{i} {{
-                                    font-size: 1rem;
-                                    font-weight: 700;
-                                    color: #1e293b;
-                                }}
-                                </style>
-
-                                <div class="similarity-card-{i} similarity-card">
-                                    <div class="card-header-{i}">
-                                        <div class="rank-info-{i}">
-                                            <div class="rank-badge-{i}">{i+1}</div>
-                                            <div class="rank-text-{i}">Rank {i+1}</div>
-                                        </div>
-                                        <div class="score-display-{i}">
-                                            <div class="score-label-{i}">{score_type}</div>
-                                            <div class="score-value-{i}">{score_display}</div>
-                                        </div>
-                                    </div>
-                                    <div class="card-content-{i}">
-                                        <button class="expand-btn-{i} expand-btn" onclick="toggleDetails{i}()">
-                                            <span>📋 View Full Details</span>
-                                            <span class="expand-icon-{i} expand-icon" id="icon-{i}">▶</span>
-                                        </button>
-                                        <div class="details-panel-{i} details-panel" id="details-{i}">
-                                            <div class="detail-section-{i}">
-                                                <span class="detail-label-{i}">📝 Prefix Context</span>
-                                                <div class="detail-text-{i}">{escaped_upper}</div>
-                                            </div>
-                                            <div class="detail-section-{i}">
-                                                <span class="detail-label-{i}">🎯 Ground Truth</span>
-                                                <div class="detail-text-{i}">{escaped_lower}</div>
-                                            </div>
-                                            <div class="detail-section-{i}">
-                                                <span class="detail-label-{i}">🤖 Generated Text</span>
-                                                <div class="generated-text-{i}">{escaped_generated}</div>
-                                            </div>
-                                            <div class="detail-section-{i}">
-                                                <span class="detail-label-{i}">📊 All Similarity Scores</span>
-                                                <div class="scores-grid-{i}">
-                                                    <div class="score-card-{i}">
-                                                        <div class="score-name-{i}">ROUGE-L</div>
-                                                        <div class="score-number-{i}">{rouge:.4f}</div>
-                                                    </div>
-                                                    <div class="score-card-{i}">
-                                                        <div class="score-name-{i}">Jaccard</div>
-                                                        <div class="score-number-{i}">{jaccard:.4f}</div>
-                                                    </div>
-                                                    <div class="score-card-{i}">
-                                                        <div class="score-name-{i}">Levenshtein</div>
-                                                        <div class="score-number-{i}">{levenshtein}</div>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <script>
-                                function toggleDetails{i}() {{
-                                    const panel = document.getElementById('details-{i}');
-                                    const icon = document.getElementById('icon-{i}');
-                                    const btn = document.querySelector('.expand-btn-{i}');
-                                    const card = document.querySelector('.similarity-card-{i}');
-
-                                    if (panel.classList.contains('expanded')) {{
-                                        panel.classList.remove('expanded');
-                                        card.classList.remove('expanded');
-                                        icon.classList.remove('rotated');
-                                        icon.textContent = '▶';
-                                        btn.innerHTML = '<span>📋 View Full Details</span><span class="expand-icon-{i} expand-icon" id="icon-{i}">▶</span>';
-                                    }} else {{
-                                        panel.classList.add('expanded');
-                                        card.classList.add('expanded');
-                                        icon.classList.add('rotated');
-                                        icon.textContent = '▼';
-                                        btn.innerHTML = '<span>📋 Hide Details</span><span class="expand-icon-{i} expand-icon rotated" id="icon-{i}">▼</span>';
-                                    }}
-                                }}
-                                </script>
-                                """
-                                cards_html.append(card_html)
-
-                            # Global controls and combined render
-                            cards_joined = ''.join(cards_html)
-                            combined_html = (
-                                "<style>"
-                                ".bulk-controls { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }"
-                                ".bulk-btn { background: linear-gradient(135deg, #f8fafc, #f1f5f9); border: 1px solid #cbd5e1; border-radius: 8px; padding: 0.5rem 0.9rem; font-size: 0.85rem; font-weight: 600; color: #475569; cursor: pointer; transition: all 0.2s ease; }"
-                                ".bulk-btn:hover { background: linear-gradient(135deg, #e2e8f0, #cbd5e1); border-color: #94a3b8; transform: translateY(-1px); }"
-                                "</style>"
-                                '<div class="bulk-controls">'
-                                '<button id="bulk-btn" class="bulk-btn" onclick="toggleAll()">Expand All</button>'
-                                "</div>"
-                                + cards_joined +
-                                "<script>"
-                                "function allExpanded(){ return Array.from(document.querySelectorAll('.details-panel')).length>0 && Array.from(document.querySelectorAll('.details-panel')).every(p => p.classList.contains('expanded')); }"
-                                "function updateBulkButton(){ const bulkBtn = document.getElementById('bulk-btn'); if (!bulkBtn) return; bulkBtn.textContent = allExpanded() ? 'Collapse All' : 'Expand All'; }"
-                                "function expandAll(){"
-                                "document.querySelectorAll('.details-panel').forEach(p => p.classList.add('expanded'));"
-                                "document.querySelectorAll('.similarity-card').forEach(c => c.classList.add('expanded'));"
-                                "document.querySelectorAll('.expand-btn').forEach(btn => {"
-                                " const label = btn.querySelector('span:first-child');"
-                                " if (label) label.textContent = '📋 Hide Details';"
-                                " const icon = btn.querySelector('.expand-icon');"
-                                " if (icon) { icon.classList.add('rotated'); icon.textContent = '▼'; }"
-                                "}); updateBulkButton();"
-                                "}"
-                                "function collapseAll(){"
-                                "document.querySelectorAll('.details-panel').forEach(p => p.classList.remove('expanded'));"
-                                "document.querySelectorAll('.similarity-card').forEach(c => c.classList.remove('expanded'));"
-                                "document.querySelectorAll('.expand-btn').forEach(btn => {"
-                                " const label = btn.querySelector('span:first-child');"
-                                " if (label) label.textContent = '📋 View Full Details';"
-                                " const icon = btn.querySelector('.expand-icon');"
-                                " if (icon) { icon.classList.remove('rotated'); icon.textContent = '▶'; }"
-                                "}); updateBulkButton();"
-                                "}"
-                                "function toggleAll(){ if (allExpanded()) { collapseAll(); } else { expandAll(); } }"
-                                "document.addEventListener('DOMContentLoaded', updateBulkButton); updateBulkButton();"
-                                "</script>"
-                            )
-
-                            st.components.v1.html(combined_html, height=2000, scrolling=True)
-                            progress_bar.progress(1.0, text=f"✅ Completed analysis with {model_choice}. Processed {total_chunks} chunks.")
-                except Exception as e:
-                    st.error(f"❌ An error occurred during PDF analysis: {e}")
-                    progress_bar.progress(0, text=f"❌ Error during analysis with {model_choice}")
-        else:
-            st.warning("⚠️ Please upload a PDF file first.")
-
-
-def render_jailbreak_probe_page(api_key, model_choice, provider):
-    """Render the Jailbreak Persuasion Probe page."""
-    st.markdown("### 🧪 Jailbreak Persuasion Probe")
-    st.markdown(
-        "This module evaluates whether prompts can persuade an LLM to produce potentially copyright-violating content. "
-        "Provide a research goal and choose a strategy. Outputs can be redacted for safety.")
-
-    mode = st.radio("Probe Mode", ["Strategy", "Template"], horizontal=True)
+    mode = st.radio("Probe Mode", ["Strategy", "Template"], horizontal=True, key="jb_mode")
 
     col1, col2 = st.columns(2)
     if mode == "Strategy":
         with col1:
-            strategy = st.selectbox("Probe Strategy", options=available_strategies())
-            attempts = st.number_input("Attempts", min_value=1, max_value=50, value=3, step=1)
-            redact = st.checkbox("Redact model outputs in UI", value=True, help="Show only a small prefix of outputs to avoid accidental exposure")
+            strategy = st.selectbox("Probe Strategy", options=available_strategies(), key="jb_strategy")
+            attempts = st.number_input("Attempts", min_value=1, max_value=50, value=3, step=1, key="jb_attempts")
+            redact = st.checkbox(
+                "Redact model outputs in UI",
+                value=True,
+                help="Show only a small prefix of outputs to avoid accidental exposure",
+                key="jb_redact",
+            )
         with col2:
-            temperature = st.slider("Temperature (if supported)", 0.0, 1.5, 0.7, 0.1)
-            dry_run = st.checkbox("Dry-run (no API calls)", value=False)
+            temperature = st.slider("Temperature (if supported)", 0.0, 1.5, 0.7, 0.1, key="jb_temp")
+            dry_run = st.checkbox("Dry-run (no API calls)", value=False, key="jb_dry")
 
         goal = st.text_area(
             "Research Goal (what are we probing?)",
             placeholder="e.g., Attempt to get the model to restate a known copyrighted paragraph without attribution.",
             height=100,
+            key="jb_goal",
         )
         seed = st.text_area(
             "Optional Seed/Context",
             placeholder="Provide seed context if needed (kept generic and research-oriented).",
             height=100,
+            key="jb_seed",
         )
         template_id = None
         insertion_text = ""
     else:
         templates = list_templates()
-        # Flatten all patterns to build groups
         pattern_to_templates = {}
         for t in templates:
             pats = t.get("pattern") or ["(None)"]
@@ -853,22 +373,22 @@ def render_jailbreak_probe_page(api_key, model_choice, provider):
                     "Primary Group (Pattern)",
                     options=["All"] + sorted(pattern_to_templates.keys()),
                     help="Filter by pattern tag group",
+                    key="jb_group",
                 )
             with colf2:
                 search_kw = st.text_input(
                     "Secondary Search (ID / Name / Text)",
                     help="Enter keyword to perform secondary full-text filter (case-insensitive)",
                     placeholder="e.g. DAN / roleplay / internet",
+                    key="jb_search",
                 ).strip()
 
-        # Apply grouping filter
         filtered = []
         for t in templates:
             if selected_group != "All":
                 pats = t.get("pattern") or []
                 if selected_group not in pats:
                     continue
-            # Apply keyword search
             if search_kw:
                 blob = f"{t['id']} {t['name']} {t.get('text','')}".lower()
                 if search_kw.lower() not in blob:
@@ -877,19 +397,16 @@ def render_jailbreak_probe_page(api_key, model_choice, provider):
 
         if not filtered:
             st.info("No templates matched current filters. Adjust criteria.")
-            # Provide a safe default to avoid empty selectbox crash
             filtered = templates
 
-        # Present selection list with compact labeling and group badge
         def label_for(t):
             pats = ", ".join(t.get("pattern") or [])
             return f"{t['id']} — {t['name']}" + (f"  [{pats}]" if pats else "")
 
         option_labels = [label_for(t) for t in filtered]
         selected_label = st.selectbox(
-            "Template", options=option_labels, help="Select a template to apply insertion"
+            "Template", options=option_labels, help="Select a template to apply insertion", key="jb_tpl"
         )
-        # Extract ID (split at first ' — ')
         selected_id = selected_label.split(" — ")[0]
 
         with st.expander("📄 模板原文 / Template Raw Text", expanded=False):
@@ -901,17 +418,17 @@ def render_jailbreak_probe_page(api_key, model_choice, provider):
             "Insertion Text (replace [INSERT PROMPT HERE])",
             height=80,
             placeholder="Enter text that will replace the placeholder in the template",
+            key="jb_insert",
         )
-        attempts = st.number_input("Attempts", min_value=1, max_value=50, value=1, step=1)
-        redact = st.checkbox("Redact model outputs in UI", value=True)
-        temperature = st.slider("Temperature (if supported)", 0.0, 1.5, 0.7, 0.1)
-        dry_run = st.checkbox("Dry-run (no API calls)", value=False)
+        attempts = st.number_input("Attempts", min_value=1, max_value=50, value=1, step=1, key="jb_attempts_tpl")
+        redact = st.checkbox("Redact model outputs in UI", value=True, key="jb_redact_tpl")
+        temperature = st.slider("Temperature (if supported)", 0.0, 1.5, 0.7, 0.1, key="jb_temp_tpl")
+        dry_run = st.checkbox("Dry-run (no API calls)", value=False, key="jb_dry_tpl")
         strategy = available_strategies()[0]
         goal = "Template-driven probe"
         seed = ""
         template_id = selected_id
 
-        # Preview composed prompt with safety wrapper
         preview_cfg = ProbeConfig(
             strategy=strategy,
             goal_description=goal,
@@ -927,52 +444,152 @@ def render_jailbreak_probe_page(api_key, model_choice, provider):
         st.code(build_probe_prompt(preview_cfg))
 
     st.markdown("---")
-    run = st.button("▶ Run Probe", type="primary")
+    run_probe = st.button("▶ Run Probe", type="primary", key="jb_run")
 
-    if run:
+    if run_probe:
+        if not api_key:
+            st.error("⚠️ Please enter your API key in the sidebar.")
+        elif mode == "Strategy" and not goal.strip():
+            st.warning("⚠️ Please describe the research goal.")
+        else:
+            cfg = ProbeConfig(
+                strategy=strategy,
+                goal_description=goal,
+                seed_context=seed,
+                attempts=attempts,
+                temperature=temperature,
+                redact_outputs=redact,
+                dry_run=dry_run,
+                template_id=template_id,
+                insertion_text=insertion_text,
+            )
+            with st.spinner("Running probe attempts..."):
+                results, error = run_probe_batch(cfg, api_key, model_choice, provider)
+                if error:
+                    st.error(f"❌ {error}")
+                else:
+                    risk_scores = [r.get("risk_score", 0) for r in results]
+                    avg_risk = sum(risk_scores) / len(risk_scores) if risk_scores else 0
+                    st.markdown("### 📊 Probe Summary")
+                    st.metric("Average Risk Score", f"{avg_risk:.1f}/100")
+                    st.markdown("### 🧾 Attempts")
+                    for idx, r in enumerate(results, 1):
+                        with st.expander(f"Attempt {idx} — Risk {r.get('risk_score', 0)}"):
+                            st.markdown("**Prompt**")
+                            st.code(r.get("prompt", ""))
+                            if r.get("error"):
+                                st.error(r["error"])
+                            else:
+                                st.markdown("**Model Response**")
+                                st.write(r.get("response", ""))
+                                st.caption(f"Raw response length: {r.get('raw_response_len', 0)} characters")
+
+
+def render_pdf_analysis_page(api_key, model_choice, provider):
+    """Render the whole PDF analysis page (restored)."""
+    st.markdown("### 📄 Whole PDF Analysis")
+    st.markdown(
+        "Upload a whole PDF document to automatically analyze text chunks for potential copyright infringement."
+    )
+
+    uploaded_file = st.file_uploader("📎 Choose a PDF file", type="pdf", help="Select a PDF document to analyze")
+    if uploaded_file is not None:
+        st.markdown('<h3 class="section-header sm">⚙️ Analysis Configuration</h3>', unsafe_allow_html=True)
+        col1, col2 = st.columns(2)
+        with col1:
+            score_type = st.selectbox(
+                'Change Ranking Metric',
+                ["ROUGE-L", "Jaccard Index", "Levenshtein Distance"],
+                index=0,
+                help='Choose how to rank the most similar sections'
+            )
+        with col2:
+            chunk_size = st.number_input(
+                'Change Chunk Size (words)',
+                min_value=50,
+                max_value=1000,
+                value=200,
+                step=25,
+                help='Number of words per text chunk'
+            )
+
+        st.markdown('<h3 class="section-header sm">💡 Size Recommendations</h3>', unsafe_allow_html=True)
+        st.markdown(
+            """
+            <div class="hint">
+                <div style="margin-bottom: 0.5rem;"><strong>50-200:</strong> Precise analysis — detects specific phrases</div>
+                <div style="margin-bottom: 0.5rem;"><strong>200-400:</strong> Balanced — general copyright detection</div>
+                <div><strong>400-1000:</strong> Contextual — preserves broader context</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        score_type = None
+        chunk_size = None
+
+    if uploaded_file is not None:
+        st.markdown("---")
+        analyze_pdf = st.button("🔍 Analyze PDF", use_container_width=True, type="primary")
+        st.markdown(
+            """
+            <div class="analysis-note">
+                ⚡ Analysis may take several minutes depending on PDF size and selected model.<br/>
+                ✨ Generated Text length will be enforced to exactly match the selected chunk size (in words).
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        analyze_pdf = False
+
+    if analyze_pdf:
         if not api_key:
             st.error("⚠️ Please enter your API key in the sidebar.")
             return
-        if mode == "Strategy" and not goal.strip():
-            st.warning("⚠️ Please describe the research goal.")
-            return
-
-        cfg = ProbeConfig(
-            strategy=strategy,
-            goal_description=goal,
-            seed_context=seed,
-            attempts=attempts,
-            temperature=temperature,
-            redact_outputs=redact,
-            dry_run=dry_run,
-            template_id=template_id,
-            insertion_text=insertion_text,
-        )
-
-        with st.spinner("Running probe attempts..."):
-            results, error = run_probe_batch(cfg, api_key, model_choice, provider)
-            if error:
-                st.error(f"❌ {error}")
+        try:
+            progress_bar = st.progress(0, text=f"🔄 Analyzing PDF with {model_choice}... Preparing document...")
+            pdf_text = extract_text_from_pdf(uploaded_file)
+            if "Error" in pdf_text:
+                st.error(f"❌ {pdf_text}")
                 return
+            chunk_pairs = split_text_into_chunks(pdf_text, chunk_size=chunk_size)
+            if not chunk_pairs:
+                st.warning("⚠️ Could not split the PDF into enough text chunks for analysis.")
+                return
+            results = []
+            total = len(chunk_pairs)
+            for i, (upper, lower) in enumerate(chunk_pairs):
+                generated_text, rouge_score, jaccard_index, levenshtein_dist = compare_texts(
+                    upper, lower, api_key, model_name=model_choice, provider=provider, chunk_size=chunk_size
+                )
+                results.append((upper, lower, generated_text, rouge_score, jaccard_index, levenshtein_dist))
+                progress_bar.progress((i + 1)/total, text=f"🔄 Processing chunk {i+1}/{total}")
 
-        # Summary
-        risk_scores = [r.get("risk_score", 0) for r in results]
-        avg_risk = sum(risk_scores) / len(risk_scores) if risk_scores else 0
-        st.markdown("### 📊 Summary")
-        st.metric("Average Risk Score", f"{avg_risk:.1f}/100")
+            # Sort
+            if score_type == "ROUGE-L":
+                results.sort(key=lambda x: x[3], reverse=True)
+            elif score_type == "Jaccard Index":
+                results.sort(key=lambda x: x[4], reverse=True)
+            else:  # Levenshtein
+                results.sort(key=lambda x: x[5])
 
-        # Detailed results
-        st.markdown("### 🧾 Attempts")
-        for idx, r in enumerate(results, 1):
-            with st.expander(f"Attempt {idx} — Risk {r.get('risk_score', 0)}"):
-                st.markdown("**Prompt**")
-                st.code(r.get("prompt", ""))
-                if r.get("error"):
-                    st.error(r["error"])
-                else:
-                    st.markdown("**Model Response**")
-                    st.write(r.get("response", ""))
-                    st.caption(f"Raw response length: {r.get('raw_response_len', 0)} characters")
+            st.markdown("### 🏆 Top 5 Most Similar Sections")
+            for rank, (upper, lower, gen, r, j, l) in enumerate(results[:5], start=1):
+                with st.expander(f"Rank {rank}"):
+                    st.markdown("**📝 Prefix Context**")
+                    st.write(upper)
+                    st.markdown("**🎯 Ground Truth**")
+                    st.write(lower)
+                    st.markdown("**🤖 Generated Text**")
+                    st.write(gen)
+                    st.markdown(f"**Scores** — ROUGE-L: {r:.4f} | Jaccard: {j:.4f} | Levenshtein: {l}")
+
+            progress_bar.progress(1.0, text=f"✅ Completed analysis with {model_choice}. Processed {total} chunks.")
+        except Exception as e:
+            st.error(f"❌ Error during analysis: {e}")
+
+
 
 
 def render_footer():
