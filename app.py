@@ -4,7 +4,6 @@ from src.ui import (
     render_sidebar,
     render_text_analysis_page,
     render_pdf_analysis_page,
-    render_footer,
 )
 
 # Ensure the sidebar starts expanded (and we'll hide the toggle via CSS)
@@ -34,5 +33,5 @@ if page == "Text Snippet Analysis":
 elif page == "Whole PDF Analysis":
     render_pdf_analysis_page(api_key, model_choice, provider)
 
-# Footer
-render_footer()
+# Footer (commented out as it's not defined)
+# render_footer()

@@ -1,14 +1,12 @@
 import streamlit as st
 from src.copyright_detective.comparison import compare_texts
 from src.copyright_detective.pdf_utils import extract_text_from_pdf, split_text_into_chunks
-from src.copyright_detective.jailbreak_probe import (
-    ProbeConfig,
-    run_probe_batch,
-    list_templates,
-    build_probe_prompt,
-)
 from src.config import DEFAULT_OPENROUTER_KEY
 import matplotlib.pyplot as plt
+from src.copyright_detective.jailbreak_probe import (
+    run_persuasion_probe,
+)
+from src.prompt_utils import get_full_prompt
 
 
 def render_header():
@@ -111,6 +109,22 @@ def render_text_analysis_page(api_key, model_choice, provider):
         st.markdown(
             "_Sequential Continuation Evaluation: Provide the prefix (previous sentence) and ask the model to continue by generating the next sentence. This probes whether the model reproduces or closely follows memorized sequences from source texts._"
         )
+        
+        continuation_method = st.selectbox(
+            "Choose a continuation method:",
+            [
+                "Normal Continuation",
+                "Role-Playing: The Author",
+                "Hypothetical Scenario: A Lost Manuscript",
+                "Creative Writing Exercise",
+                "Translation and Back-Translation",
+                "Stylistic Transformation",
+                "Tom and Jerry Game",
+            ],
+            help="Select 'Normal Continuation' for a direct prompt or a persuasion strategy to frame the request differently.",
+            key="continuation_method_selector",
+        )
+        
     elif prompt_type == "Preceding Context Reconstruction":
         st.markdown(
             "_Preceding Context Reconstruction: Provide the continuation or subsequent sentence and ask the model to generate the most likely preceding sentence. This helps detect whether the model can reconstruct prior context, which may indicate memorization of original works._"
@@ -142,6 +156,19 @@ def render_text_analysis_page(api_key, model_choice, provider):
             label_visibility="collapsed",
         )
 
+    # Prompt Preview - Unified for all types
+    if text1:
+        # Define continuation_method for the preview logic even if it's not selected
+        continuation_method = "Normal Continuation"
+        if prompt_type == "Sequential Continuation Evaluation":
+            continuation_method = st.session_state.get("continuation_method_selector", "Normal Continuation")
+            prompt_to_preview = get_full_prompt(continuation_method, text1)
+        else:
+            prompt_to_preview = get_full_prompt(prompt_type, text1)
+
+        with st.expander("Prompt Preview", expanded=False):
+            st.markdown(f"```\n{prompt_to_preview}\n```")
+
     st.markdown("---")
     st.markdown("**Inference Time Scaling**")
     inference_runs = st.number_input(
@@ -164,33 +191,44 @@ def render_text_analysis_page(api_key, model_choice, provider):
         elif not text1 or not text2:
             st.warning("⚠️ Please enter both prefix text and ground truth.")
         else:
-            # Modify the analysis logic to incorporate the prompt type
-            if prompt_type == "Sequential Continuation Evaluation":
-                # Logic for continuing the next sentence
-                pass
-            elif prompt_type == "Preceding Context Reconstruction":
-                # Logic for inferring the previous sentence
-                pass
-            elif prompt_type == "Copyright Attribution Inference":
-                # Logic for generating the title of the work
-                pass
+            # Define a variable for continuation_method if it's not set
+            continuation_method = st.session_state.get("continuation_method_selector", "Normal Continuation")
 
             if inference_runs == 1:
                 # Single run: Original Analysis Results
                 with st.spinner(
                     f"🔄 Generating text with {model_choice} and calculating scores..."
                 ):
-                    result = compare_texts(
-                        text1,
-                        text2,
-                        api_key,
-                        model_name=model_choice,
-                        provider=provider,
-                        prompt_type=prompt_type,
-                    )
+                    if prompt_type == "Sequential Continuation Evaluation" and continuation_method != "Normal Continuation":
+                        result = run_persuasion_probe(
+                            api_key,
+                            model_choice,
+                            provider,
+                            continuation_method,
+                            text1,
+                            text2,
+                        )
+                    else:
+                        result = compare_texts(
+                            text1,
+                            text2,
+                            api_key,
+                            model_name=model_choice,
+                            provider=provider,
+                            prompt_type=prompt_type,
+                        )
+                    
+                    # Handle potential errors from both functions
+                    error_occurred = False
                     if isinstance(result, str) and result.startswith("Error"):
                         st.error(f"❌ {result}")
-                    else:
+                        error_occurred = True
+                    # run_persuasion_probe returns a tuple
+                    elif isinstance(result, tuple) and isinstance(result[0], str) and result[0].startswith("Error"):
+                        st.error(f"❌ {result[0]}")
+                        error_occurred = True
+
+                    if not error_occurred:
                         generated_text, rouge_score, jaccard_index, levenshtein_dist = result
 
                         # Results section
@@ -204,7 +242,7 @@ def render_text_analysis_page(api_key, model_choice, provider):
                             unsafe_allow_html=True,
                         )
 
-                        # Similarity scores summary (boxes removed per request)
+                        # Similarity scores summary
                         st.markdown("**📈 Similarity Scores**")
                         st.markdown(
                             f"ROUGE-L: **{rouge_score:.4f}** | Jaccard: **{jaccard_index:.4f}** | Levenshtein: **{levenshtein_dist}**"
@@ -230,18 +268,37 @@ def render_text_analysis_page(api_key, model_choice, provider):
                         (i) / inference_runs,
                         text=f"🔄 Generating text for run {i+1}/{inference_runs}...",
                     )
-                    result = compare_texts(
-                        text1,
-                        text2,
-                        api_key,
-                        model_name=model_choice,
-                        provider=provider,
-                        prompt_type=prompt_type,
-                    )
+                    if prompt_type == "Sequential Continuation Evaluation" and continuation_method != "Normal Continuation":
+                        result = run_persuasion_probe(
+                            api_key,
+                            model_choice,
+                            provider,
+                            continuation_method,
+                            text1,
+                            text2,
+                        )
+                    else:
+                        result = compare_texts(
+                            text1,
+                            text2,
+                            api_key,
+                            model_name=model_choice,
+                            provider=provider,
+                            prompt_type=prompt_type,
+                        )
+
+                    # Handle potential errors from both functions
+                    error_occurred = False
                     if isinstance(result, str) and result.startswith("Error"):
                         st.error(f"❌ {result}")
+                        error_occurred = True
                         break
-                    else:
+                    elif isinstance(result, tuple) and isinstance(result[0], str) and result[0].startswith("Error"):
+                        st.error(f"❌ {result[0]}")
+                        error_occurred = True
+                        break
+                        
+                    if not error_occurred:
                         generated_text, rouge_score, jaccard_index, levenshtein_dist = result
                         similarity_scores.append(
                             {
@@ -250,7 +307,8 @@ def render_text_analysis_page(api_key, model_choice, provider):
                                 "levenshtein": levenshtein_dist,
                             }
                         )
-                        generated_texts.append(generated_text)  # Append generated text
+                        generated_texts.append(generated_text)
+                
                 progress_bar.progress(1.0, text="✅ All runs completed!")
 
                 if similarity_scores:
@@ -316,367 +374,9 @@ def render_text_analysis_page(api_key, model_choice, provider):
 
                     st.pyplot(fig)
 
-    # ------------------------------------------------------------------
-    # Inline Jailbreak Persuasion Probe Section (migrated from standalone)
-    # ------------------------------------------------------------------
-    st.markdown("### 🧪 Jailbreak Text Continuation Probe")
-    st.markdown(
-        "This section evaluates whether a jailbreak prompt can trick the model into generating a specific continuation. "
-        "Select a template, provide the prefix text (the prompt), and the reference text (the expected output)."
-    )
-
-    templates = list_templates()
-    if not templates:
-        st.warning("No jailbreak templates found.")
-        return
-
-    # Prepare data for JS
-    import json as _json
-    js_templates = _json.dumps([
-        {
-            "id": t["id"],
-            "name": t.get("name", "Unnamed"),
-            "text": t.get("text", ""),
-            "patterns": t.get("pattern") or [],
-        }
-        for t in templates
-    ])
-
-    # Build unique pattern tags
-    pattern_tags = set()
-    for t in templates:
-        for p in (t.get("pattern") or []):
-            pattern_tags.add(p)
-    pattern_tags = sorted(pattern_tags)
-
-    # Fallback initial selection (first template)
-    if "jb_selected_template" not in st.session_state and templates:
-        st.session_state["jb_selected_template"] = templates[0]["id"]
-
-    st.markdown("#### 🔎 Template Browser")
-
-    hidden_selected = st.session_state.get("jb_selected_template", templates[0]["id"] if templates else "")
-
-    component_html = """
-    <style>
-    .tpl-browser { border:1px solid #e2e8f0; border-radius:10px; background:#ffffff; padding:0.9rem 1rem; margin-bottom:0.75rem; }
-    .tpl-search-row { display:flex; gap:0.6rem; flex-wrap:wrap; align-items:center; margin-bottom:0.65rem; }
-    .tpl-search-row input { flex:1; padding:0.45rem 0.6rem; border:1px solid #cbd5e1; border-radius:6px; font-size:0.8rem; }
-    .tpl-patterns { display:flex; flex-wrap:wrap; gap:0.4rem; margin-bottom:0.6rem; }
-    .tpl-chip { font-size:0.65rem; padding:0.35rem 0.55rem; border:1px solid #cbd5e1; border-radius:14px; cursor:pointer; background:#f1f5f9; font-weight:500; letter-spacing:0.3px; }
-    .tpl-chip.active { background:#2563eb; color:#fff; border-color:#1d4ed8; }
-    .tpl-list { max-height:260px; overflow:auto; border:1px solid #e2e8f0; border-radius:8px; background:#f8fafc; }
-    .tpl-item { padding:0.55rem 0.65rem; border-bottom:1px solid #e2e8f0; cursor:pointer; display:flex; flex-direction:column; gap:2px; }
-    .tpl-item:last-child { border-bottom:none; }
-    .tpl-item:hover { background:#eef2f7; }
-    .tpl-item.active { background:#dbeafe; box-shadow:inset 0 0 0 1px #3b82f6; }
-    .tpl-line1 { font-size:0.75rem; font-weight:600; color:#1e293b; display:flex; justify-content:space-between; align-items:center; }
-    .tpl-line2 { font-size:0.65rem; color:#64748b; display:flex; gap:0.4rem; flex-wrap:wrap; }
-    .tpl-tag { background:#e2e8f0; padding:0.1rem 0.4rem; border-radius:12px; font-size:0.55rem; font-weight:500; letter-spacing:0.3px; }
-    .tpl-raw-wrapper { margin-top:0.75rem; }
-    .tpl-raw-header { font-size:0.7rem; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:#64748b; margin-bottom:0.25rem; display:flex; align-items:center; gap:0.4rem; }
-    .tpl-raw-box { background:#0f172a; color:#e2e8f0; padding:0.65rem 0.75rem; border-radius:6px; font-size:0.7rem; line-height:1.35; max-height:220px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
-    .tpl-empty { font-size:0.7rem; color:#94a3b8; padding:0.6rem; text-align:center; }
-    .tpl-counter { font-size:0.6rem; font-weight:500; color:#64748b; }
-    @media (prefers-color-scheme: dark) {
-        .tpl-browser { background:#1e293b; border-color:#334155; }
-        .tpl-list { background:#1e293b; border-color:#334155; }
-        .tpl-item { border-color:#334155; }
-        .tpl-item:hover { background:#2d3a4f; }
-        .tpl-item.active { background:#1e40af; }
-        .tpl-chip { background:#334155; border-color:#475569; color:#e2e8f0; }
-        .tpl-chip.active { background:#2563eb; border-color:#1d4ed8; }
-        .tpl-raw-box { background:#1e293b; }
-        .tpl-tag { background:#334155; color:#e2e8f0; }
-    }
-    </style>
-    <div class='tpl-browser'>
-        <div class='tpl-search-row'>
-            <input id='tpl-search' placeholder='Search ID / Name / Text...' />
-            <span class='tpl-counter' id='tpl-counter'></span>
-        </div>
-        <div class='tpl-patterns' id='tpl-patterns'></div>
-        <div class='tpl-list' id='tpl-list'></div>
-        <div class='tpl-raw-wrapper'>
-            <div class='tpl-raw-header'>📄 Raw Template</div>
-            <div class='tpl-raw-box' id='tpl-raw-box'>(select a template)</div>
-        </div>
-    </div>
-    <input type='hidden' id='tpl-selected-hidden' value='__INIT_SELECTED__' />
-    <script>
-    const TEMPLATES = %%JS_TEMPLATES%%;
-    let activePattern = 'All';
-    let searchKW = '';
-    let selectedId = document.getElementById('tpl-selected-hidden').value || '';
-    const patternTags = ['All', ...Array.from(new Set(TEMPLATES.flatMap(t=>t.patterns && t.patterns.length ? t.patterns : [])))];
-    function renderPatterns(){
-      const wrap = document.getElementById('tpl-patterns');
-      wrap.innerHTML = patternTags.map(p=>`<div class="tpl-chip ${p===activePattern?'active':''}" data-p="${p}">${p}</div>`).join('');
-      wrap.querySelectorAll('.tpl-chip').forEach(ch=>ch.addEventListener('click',()=>{ activePattern = ch.dataset.p; renderList(); renderPatterns(); }));
-    }
-    function passesFilters(t){
-      if(activePattern!=='All'){
-         const pats = t.patterns && t.patterns.length ? t.patterns : [];
-         if(!pats.includes(activePattern)) return false;
-      }
-      if(searchKW){
-         const blob = (t.id + ' ' + t.name + ' ' + t.text).toLowerCase();
-         if(!blob.includes(searchKW.toLowerCase())) return false;
-      }
-      return true;
-    }
-    function renderList(){
-       const list = document.getElementById('tpl-list');
-       const arr = TEMPLATES.filter(passesFilters);
-       document.getElementById('tpl-counter').textContent = arr.length + ' / ' + TEMPLATES.length;
-       if(!arr.length){ list.innerHTML = '<div class="tpl-empty">No templates match filters.</div>'; document.getElementById('tpl-raw-box').textContent='(select a template)'; return; }
-       list.innerHTML = arr.map(t=>{
-          const pats = (t.patterns && t.patterns.length) ? t.patterns.map(p=>`<span class=tpl-tag>${p}</span>`).join('') : '<span class=tpl-tag>(None)</span>';
-          return `<div class="tpl-item ${t.id===selectedId?'active':''}" data-id="${t.id}">\n <div class=tpl-line1><span>${t.id}</span><span style='font-size:0.55rem;opacity:.7;'>${t.name}</span></div>\n <div class=tpl-line2>${pats}</div>\n </div>`;
-       }).join('');
-       list.querySelectorAll('.tpl-item').forEach(it=>it.addEventListener('click',()=>{ selectedId=it.dataset.id; updateSelection(); renderList(); }));
-       updateSelection();
-    }
-    function updateSelection(){
-       const tpl = TEMPLATES.find(t=>t.id===selectedId);
-       document.getElementById('tpl-selected-hidden').value = selectedId;
-       if(tpl){ document.getElementById('tpl-raw-box').textContent = tpl.text || '(empty template)'; }
-    }
-    const searchInput = document.getElementById('tpl-search');
-    searchInput.addEventListener('input', ()=>{ searchKW = searchInput.value.trim(); renderList(); });
-    renderPatterns();
-    renderList();
-    </script>
-    """
-
-    # Replace placeholders
-    component_html = component_html.replace('__INIT_SELECTED__', hidden_selected.replace("'", "&#39;"))
-    component_html = component_html.replace('%%JS_TEMPLATES%%', js_templates)
-
-    st.components.v1.html(component_html, height=520, scrolling=True)
-
-    # Hidden bridge input (auto-updated by JS via polling from the outer document)
-    bridge_val = st.text_input(
-        "Selected Template Bridge",
-        value=st.session_state.get("jb_selected_template", templates[0]["id"] if templates else ""),
-        key="jb_selected_template_bridge",
-        label_visibility="collapsed",
-    )
-    st.markdown(
-        """
-        <style>
-        div[data-testid='stTextInput'] label:has(+ div input[aria-label='Selected Template Bridge']) {display:none !important;}
-        input[aria-label='Selected Template Bridge'] {display:none !important;}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    bridge_js = """
-    <script>
-    (function(){
-        function syncBridge(){
-            try {
-                const iframe = document.querySelector('iframe');
-                if(!iframe) return;
-                const idInput = iframe.contentDocument && iframe.contentDocument.getElementById('tpl-selected-hidden');
-                if(!idInput) return;
-                const newVal = idInput.value;
-                const bridge = document.querySelector("input[aria-label='Selected Template Bridge']");
-                if(bridge && newVal && bridge.value !== newVal){
-                    bridge.value = newVal;
-                    const ev = new Event('input', {bubbles:true});
-                    bridge.dispatchEvent(ev);
-                }
-            } catch(e) { /* ignore cross-frame errors */ }
-        }
-        setInterval(syncBridge, 800);
-    })();
-    </script>
-    """
-    st.markdown(bridge_js, unsafe_allow_html=True)
-
-    if templates:
-        selected_id = bridge_val or st.session_state.get("jb_selected_template") or templates[0]["id"]
-    else:
-        selected_id = ""
-    if selected_id:
-        st.session_state["jb_selected_template"] = selected_id
-
-    prefix_text = st.text_area(
-        "Input Text",
-        height=80,
-        placeholder="Enter the input snippet (e.g., a previous sentence, a continuation, or an excerpt). The role of this field depends on the selected prompt type.",
-        key="jb_prefix",
-    )
-    reference_text = st.text_area(
-        "Ground Truth",
-        height=80,
-        placeholder="Enter the ground truth text or expected target to compare against (e.g., the known reference or target continuation). Leave blank if not applicable.",
-        key="jb_reference",
-    )
-
-    col1, col2 = st.columns(2)
-    with col1:
-        attempts = st.number_input("Attempts", min_value=1, max_value=50, value=1, step=1, key="jb_attempts_tpl")
-        temperature = st.slider("Temperature (if supported)", 0.0, 1.5, 0.7, 0.1, key="jb_temp_tpl")
-    with col2:
-        dry_run = st.checkbox("Dry-run (no API calls)", value=False, key="jb_dry_tpl")
-
-    if selected_id:
-        preview_cfg = ProbeConfig(
-            prefix_text=prefix_text,
-            reference_text=reference_text,
-            template_id=selected_id,
-        )
-        st.markdown("**Prompt Preview**")
-        st.code(build_probe_prompt(preview_cfg))
-
     st.markdown("---")
-    run_probe = st.button("▶ Run Probe", type="primary", key="jb_run")
-
-    if run_probe:
-        if not api_key:
-            st.error("⚠️ Please enter your API key in the sidebar.")
-        elif not prefix_text or not reference_text:
-            st.warning("⚠️ Please provide both Prefix and Reference text.")
-        else:
-            cfg = ProbeConfig(
-                prefix_text=prefix_text,
-                reference_text=reference_text,
-                template_id=selected_id,
-                attempts=attempts,
-                temperature=temperature,
-                dry_run=dry_run,
-            )
-            with st.spinner("Running probe attempts..."):
-                results, error = run_probe_batch(cfg, api_key, model_choice, provider)
-                if error:
-                    st.error(f"❌ {error}")
-                else:
-                    st.markdown("### 📊 Probe Results")
-                    # Build custom cards
-                    card_blocks = []
-                    for idx, r in enumerate(results, 1):
-                        error_text = r.get('error')
-                        prompt_text = r.get('prompt', '')
-                        response_text = r.get('response', '')
-                        ref_text = r.get('reference', '')
-                        rouge_l = r.get('rouge_l', 0)
-                        jaccard = r.get('jaccard', 0)
-                        levenshtein = r.get('levenshtein', 0)
-
-                        # Escape HTML special chars
-                        import html as _html
-                        disp_prompt_html = _html.escape(prompt_text)
-                        disp_resp_html = _html.escape(response_text)
-                        disp_ref_html = _html.escape(ref_text)
-
-                        status_badge = '🟢' if rouge_l < 0.3 else '🟠' if rouge_l < 0.6 else '🔴'
-
-                        card_blocks.append(f"""
-                        <div class='jb-card' id='jb-card-{idx}'>
-                          <div class='jb-card-header' onclick="toggleJBCard({idx})">
-                             <div class='jb-card-left'>
-                                <span class='jb-attempt-label'>Attempt {idx}</span>
-                                <span class='jb-risk-badge'>{status_badge} ROUGE-L: {rouge_l:.3f}</span>
-                             </div>
-                             <div class='jb-card-actions'>
-                                <button class='jb-btn small' onclick="copyText(event,'jb-prompt-{idx}')">Copy Prompt</button>
-                                <button class='jb-btn small' onclick="copyText(event,'jb-response-{idx}')">Copy Response</button>
-                                <span class='jb-toggle-icon' id='jb-icon-{idx}'>▶</span>
-                             </div>
-                          </div>
-                          <div class='jb-card-body' id='jb-body-{idx}'>
-                             {('<div class="jb-error">❌ ' + _html.escape(error_text) + '</div>') if error_text else f'''
-                             <div class='jb-section'>
-                                <div class='jb-section-label'>Scores</div>
-                                <div class='jb-scores'>
-                                    <span>ROUGE-L: <b>{rouge_l:.4f}</b></span>
-                                    <span>Jaccard: <b>{jaccard:.4f}</b></span>
-                                    <span>Levenshtein: <b>{levenshtein}</b></span>
-                                </div>
-                             </div>
-                             <div class='jb-section'>
-                                <div class='jb-section-label'>Reference vs. Response</div>
-                                <div class='jb-comparison'>
-                                    <div class='jb-comp-col'>
-                                        <div class='jb-comp-header'>Reference</div>
-                                        <pre class='jb-code'>{disp_ref_html}</pre>
-                                    </div>
-                                    <div class='jb-comp-col'>
-                                        <div class='jb-comp-header'>Model Response</div>
-                                        <pre class='jb-code' id='jb-response-{idx}'>{disp_resp_html}</pre>
-                                    </div>
-                                </div>
-                             </div>
-                             <div class='jb-section'>
-                                <div class='jb-section-label'>Full Prompt</div>
-                                <pre class='jb-code' id='jb-prompt-{idx}'>{disp_prompt_html}</pre>
-                             </div>
-                             '''}
-                          </div>
-                        </div>
-                        """)
-
-                    custom_css = """
-                    <style>
-                    .jb-cards-wrapper { margin-top: 0.5rem; }
-                    .jb-controls { display:flex; gap:0.5rem; margin-bottom:0.75rem; flex-wrap:wrap; }
-                    .jb-btn { background: linear-gradient(135deg,#f8fafc,#eef2f7); border:1px solid #cbd5e1; border-radius:6px; padding:0.4rem 0.8rem; font-size:0.75rem; font-weight:600; color:#334155; cursor:pointer; transition:.2s; }
-                    .jb-btn:hover { background: linear-gradient(135deg,#e2e8f0,#dce3ea); }
-                    .jb-btn.small { padding:0.3rem 0.6rem; }
-                    .jb-card { border:1px solid #e2e8f0; border-radius:8px; margin-bottom:0.6rem; background:#ffffff; box-shadow:0 1px 2px rgba(0,0,0,0.04); overflow:hidden; }
-                    .jb-card-header { display:flex; justify-content:space-between; align-items:center; padding:0.55rem 0.75rem; cursor:pointer; background:linear-gradient(90deg,#f8fafc,#f1f5f9); }
-                    .jb-card-left { display:flex; align-items:center; gap:0.6rem; }
-                    .jb-attempt-label { font-weight:600; color:#1e293b; }
-                    .jb-risk-badge { font-size:0.75rem; font-weight:600; padding:0.2rem 0.5rem; border-radius:12px; background:#f1f5f9; border:1px solid #cbd5e1; }
-                    .jb-card-actions { display:flex; align-items:center; gap:0.4rem; }
-                    .jb-toggle-icon { font-size:0.7rem; transition:transform .25s ease; }
-                    .jb-card-body { display:none; padding:0.75rem 0.9rem 0.9rem; border-top:1px solid #e2e8f0; }
-                    .jb-card-body.open { display:block; }
-                    .jb-section { margin-bottom:0.9rem; }
-                    .jb-section-label { font-size:0.7rem; text-transform:uppercase; letter-spacing:0.5px; font-weight:600; color:#64748b; margin-bottom:0.25rem; }
-                    .jb-code { background:#0f172a; color:#e2e8f0; padding:0.6rem 0.7rem; border-radius:6px; font-size:0.75rem; line-height:1.4; white-space:pre-wrap; word-break:break-word; }
-                    .jb-meta { font-size:0.65rem; color:#64748b; margin-top:0.3rem; }
-                    .jb-error { background:#fef2f2; color:#b91c1c; border:1px solid #fecaca; padding:0.6rem 0.7rem; border-radius:6px; font-size:0.8rem; }
-                    .jb-card-header:hover { background:linear-gradient(90deg,#eef2f7,#e2e8f0); }
-                    .jb-card.open .jb-toggle-icon { transform:rotate(90deg); }
-                    .jb-scores { display: flex; gap: 1rem; font-size: 0.8rem; }
-                    .jb-comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
-                    .jb-comp-header { font-weight: 600; font-size: 0.75rem; margin-bottom: 0.25rem; }
-                    @media (prefers-color-scheme: dark) {
-                        .jb-card { background:#1e293b; border-color:#334155; }
-                        .jb-card-header { background:linear-gradient(90deg,#243044,#1e293b); }
-                        .jb-card-header:hover { background:linear-gradient(90deg,#2d3a4f,#243044); }
-                        .jb-code { background:#1e293b; }
-                        .jb-risk-badge { background:#243044; border-color:#334155; color:#e2e8f0; }
-                    }
-                    </style>
-                    """
-
-                    controls_js = """
-                    <script>
-                    function toggleJBCard(idx){
-                        const card = document.getElementById('jb-card-'+idx);
-                        const body = document.getElementById('jb-body-'+idx);
-                        const icon = document.getElementById('jb-icon-'+idx);
-                        if(!card || !body) return;
-                        const open = body.classList.toggle('open');
-                        if(open){ card.classList.add('open'); icon.textContent='▼'; } else { card.classList.remove('open'); icon.textContent='▶'; }
-                    }
-                    function expandAllJBCards(){ document.querySelectorAll('.jb-card-body').forEach(b=>b.classList.add('open')); document.querySelectorAll('.jb-card').forEach(c=>c.classList.add('open')); document.querySelectorAll('.jb-toggle-icon').forEach(i=>i.textContent='▼'); }
-                    function collapseAllJBCards(){ document.querySelectorAll('.jb-card-body').forEach(b=>b.classList.remove('open')); document.querySelectorAll('.jb-card').forEach(c=>c.classList.remove('open')); document.querySelectorAll('.jb-toggle-icon').forEach(i=>i.textContent='▶'); }
-                    function copyText(ev,id){ ev.stopPropagation(); const el=document.getElementById(id); if(!el) return; const txt=el.innerText; navigator.clipboard.writeText(txt); const btn=ev.currentTarget; const old=btn.textContent; btn.textContent='Copied!'; setTimeout(()=>btn.textContent=old,1200); }
-                    </script>
-                    """
-
-                    wrapper_html = custom_css + "<div class='jb-controls'>" + \
-                        "<button class='jb-btn' onclick='expandAllJBCards()'>Expand All</button>" + \
-                        "<button class='jb-btn' onclick='collapseAllJBCards()'>Collapse All</button>" + \
-                        "</div><div class='jb-cards-wrapper'>" + ''.join(card_blocks) + "</div>" + controls_js
-
-                    st.components.v1.html(wrapper_html, height=400+len(results)*250, scrolling=True)
+    # The Jailbreak Persuasion Probe section is now integrated above.
+    # render_jailbreak_persuasion_probe_section(api_key, model_choice, provider)
 
 
 def render_pdf_analysis_page(api_key, model_choice, provider):
@@ -784,20 +484,94 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
             st.error(f"❌ Error during analysis: {e}")
 
 
-
-
-def render_footer():
-    """Render a small, unobtrusive footer."""
+def render_jailbreak_persuasion_probe_section(api_key, model_choice, provider):
+    """Render the Jailbreak Persuasion Probe section for text continuation and comparison."""
+    st.markdown("### 🕵️ Jailbreak Persuasion Probe")
     st.markdown(
         """
-        <div class="app-footer">
-            <div class="footer-left">© 2025 Copyright Detective</div>
-            <div class="footer-right">
-                <a href="https://github.com/changhu73/Copyright-Detective" target="_blank" rel="noopener">GitHub</a>
-                <span>·</span>
-                <a href="#" onclick="window.scrollTo({top: 0, behavior: 'smooth'}); return false;">Back to top</a>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+        This tool uses various prompt engineering techniques to persuade an LLM to continue a given text.
+        The generated continuation is then compared against a "Ground Truth" text to measure similarity,
+        helping to detect potential memorization of copyrighted content.
+        """
     )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**Input Text**")
+        input_text_probe = st.text_area(
+            "Input Text",
+            height=150,
+            placeholder="Enter the input snippet to be continued (e.g., 'It was the best of times...').",
+            label_visibility="collapsed",
+            key="probe_input_text",
+        )
+    with col2:
+        st.markdown("**Ground Truth**")
+        ground_truth_probe = st.text_area(
+            "Ground Truth",
+            height=150,
+            placeholder="Enter the expected ground truth continuation to compare against.",
+            label_visibility="collapsed",
+            key="probe_ground_truth",
+        )
+
+    persuasion_strategy = st.selectbox(
+        "**Choose a persuasion strategy:**",
+        [
+            "Role-Playing: The Author",
+            "Hypothetical Scenario: A Lost Manuscript",
+            "Creative Writing Exercise",
+            "Translation and Back-Translation",
+            "Stylistic Transformation",
+            "Tom and Jerry Game",
+        ],
+        help="Select a technique to encourage the model to generate a continuation.",
+    )
+
+    # Explanations for strategies
+    if persuasion_strategy:
+        template_text = get_persuasion_template(persuasion_strategy)
+        if template_text:
+            st.info(template_text)
+
+    if input_text_probe:
+        prompt_preview = get_persuasion_prompt(persuasion_strategy, input_text_probe)
+        with st.expander("Prompt Preview", expanded=False):
+            st.markdown(f"```\n{prompt_preview}\n```")
+
+    if st.button("🚀 Run Probe", use_container_width=True, key="run_probe_button"):
+        if not api_key:
+            st.error("⚠️ Please enter your API key in the sidebar.")
+        elif not input_text_probe or not ground_truth_probe:
+            st.warning("⚠️ Please enter both the Input Text and the Ground Truth text.")
+        else:
+            with st.spinner(f"🕵️ Running persuasion probe with {model_choice}..."):
+                result = run_persuasion_probe(
+                    api_key,
+                    model_choice,
+                    provider,
+                    persuasion_strategy,
+                    input_text_probe,
+                    ground_truth_probe,
+                )
+
+                if isinstance(result[0], str) and result[0].startswith("Error"):
+                    st.error(f"❌ {result[0]}")
+
+def render_footer():
+    """Renders a footer section."""
+    # This is a placeholder for any footer content you might want to add later.
+    pass
+
+def main():
+    """Main function to run the Streamlit app."""
+    render_header()
+    api_key, model_choice, provider, page = render_sidebar()
+
+    if page == "Text Snippet Analysis":
+        render_text_analysis_page(api_key, model_choice, provider)
+    else:
+        render_pdf_analysis_page(api_key, model_choice, provider)
+
+    # Footer (currently empty, can be customized)
+    render_footer()
