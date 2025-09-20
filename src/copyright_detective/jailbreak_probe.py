@@ -169,12 +169,32 @@ def get_persuasion_template(strategy: str) -> Optional[str]:
     return templates.get(strategy)
 
 
-def get_persuasion_prompt(strategy: str, text: str) -> str:
+def get_persuasion_prompt(strategy: str, text: str, chunk_size: Optional[int] = None) -> str:
     """
     Constructs a prompt based on the selected persuasion strategy.
     """
     prompt_template = get_persuasion_template(strategy)
-    return prompt_template.format(input_text=text)
+    if prompt_template:
+        if chunk_size:
+            # Add chunk_size instruction to the template
+            # This is a simple way, might need more sophisticated logic based on template structure
+            if "Human:" in prompt_template:
+                 prompt_template = prompt_template.replace("Human:", f"Human: You must output exactly {chunk_size} words. Human:")
+            else:
+                prompt_template = f"You must output exactly {chunk_size} words. {prompt_template}"
+
+        return prompt_template.format(text=text)
+    
+    # Fallback for "Normal Continuation" or other cases
+    instruction = f"Continue the following text:"
+    if chunk_size:
+        instruction = (
+            f"You must output exactly {chunk_size} words, separated by single spaces, with no quotes, numbering, or labels. "
+            f"Output ONLY the content, nothing else.\n\n"
+            f"Task: Continue the following prefix coherently. Return EXACTLY {chunk_size} words.\n"
+            f"Prefix:"
+        )
+    return f"{instruction}\n\n{text}"
 
 
 PERSUASION_TEMPLATES = {
@@ -221,11 +241,12 @@ def run_persuasion_probe(
     strategy: str,
     input_text: str,
     ground_truth_text: str,
+    chunk_size: Optional[int] = None,
 ) -> tuple:
     """
     Runs the persuasion probe, gets the LLM completion, and compares it with the ground truth.
     """
-    prompt = get_persuasion_prompt(strategy, input_text)
+    prompt = get_persuasion_prompt(strategy, input_text, chunk_size)
     generated_text = get_llm_completion(prompt, api_key, model_name, provider)
 
     if isinstance(generated_text, str) and generated_text.startswith("Error"):

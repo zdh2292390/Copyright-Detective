@@ -6,7 +6,8 @@ import matplotlib.pyplot as plt
 from src.copyright_detective.jailbreak_probe import (
     run_persuasion_probe,
 )
-from src.prompt_utils import get_full_prompt
+from src.prompt_utils import get_full_prompt, get_persuasion_prompt, get_persuasion_template
+from src.components import prompt_preview
 
 
 def render_header():
@@ -160,14 +161,14 @@ def render_text_analysis_page(api_key, model_choice, provider):
     if text1:
         # Define continuation_method for the preview logic even if it's not selected
         continuation_method = "Normal Continuation"
+        chunk_size = len(text2.split()) if text2 else None
         if prompt_type == "Sequential Continuation Evaluation":
             continuation_method = st.session_state.get("continuation_method_selector", "Normal Continuation")
-            prompt_to_preview = get_full_prompt(continuation_method, text1)
+            prompt_to_preview = get_full_prompt(continuation_method, text1, chunk_size=chunk_size)
         else:
-            prompt_to_preview = get_full_prompt(prompt_type, text1)
+            prompt_to_preview = get_full_prompt(prompt_type, text1, chunk_size=chunk_size)
 
-        with st.expander("Prompt Preview", expanded=False):
-            st.markdown(f"```\n{prompt_to_preview}\n```")
+        prompt_preview(prompt_to_preview)
 
     st.markdown("---")
     st.markdown("**Inference Time Scaling**")
@@ -193,6 +194,7 @@ def render_text_analysis_page(api_key, model_choice, provider):
         else:
             # Define a variable for continuation_method if it's not set
             continuation_method = st.session_state.get("continuation_method_selector", "Normal Continuation")
+            chunk_size = len(text2.split())
 
             if inference_runs == 1:
                 # Single run: Original Analysis Results
@@ -207,6 +209,7 @@ def render_text_analysis_page(api_key, model_choice, provider):
                             continuation_method,
                             text1,
                             text2,
+                            chunk_size=chunk_size,
                         )
                     else:
                         result = compare_texts(
@@ -216,6 +219,7 @@ def render_text_analysis_page(api_key, model_choice, provider):
                             model_name=model_choice,
                             provider=provider,
                             prompt_type=prompt_type,
+                            chunk_size=chunk_size,
                         )
                     
                     # Handle potential errors from both functions
@@ -276,6 +280,7 @@ def render_text_analysis_page(api_key, model_choice, provider):
                             continuation_method,
                             text1,
                             text2,
+                            chunk_size=chunk_size,
                         )
                     else:
                         result = compare_texts(
@@ -285,6 +290,7 @@ def render_text_analysis_page(api_key, model_choice, provider):
                             model_name=model_choice,
                             provider=provider,
                             prompt_type=prompt_type,
+                            chunk_size=chunk_size,
                         )
 
                     # Handle potential errors from both functions
@@ -535,9 +541,9 @@ def render_jailbreak_persuasion_probe_section(api_key, model_choice, provider):
             st.info(template_text)
 
     if input_text_probe:
-        prompt_preview = get_persuasion_prompt(persuasion_strategy, input_text_probe)
-        with st.expander("Prompt Preview", expanded=False):
-            st.markdown(f"```\n{prompt_preview}\n```")
+        chunk_size = len(ground_truth_probe.split()) if ground_truth_probe else None
+        prompt_to_preview = get_persuasion_prompt(persuasion_strategy, input_text_probe, chunk_size=chunk_size)
+        prompt_preview(prompt_to_preview)
 
     if st.button("🚀 Run Probe", use_container_width=True, key="run_probe_button"):
         if not api_key:
@@ -546,6 +552,7 @@ def render_jailbreak_persuasion_probe_section(api_key, model_choice, provider):
             st.warning("⚠️ Please enter both the Input Text and the Ground Truth text.")
         else:
             with st.spinner(f"🕵️ Running persuasion probe with {model_choice}..."):
+                chunk_size = len(ground_truth_probe.split())
                 result = run_persuasion_probe(
                     api_key,
                     model_choice,
@@ -553,6 +560,7 @@ def render_jailbreak_persuasion_probe_section(api_key, model_choice, provider):
                     persuasion_strategy,
                     input_text_probe,
                     ground_truth_probe,
+                    chunk_size=chunk_size,
                 )
 
                 if isinstance(result[0], str) and result[0].startswith("Error"):
