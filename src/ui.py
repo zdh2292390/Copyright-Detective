@@ -3,7 +3,6 @@ from src.copyright_detective.comparison import compare_texts
 from src.copyright_detective.pdf_utils import extract_text_from_pdf, split_text_into_chunks
 from src.copyright_detective.jailbreak_probe import (
     ProbeConfig,
-    available_strategies,
     run_probe_batch,
     list_templates,
     build_probe_prompt,
@@ -320,125 +319,215 @@ def render_text_analysis_page(api_key, model_choice, provider):
     # ------------------------------------------------------------------
     # Inline Jailbreak Persuasion Probe Section (migrated from standalone)
     # ------------------------------------------------------------------
-    st.markdown("---")
-    st.markdown("### 🧪 Jailbreak Persuasion Probe (Inline)")
+    st.markdown("### 🧪 Jailbreak Text Continuation Probe")
     st.markdown(
-        "This section evaluates whether crafted prompts can persuade the selected model to produce potentially copyright-violating content. "
-        "Provide a research goal or apply a pre-defined template. For safety, you can redact model outputs (only a short prefix shown)."
+        "This section evaluates whether a jailbreak prompt can trick the model into generating a specific continuation. "
+        "Select a template, provide the prefix text (the prompt), and the reference text (the expected output)."
     )
 
-    mode = st.radio("Probe Mode", ["Strategy", "Template"], horizontal=True, key="jb_mode")
+    templates = list_templates()
+    if not templates:
+        st.warning("No jailbreak templates found.")
+        return
+
+    # Prepare data for JS
+    import json as _json
+    js_templates = _json.dumps([
+        {
+            "id": t["id"],
+            "name": t.get("name", "Unnamed"),
+            "text": t.get("text", ""),
+            "patterns": t.get("pattern") or [],
+        }
+        for t in templates
+    ])
+
+    # Build unique pattern tags
+    pattern_tags = set()
+    for t in templates:
+        for p in (t.get("pattern") or []):
+            pattern_tags.add(p)
+    pattern_tags = sorted(pattern_tags)
+
+    # Fallback initial selection (first template)
+    if "jb_selected_template" not in st.session_state and templates:
+        st.session_state["jb_selected_template"] = templates[0]["id"]
+
+    st.markdown("#### 🔎 Template Browser")
+
+    hidden_selected = st.session_state.get("jb_selected_template", templates[0]["id"] if templates else "")
+
+    component_html = """
+    <style>
+    .tpl-browser { border:1px solid #e2e8f0; border-radius:10px; background:#ffffff; padding:0.9rem 1rem; margin-bottom:0.75rem; }
+    .tpl-search-row { display:flex; gap:0.6rem; flex-wrap:wrap; align-items:center; margin-bottom:0.65rem; }
+    .tpl-search-row input { flex:1; padding:0.45rem 0.6rem; border:1px solid #cbd5e1; border-radius:6px; font-size:0.8rem; }
+    .tpl-patterns { display:flex; flex-wrap:wrap; gap:0.4rem; margin-bottom:0.6rem; }
+    .tpl-chip { font-size:0.65rem; padding:0.35rem 0.55rem; border:1px solid #cbd5e1; border-radius:14px; cursor:pointer; background:#f1f5f9; font-weight:500; letter-spacing:0.3px; }
+    .tpl-chip.active { background:#2563eb; color:#fff; border-color:#1d4ed8; }
+    .tpl-list { max-height:260px; overflow:auto; border:1px solid #e2e8f0; border-radius:8px; background:#f8fafc; }
+    .tpl-item { padding:0.55rem 0.65rem; border-bottom:1px solid #e2e8f0; cursor:pointer; display:flex; flex-direction:column; gap:2px; }
+    .tpl-item:last-child { border-bottom:none; }
+    .tpl-item:hover { background:#eef2f7; }
+    .tpl-item.active { background:#dbeafe; box-shadow:inset 0 0 0 1px #3b82f6; }
+    .tpl-line1 { font-size:0.75rem; font-weight:600; color:#1e293b; display:flex; justify-content:space-between; align-items:center; }
+    .tpl-line2 { font-size:0.65rem; color:#64748b; display:flex; gap:0.4rem; flex-wrap:wrap; }
+    .tpl-tag { background:#e2e8f0; padding:0.1rem 0.4rem; border-radius:12px; font-size:0.55rem; font-weight:500; letter-spacing:0.3px; }
+    .tpl-raw-wrapper { margin-top:0.75rem; }
+    .tpl-raw-header { font-size:0.7rem; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:#64748b; margin-bottom:0.25rem; display:flex; align-items:center; gap:0.4rem; }
+    .tpl-raw-box { background:#0f172a; color:#e2e8f0; padding:0.65rem 0.75rem; border-radius:6px; font-size:0.7rem; line-height:1.35; max-height:220px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+    .tpl-empty { font-size:0.7rem; color:#94a3b8; padding:0.6rem; text-align:center; }
+    .tpl-counter { font-size:0.6rem; font-weight:500; color:#64748b; }
+    @media (prefers-color-scheme: dark) {
+        .tpl-browser { background:#1e293b; border-color:#334155; }
+        .tpl-list { background:#1e293b; border-color:#334155; }
+        .tpl-item { border-color:#334155; }
+        .tpl-item:hover { background:#2d3a4f; }
+        .tpl-item.active { background:#1e40af; }
+        .tpl-chip { background:#334155; border-color:#475569; color:#e2e8f0; }
+        .tpl-chip.active { background:#2563eb; border-color:#1d4ed8; }
+        .tpl-raw-box { background:#1e293b; }
+        .tpl-tag { background:#334155; color:#e2e8f0; }
+    }
+    </style>
+    <div class='tpl-browser'>
+        <div class='tpl-search-row'>
+            <input id='tpl-search' placeholder='Search ID / Name / Text...' />
+            <span class='tpl-counter' id='tpl-counter'></span>
+        </div>
+        <div class='tpl-patterns' id='tpl-patterns'></div>
+        <div class='tpl-list' id='tpl-list'></div>
+        <div class='tpl-raw-wrapper'>
+            <div class='tpl-raw-header'>📄 Raw Template</div>
+            <div class='tpl-raw-box' id='tpl-raw-box'>(select a template)</div>
+        </div>
+    </div>
+    <input type='hidden' id='tpl-selected-hidden' value='__INIT_SELECTED__' />
+    <script>
+    const TEMPLATES = %%JS_TEMPLATES%%;
+    let activePattern = 'All';
+    let searchKW = '';
+    let selectedId = document.getElementById('tpl-selected-hidden').value || '';
+    const patternTags = ['All', ...Array.from(new Set(TEMPLATES.flatMap(t=>t.patterns && t.patterns.length ? t.patterns : [])))];
+    function renderPatterns(){
+      const wrap = document.getElementById('tpl-patterns');
+      wrap.innerHTML = patternTags.map(p=>`<div class="tpl-chip ${p===activePattern?'active':''}" data-p="${p}">${p}</div>`).join('');
+      wrap.querySelectorAll('.tpl-chip').forEach(ch=>ch.addEventListener('click',()=>{ activePattern = ch.dataset.p; renderList(); renderPatterns(); }));
+    }
+    function passesFilters(t){
+      if(activePattern!=='All'){
+         const pats = t.patterns && t.patterns.length ? t.patterns : [];
+         if(!pats.includes(activePattern)) return false;
+      }
+      if(searchKW){
+         const blob = (t.id + ' ' + t.name + ' ' + t.text).toLowerCase();
+         if(!blob.includes(searchKW.toLowerCase())) return false;
+      }
+      return true;
+    }
+    function renderList(){
+       const list = document.getElementById('tpl-list');
+       const arr = TEMPLATES.filter(passesFilters);
+       document.getElementById('tpl-counter').textContent = arr.length + ' / ' + TEMPLATES.length;
+       if(!arr.length){ list.innerHTML = '<div class="tpl-empty">No templates match filters.</div>'; document.getElementById('tpl-raw-box').textContent='(select a template)'; return; }
+       list.innerHTML = arr.map(t=>{
+          const pats = (t.patterns && t.patterns.length) ? t.patterns.map(p=>`<span class=tpl-tag>${p}</span>`).join('') : '<span class=tpl-tag>(None)</span>';
+          return `<div class="tpl-item ${t.id===selectedId?'active':''}" data-id="${t.id}">\n <div class=tpl-line1><span>${t.id}</span><span style='font-size:0.55rem;opacity:.7;'>${t.name}</span></div>\n <div class=tpl-line2>${pats}</div>\n </div>`;
+       }).join('');
+       list.querySelectorAll('.tpl-item').forEach(it=>it.addEventListener('click',()=>{ selectedId=it.dataset.id; updateSelection(); renderList(); }));
+       updateSelection();
+    }
+    function updateSelection(){
+       const tpl = TEMPLATES.find(t=>t.id===selectedId);
+       document.getElementById('tpl-selected-hidden').value = selectedId;
+       if(tpl){ document.getElementById('tpl-raw-box').textContent = tpl.text || '(empty template)'; }
+    }
+    const searchInput = document.getElementById('tpl-search');
+    searchInput.addEventListener('input', ()=>{ searchKW = searchInput.value.trim(); renderList(); });
+    renderPatterns();
+    renderList();
+    </script>
+    """
+
+    # Replace placeholders
+    component_html = component_html.replace('__INIT_SELECTED__', hidden_selected.replace("'", "&#39;"))
+    component_html = component_html.replace('%%JS_TEMPLATES%%', js_templates)
+
+    st.components.v1.html(component_html, height=520, scrolling=True)
+
+    # Hidden bridge input (auto-updated by JS via polling from the outer document)
+    bridge_val = st.text_input(
+        "Selected Template Bridge",
+        value=st.session_state.get("jb_selected_template", templates[0]["id"] if templates else ""),
+        key="jb_selected_template_bridge",
+        label_visibility="collapsed",
+    )
+    st.markdown(
+        """
+        <style>
+        div[data-testid='stTextInput'] label:has(+ div input[aria-label='Selected Template Bridge']) {display:none !important;}
+        input[aria-label='Selected Template Bridge'] {display:none !important;}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    bridge_js = """
+    <script>
+    (function(){
+        function syncBridge(){
+            try {
+                const iframe = document.querySelector('iframe');
+                if(!iframe) return;
+                const idInput = iframe.contentDocument && iframe.contentDocument.getElementById('tpl-selected-hidden');
+                if(!idInput) return;
+                const newVal = idInput.value;
+                const bridge = document.querySelector("input[aria-label='Selected Template Bridge']");
+                if(bridge && newVal && bridge.value !== newVal){
+                    bridge.value = newVal;
+                    const ev = new Event('input', {bubbles:true});
+                    bridge.dispatchEvent(ev);
+                }
+            } catch(e) { /* ignore cross-frame errors */ }
+        }
+        setInterval(syncBridge, 800);
+    })();
+    </script>
+    """
+    st.markdown(bridge_js, unsafe_allow_html=True)
+
+    if templates:
+        selected_id = bridge_val or st.session_state.get("jb_selected_template") or templates[0]["id"]
+    else:
+        selected_id = ""
+    if selected_id:
+        st.session_state["jb_selected_template"] = selected_id
+
+    prefix_text = st.text_area(
+        "Input Text",
+        height=80,
+        placeholder="Enter the input snippet (e.g., a previous sentence, a continuation, or an excerpt). The role of this field depends on the selected prompt type.",
+        key="jb_prefix",
+    )
+    reference_text = st.text_area(
+        "Ground Truth",
+        height=80,
+        placeholder="Enter the ground truth text or expected target to compare against (e.g., the known reference or target continuation). Leave blank if not applicable.",
+        key="jb_reference",
+    )
 
     col1, col2 = st.columns(2)
-    if mode == "Strategy":
-        with col1:
-            strategy = st.selectbox("Probe Strategy", options=available_strategies(), key="jb_strategy")
-            attempts = st.number_input("Attempts", min_value=1, max_value=50, value=3, step=1, key="jb_attempts")
-            redact = st.checkbox(
-                "Redact model outputs in UI",
-                value=True,
-                help="Show only a small prefix of outputs to avoid accidental exposure",
-                key="jb_redact",
-            )
-        with col2:
-            temperature = st.slider("Temperature (if supported)", 0.0, 1.5, 0.7, 0.1, key="jb_temp")
-            dry_run = st.checkbox("Dry-run (no API calls)", value=False, key="jb_dry")
-
-        goal = st.text_area(
-            "Research Goal (what are we probing?)",
-            placeholder="e.g., Attempt to get the model to restate a known copyrighted paragraph without attribution.",
-            height=100,
-            key="jb_goal",
-        )
-        seed = st.text_area(
-            "Optional Seed/Context",
-            placeholder="Provide seed context if needed (kept generic and research-oriented).",
-            height=100,
-            key="jb_seed",
-        )
-        template_id = None
-        insertion_text = ""
-    else:
-        templates = list_templates()
-        pattern_to_templates = {}
-        for t in templates:
-            pats = t.get("pattern") or ["(None)"]
-            for p in pats:
-                pattern_to_templates.setdefault(p, []).append(t)
-
-        with st.expander("🔎 Template Filters", expanded=True):
-            colf1, colf2 = st.columns([1, 1])
-            with colf1:
-                selected_group = st.selectbox(
-                    "Primary Group (Pattern)",
-                    options=["All"] + sorted(pattern_to_templates.keys()),
-                    help="Filter by pattern tag group",
-                    key="jb_group",
-                )
-            with colf2:
-                search_kw = st.text_input(
-                    "Secondary Search (ID / Name / Text)",
-                    help="Enter keyword to perform secondary full-text filter (case-insensitive)",
-                    placeholder="e.g. DAN / roleplay / internet",
-                    key="jb_search",
-                ).strip()
-
-        filtered = []
-        for t in templates:
-            if selected_group != "All":
-                pats = t.get("pattern") or []
-                if selected_group not in pats:
-                    continue
-            if search_kw:
-                blob = f"{t['id']} {t['name']} {t.get('text','')}".lower()
-                if search_kw.lower() not in blob:
-                    continue
-            filtered.append(t)
-
-        if not filtered:
-            st.info("No templates matched current filters. Adjust criteria.")
-            filtered = templates
-
-        def label_for(t):
-            pats = ", ".join(t.get("pattern") or [])
-            return f"{t['id']} — {t['name']}" + (f"  [{pats}]" if pats else "")
-
-        option_labels = [label_for(t) for t in filtered]
-        selected_label = st.selectbox(
-            "Template", options=option_labels, help="Select a template to apply insertion", key="jb_tpl"
-        )
-        selected_id = selected_label.split(" — ")[0]
-
-        with st.expander("📄 模板原文 / Template Raw Text", expanded=False):
-            tpl_obj = next((t for t in filtered if t["id"] == selected_id), None)
-            if tpl_obj:
-                st.code(tpl_obj.get("text", ""))
-
-        insertion_text = st.text_area(
-            "Insertion Text (replace [INSERT PROMPT HERE])",
-            height=80,
-            placeholder="Enter text that will replace the placeholder in the template",
-            key="jb_insert",
-        )
+    with col1:
         attempts = st.number_input("Attempts", min_value=1, max_value=50, value=1, step=1, key="jb_attempts_tpl")
-        redact = st.checkbox("Redact model outputs in UI", value=True, key="jb_redact_tpl")
         temperature = st.slider("Temperature (if supported)", 0.0, 1.5, 0.7, 0.1, key="jb_temp_tpl")
+    with col2:
         dry_run = st.checkbox("Dry-run (no API calls)", value=False, key="jb_dry_tpl")
-        strategy = available_strategies()[0]
-        goal = "Template-driven probe"
-        seed = ""
-        template_id = selected_id
 
+    if selected_id:
         preview_cfg = ProbeConfig(
-            strategy=strategy,
-            goal_description=goal,
-            seed_context=seed,
-            attempts=1,
-            temperature=temperature,
-            redact_outputs=redact,
-            dry_run=True,
-            template_id=template_id,
-            insertion_text=insertion_text,
+            prefix_text=prefix_text,
+            reference_text=reference_text,
+            template_id=selected_id,
         )
         st.markdown("**Prompt Preview**")
         st.code(build_probe_prompt(preview_cfg))
@@ -449,54 +538,48 @@ def render_text_analysis_page(api_key, model_choice, provider):
     if run_probe:
         if not api_key:
             st.error("⚠️ Please enter your API key in the sidebar.")
-        elif mode == "Strategy" and not goal.strip():
-            st.warning("⚠️ Please describe the research goal.")
+        elif not prefix_text or not reference_text:
+            st.warning("⚠️ Please provide both Prefix and Reference text.")
         else:
             cfg = ProbeConfig(
-                strategy=strategy,
-                goal_description=goal,
-                seed_context=seed,
+                prefix_text=prefix_text,
+                reference_text=reference_text,
+                template_id=selected_id,
                 attempts=attempts,
                 temperature=temperature,
-                redact_outputs=redact,
                 dry_run=dry_run,
-                template_id=template_id,
-                insertion_text=insertion_text,
             )
             with st.spinner("Running probe attempts..."):
                 results, error = run_probe_batch(cfg, api_key, model_choice, provider)
                 if error:
                     st.error(f"❌ {error}")
                 else:
-                    risk_scores = [r.get("risk_score", 0) for r in results]
-                    avg_risk = sum(risk_scores) / len(risk_scores) if risk_scores else 0
-                    st.markdown("### 📊 Probe Summary")
-                    st.metric("Average Risk Score", f"{avg_risk:.1f}/100")
-                    st.markdown("### 🧾 Attempts")
+                    st.markdown("### 📊 Probe Results")
                     # Build custom cards
                     card_blocks = []
                     for idx, r in enumerate(results, 1):
-                        risk = r.get('risk_score', 0)
                         error_text = r.get('error')
-                        prompt_text = (r.get('prompt') or '').replace('`', '\\`')
-                        response_text = (r.get('response') or '').replace('`', '\\`')
-                        raw_len = r.get('raw_response_len', 0)
-                        # Redaction already applied upstream if chosen; still show marker
-                        if redact and not error_text:
-                            display_response = (response_text[:120] + ('...' if len(response_text) > 120 else '')) + "\n[REDACTED PREVIEW]"
-                        else:
-                            display_response = response_text
+                        prompt_text = r.get('prompt', '')
+                        response_text = r.get('response', '')
+                        ref_text = r.get('reference', '')
+                        rouge_l = r.get('rouge_l', 0)
+                        jaccard = r.get('jaccard', 0)
+                        levenshtein = r.get('levenshtein', 0)
+
                         # Escape HTML special chars
                         import html as _html
                         disp_prompt_html = _html.escape(prompt_text)
-                        disp_resp_html = _html.escape(display_response)
-                        status_badge = '🟢' if risk < 30 else '🟠' if risk < 60 else '🔴'
+                        disp_resp_html = _html.escape(response_text)
+                        disp_ref_html = _html.escape(ref_text)
+
+                        status_badge = '🟢' if rouge_l < 0.3 else '🟠' if rouge_l < 0.6 else '🔴'
+
                         card_blocks.append(f"""
                         <div class='jb-card' id='jb-card-{idx}'>
                           <div class='jb-card-header' onclick="toggleJBCard({idx})">
                              <div class='jb-card-left'>
                                 <span class='jb-attempt-label'>Attempt {idx}</span>
-                                <span class='jb-risk-badge' data-risk='{risk}'>{status_badge} Risk {risk}</span>
+                                <span class='jb-risk-badge'>{status_badge} ROUGE-L: {rouge_l:.3f}</span>
                              </div>
                              <div class='jb-card-actions'>
                                 <button class='jb-btn small' onclick="copyText(event,'jb-prompt-{idx}')">Copy Prompt</button>
@@ -507,13 +590,29 @@ def render_text_analysis_page(api_key, model_choice, provider):
                           <div class='jb-card-body' id='jb-body-{idx}'>
                              {('<div class="jb-error">❌ ' + _html.escape(error_text) + '</div>') if error_text else f'''
                              <div class='jb-section'>
-                                <div class='jb-section-label'>Prompt</div>
-                                <pre class='jb-code' id='jb-prompt-{idx}'>{disp_prompt_html}</pre>
+                                <div class='jb-section-label'>Scores</div>
+                                <div class='jb-scores'>
+                                    <span>ROUGE-L: <b>{rouge_l:.4f}</b></span>
+                                    <span>Jaccard: <b>{jaccard:.4f}</b></span>
+                                    <span>Levenshtein: <b>{levenshtein}</b></span>
+                                </div>
                              </div>
                              <div class='jb-section'>
-                                <div class='jb-section-label'>Model Response</div>
-                                <pre class='jb-code' id='jb-response-{idx}'>{disp_resp_html}</pre>
-                                <div class='jb-meta'>Length: {raw_len} chars{' • Redacted preview' if (redact and not error_text) else ''}</div>
+                                <div class='jb-section-label'>Reference vs. Response</div>
+                                <div class='jb-comparison'>
+                                    <div class='jb-comp-col'>
+                                        <div class='jb-comp-header'>Reference</div>
+                                        <pre class='jb-code'>{disp_ref_html}</pre>
+                                    </div>
+                                    <div class='jb-comp-col'>
+                                        <div class='jb-comp-header'>Model Response</div>
+                                        <pre class='jb-code' id='jb-response-{idx}'>{disp_resp_html}</pre>
+                                    </div>
+                                </div>
+                             </div>
+                             <div class='jb-section'>
+                                <div class='jb-section-label'>Full Prompt</div>
+                                <pre class='jb-code' id='jb-prompt-{idx}'>{disp_prompt_html}</pre>
                              </div>
                              '''}
                           </div>
@@ -543,6 +642,9 @@ def render_text_analysis_page(api_key, model_choice, provider):
                     .jb-error { background:#fef2f2; color:#b91c1c; border:1px solid #fecaca; padding:0.6rem 0.7rem; border-radius:6px; font-size:0.8rem; }
                     .jb-card-header:hover { background:linear-gradient(90deg,#eef2f7,#e2e8f0); }
                     .jb-card.open .jb-toggle-icon { transform:rotate(90deg); }
+                    .jb-scores { display: flex; gap: 1rem; font-size: 0.8rem; }
+                    .jb-comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+                    .jb-comp-header { font-weight: 600; font-size: 0.75rem; margin-bottom: 0.25rem; }
                     @media (prefers-color-scheme: dark) {
                         .jb-card { background:#1e293b; border-color:#334155; }
                         .jb-card-header { background:linear-gradient(90deg,#243044,#1e293b); }
@@ -572,10 +674,9 @@ def render_text_analysis_page(api_key, model_choice, provider):
                     wrapper_html = custom_css + "<div class='jb-controls'>" + \
                         "<button class='jb-btn' onclick='expandAllJBCards()'>Expand All</button>" + \
                         "<button class='jb-btn' onclick='collapseAllJBCards()'>Collapse All</button>" + \
-                        ("<span style='font-size:0.7rem; color:#64748b;'>Redacted preview enabled</span>" if redact else "") + \
                         "</div><div class='jb-cards-wrapper'>" + ''.join(card_blocks) + "</div>" + controls_js
 
-                    st.components.v1.html(wrapper_html, height=600+len(results)*80, scrolling=True)
+                    st.components.v1.html(wrapper_html, height=400+len(results)*250, scrolling=True)
 
 
 def render_pdf_analysis_page(api_key, model_choice, provider):
