@@ -13,3 +13,9 @@ def prompt_preview(prompt_text: str, expanded: bool = False):
             """,
             unsafe_allow_html=True,
         )
+
+def render_prompt_preview(prompt_text: str):
+    """
+    Renders the prompt preview as a custom component.
+    """
+    prompt_preview(prompt_text)

@@ -6,8 +6,8 @@ import matplotlib.pyplot as plt
 from src.copyright_detective.jailbreak_probe import (
     run_persuasion_probe,
 )
-from src.prompt_utils import get_full_prompt, get_persuasion_prompt, get_persuasion_template
-from src.components import prompt_preview
+from src.prompt_utils import get_full_prompt, get_persuasion_prompt, get_persuasion_template, get_prompt_template
+from src.components import render_prompt_preview
 
 
 def render_header():
@@ -93,6 +93,27 @@ def render_sidebar():
 def render_text_analysis_page(api_key, model_choice, provider):
     """Render the text snippet analysis page."""
     st.markdown("### 📝 Text Snippet Analysis")
+    st.markdown(
+        "Analyze text snippets to detect potential copyright infringement by comparing generated text with ground truth."
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**Input Text**")
+        text1 = st.text_area(
+            "Input Text",
+            height=150,
+            placeholder="Enter the input snippet (e.g., a previous sentence, a continuation, or an excerpt). The role of this field depends on the selected prompt type.",
+            label_visibility="collapsed",
+        )
+    with col2:
+        st.markdown("**Ground Truth**")
+        text2 = st.text_area(
+            "Ground Truth",
+            height=150,
+            placeholder="Enter the ground truth text or expected target to compare against (e.g., the known reference or target continuation). Leave blank if not applicable.",
+            label_visibility="collapsed",
+        )
 
     # Prompt Selection (moved from sidebar to main page)
     prompt_type = st.selectbox(
@@ -125,50 +146,55 @@ def render_text_analysis_page(api_key, model_choice, provider):
             help="Select 'Normal Continuation' for a direct prompt or a persuasion strategy to frame the request differently.",
             key="continuation_method_selector",
         )
+
+        # Immediately preview the prompt after selecting the continuation method
+        # Use placeholder text if the input is empty
+        chunk_size = len(text2.split()) if text2 else "{word_count}"
+        prompt_to_preview = get_full_prompt(
+            prompt_type="Sequential Continuation Evaluation",
+            input_text=text1,
+            chunk_size=chunk_size,
+            continuation_method=continuation_method
+        )
+        st.markdown(
+            "ℹ️ The length of the generated text will be adjusted to match the character count of your **Ground Truth** input."
+        )
+        render_prompt_preview(prompt_to_preview)
         
     elif prompt_type == "Preceding Context Reconstruction":
         st.markdown(
             "_Preceding Context Reconstruction: Provide the continuation or subsequent sentence and ask the model to generate the most likely preceding sentence. This helps detect whether the model can reconstruct prior context, which may indicate memorization of original works._"
         )
+        chunk_size = len(text2.split()) if text2 else "{word_count}"
+        prompt_to_preview = get_full_prompt(prompt_type, text1, chunk_size=chunk_size)
+        st.markdown(
+            "ℹ️ The length of the generated text will be adjusted to match the character count of your **Ground Truth** input."
+        )
+        render_prompt_preview(prompt_to_preview)
+
     elif prompt_type == "Copyright Attribution Inference":
         st.markdown(
             "_Copyright Attribution Inference: Based on the provided text snippet, ask the model to infer a likely title or attribution for the work (for example, a classic novel or another copyrighted source). Useful for identifying potential origins of the snippet._"
         )
-
-    st.markdown(
-        "Analyze text snippets to detect potential copyright infringement by comparing generated text with ground truth."
-    )
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("**Input Text**")
-        text1 = st.text_area(
-            "Input Text",
-            height=150,
-            placeholder="Enter the input snippet (e.g., a previous sentence, a continuation, or an excerpt). The role of this field depends on the selected prompt type.",
-            label_visibility="collapsed",
+        chunk_size = len(text2.split()) if text2 else "{word_count}"
+        prompt_to_preview = get_full_prompt(prompt_type, text1, chunk_size=chunk_size)
+        st.markdown(
+            "ℹ️ The length of the generated text will be adjusted to match the character count of your **Ground Truth** input."
         )
-    with col2:
-        st.markdown("**Ground Truth**")
-        text2 = st.text_area(
-            "Ground Truth",
-            height=150,
-            placeholder="Enter the ground truth text or expected target to compare against (e.g., the known reference or target continuation). Leave blank if not applicable.",
-            label_visibility="collapsed",
-        )
+        render_prompt_preview(prompt_to_preview)
 
-    # Prompt Preview - Unified for all types
-    if text1:
-        # Define continuation_method for the preview logic even if it's not selected
-        continuation_method = "Normal Continuation"
-        chunk_size = len(text2.split()) if text2 else None
-        if prompt_type == "Sequential Continuation Evaluation":
-            continuation_method = st.session_state.get("continuation_method_selector", "Normal Continuation")
-            prompt_to_preview = get_full_prompt(continuation_method, text1, chunk_size=chunk_size)
-        else:
-            prompt_to_preview = get_full_prompt(prompt_type, text1, chunk_size=chunk_size)
+    # Prompt Preview - This is now handled within each prompt_type section
+    # if text1:
+    #     # Define continuation_method for the preview logic even if it's not selected
+    #     continuation_method = "Normal Continuation"
+    #     chunk_size = len(text2.split()) if text2 else None
+    #     if prompt_type == "Sequential Continuation Evaluation":
+    #         continuation_method = st.session_state.get("continuation_method_selector", "Normal Continuation")
+    #         prompt_to_preview = get_full_prompt(continuation_method, text1, chunk_size=chunk_size)
+    #     else:
+    #         prompt_to_preview = get_full_prompt(prompt_type, text1, chunk_size=chunk_size)
 
-        prompt_preview(prompt_to_preview)
+    #     prompt_preview(prompt_to_preview)
 
     st.markdown("---")
     st.markdown("**Inference Time Scaling**")
@@ -538,12 +564,14 @@ def render_jailbreak_persuasion_probe_section(api_key, model_choice, provider):
     if persuasion_strategy:
         template_text = get_persuasion_template(persuasion_strategy)
         if template_text:
-            st.info(template_text)
+            # Fill placeholders for display
+            display_template = template_text.replace("{input_text}", "[Your input text will go here]").replace("{word_count}", "[word_count]")
+            st.info(display_template)
 
     if input_text_probe:
-        chunk_size = len(ground_truth_probe.split()) if ground_truth_probe else None
+        chunk_size = len(ground_truth_probe.split()) if ground_truth_probe else "{word_count}"
         prompt_to_preview = get_persuasion_prompt(persuasion_strategy, input_text_probe, chunk_size=chunk_size)
-        prompt_preview(prompt_to_preview)
+        render_prompt_preview(prompt_to_preview)
 
     if st.button("🚀 Run Probe", use_container_width=True, key="run_probe_button"):
         if not api_key:
