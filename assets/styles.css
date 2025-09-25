@@ -175,6 +175,69 @@
 .stExpander { border-radius: 12px; border: 1px solid var(--border); background: #ffffff; }
 .stExpander summary { font-weight: 700; color: #0f172a; font-size: 0.95rem; }
 
+/* Prompt preview */
+.cd-prompt-preview { margin: 0.25rem 0 0.6rem; }
+.cd-prompt-preview__container {
+    border: 1px solid #d0d4dd;
+    border-radius: 12px;
+    background: linear-gradient(145deg, #f7f9fc 0%, #eef2f8 100%);
+    padding: 14px;
+    color: #1f2937;
+    transition: box-shadow 0.2s ease;
+}
+.cd-prompt-preview__container[open] { box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12); }
+.cd-prompt-preview__summary {
+    list-style: none;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 1.05rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: #1d4ed8;
+}
+.cd-prompt-preview__summary::-webkit-details-marker { display: none; }
+.cd-prompt-preview__summary::before {
+    content: "\25B6";
+    display: inline-flex;
+    transition: transform 0.2s ease;
+}
+.cd-prompt-preview__container[open] > .cd-prompt-preview__summary::before { transform: rotate(90deg); }
+.cd-prompt-preview__content {
+    position: relative;
+    background: #0f172a;
+    color: #f8fafc;
+    border-radius: 10px;
+    margin-top: 14px;
+    padding: 18px;
+    overflow: auto;
+}
+.cd-prompt-preview__copy {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    background: rgba(148, 163, 184, 0.2);
+    border: 1px solid rgba(148, 163, 184, 0.3);
+    border-radius: 8px;
+    color: #e2e8f0;
+    padding: 6px 12px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: background 0.2s ease, transform 0.2s ease;
+}
+.cd-prompt-preview__copy:hover {
+    background: rgba(148, 163, 184, 0.35);
+    transform: translateY(-1px);
+}
+.cd-prompt-preview__text {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: "JetBrains Mono", "Fira Code", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 0.95rem;
+    line-height: 1.6;
+}
+
 /* Sidebar polish */
 [data-testid="stSidebar"] > div { background: linear-gradient(180deg, #ffffff, #fbfdff); border-right: 1px solid var(--border); }
 /* Hide sidebar toggles */
