@@ -148,12 +148,14 @@ def render_text_analysis_page(api_key, model_choice, provider):
 
         # Immediately preview the prompt after selecting the continuation method
         # Use placeholder text if the input is empty
-        chunk_size = len(text2.split()) if text2 else "{word_count}"
+        chunk_size_preview = len(text2.split()) if text2 else None
+        char_count_preview = len(text2) if text2 else None
         prompt_to_preview = get_full_prompt(
             prompt_type="Sequential Continuation Evaluation",
             input_text=text1,
-            chunk_size=chunk_size,
-            continuation_method=continuation_method
+            chunk_size=chunk_size_preview,
+            continuation_method=continuation_method,
+            char_count=char_count_preview,
         )
         st.markdown(
             "ℹ️ The length of the generated text will be adjusted to match the character count of your **Ground Truth** input."
@@ -164,8 +166,28 @@ def render_text_analysis_page(api_key, model_choice, provider):
         st.markdown(
             "_Preceding Context Reconstruction: Provide the continuation or subsequent sentence and ask the model to generate the most likely preceding sentence. This helps detect whether the model can reconstruct prior context, which may indicate memorization of original works._"
         )
-        chunk_size = len(text2.split()) if text2 else "{word_count}"
-        prompt_to_preview = get_full_prompt(prompt_type, text1, chunk_size=chunk_size)
+        preceding_method = st.selectbox(
+            "Choose a continuation method:",
+            [
+                "Normal Continuation",
+                "Role-Playing: The Author",
+                "Hypothetical Scenario: A Lost Manuscript",
+                "Creative Writing Exercise",
+                "Translation and Back-Translation",
+                "Tom and Jerry Game",
+            ],
+            help="Select a reconstruction framing. Each strategy nudges the model toward recreating the missing preceding context.",
+            key="preceding_method_selector",
+        )
+        chunk_size_preview = len(text2.split()) if text2 else None
+        char_count_preview = len(text2) if text2 else None
+        prompt_to_preview = get_full_prompt(
+            prompt_type,
+            text1,
+            chunk_size=chunk_size_preview,
+            continuation_method=preceding_method,
+            char_count=char_count_preview,
+        )
         st.markdown(
             "ℹ️ The length of the generated text will be adjusted to match the character count of your **Ground Truth** input."
         )
@@ -175,8 +197,14 @@ def render_text_analysis_page(api_key, model_choice, provider):
         st.markdown(
             "_Copyright Attribution Inference: Based on the provided text snippet, ask the model to infer a likely title or attribution for the work (for example, a classic novel or another copyrighted source). Useful for identifying potential origins of the snippet._"
         )
-        chunk_size = len(text2.split()) if text2 else "{word_count}"
-        prompt_to_preview = get_full_prompt(prompt_type, text1, chunk_size=chunk_size)
+        chunk_size_preview = len(text2.split()) if text2 else None
+        char_count_preview = len(text2) if text2 else None
+        prompt_to_preview = get_full_prompt(
+            prompt_type,
+            text1,
+            chunk_size=chunk_size_preview,
+            char_count=char_count_preview,
+        )
         st.markdown(
             "ℹ️ The length of the generated text will be adjusted to match the character count of your **Ground Truth** input."
         )
@@ -235,10 +263,13 @@ def render_text_analysis_page(api_key, model_choice, provider):
         if not api_key:
             st.error(f"⚠️ Please enter your API key in the sidebar.")
         elif not text1 or not text2:
-            st.warning("⚠️ Please enter both prefix text and ground truth.")
+            st.warning("⚠️ Please enter both input text and ground truth.")
         else:
             # Define a variable for continuation_method if it's not set
-            continuation_method = st.session_state.get("continuation_method_selector", "Normal Continuation")
+            if prompt_type == "Preceding Context Reconstruction":
+                continuation_method = st.session_state.get("preceding_method_selector", "Normal Continuation")
+            else:
+                continuation_method = st.session_state.get("continuation_method_selector", "Normal Continuation")
             chunk_size = len(text2.split())
 
             if inference_runs == 1:
@@ -269,6 +300,7 @@ def render_text_analysis_page(api_key, model_choice, provider):
                             chunk_size=chunk_size,
                             temperature=temperature,
                             top_p=top_p,
+                            continuation_method=continuation_method,
                         )
                     
                     # Handle potential errors from both functions
@@ -344,6 +376,7 @@ def render_text_analysis_page(api_key, model_choice, provider):
                             chunk_size=chunk_size,
                             temperature=temperature,
                             top_p=top_p,
+                            continuation_method=continuation_method,
                         )
 
                     # Handle potential errors from both functions

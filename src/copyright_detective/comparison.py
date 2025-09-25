@@ -5,6 +5,8 @@ import anthropic
 import google.generativeai as genai
 from typing import Optional
 
+from src.prompt_utils import get_full_prompt
+
 
 def _normalize_spaces(s: str) -> str:
     return " ".join(s.strip().split())
@@ -110,13 +112,25 @@ def calculate_jaccard_index(text1, text2):
         return 0.0
     return len(intersection) / len(union)
 
-def compare_texts(input_text, reference_text, api_key, model_name, provider="OpenAI", prompt_type="Sequential Continuation Evaluation", chunk_size=None, temperature=0.7, top_p=1.0):
+def compare_texts(
+    input_text,
+    reference_text,
+    api_key,
+    model_name,
+    provider="OpenAI",
+    prompt_type="Sequential Continuation Evaluation",
+    chunk_size=None,
+    temperature=0.7,
+    top_p=1.0,
+    continuation_method="Normal Continuation",
+):
     """
     Generates text based on the input_text according to prompt_type and compares it to reference_text.
-    prompt_type choices:
+        prompt_type choices:
       - "Sequential Continuation Evaluation": continue from the given prefix (input_text)
       - "Preceding Context Reconstruction": infer the preceding sentence given a continuation (input_text)
       - "Copyright Attribution Inference": infer a likely title/attribution from the snippet (input_text)
+        continuation_method selects the strategy template for reconstruction prompts.
     """
     # Determine target length for generation
     if reference_text and prompt_type != "Copyright Attribution Inference":
@@ -133,10 +147,17 @@ def compare_texts(input_text, reference_text, api_key, model_name, provider="Ope
             f"Prefix:\n{input_text}"
         )
     elif prompt_type == "Preceding Context Reconstruction":
-        prompt = (
-            f"Provide only the single most likely preceding context for the given continuation. Your response should be approximately {target_char_count} characters long. "
-            f"No commentary, labels, quotes, or extra formatting.\n\n"
-            f"Continuation:\n{input_text}"
+        word_target = (
+            chunk_size
+            if chunk_size is not None
+            else (len(reference_text.split()) if reference_text else None)
+        )
+        prompt = get_full_prompt(
+            prompt_type,
+            input_text,
+            chunk_size=word_target,
+            continuation_method=continuation_method,
+            char_count=target_char_count,
         )
     else:  # Copyright Attribution Inference
         prompt = (
