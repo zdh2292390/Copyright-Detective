@@ -242,12 +242,14 @@ def run_persuasion_probe(
     input_text: str,
     ground_truth_text: str,
     chunk_size: Optional[int] = None,
+    temperature: float = 0.7,
+    top_p: float = 1.0,
 ) -> tuple:
     """
     Runs the persuasion probe, gets the LLM completion, and compares it with the ground truth.
     """
     prompt = get_persuasion_prompt(strategy, input_text, chunk_size)
-    generated_text = get_llm_completion(prompt, api_key, model_name, provider)
+    generated_text = get_llm_completion(prompt, api_key, model_name, provider, temperature=temperature, top_p=top_p)
 
     if isinstance(generated_text, str) and generated_text.startswith("Error"):
         return generated_text, 0, 0, 0

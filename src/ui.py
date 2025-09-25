@@ -97,6 +97,17 @@ def render_text_analysis_page(api_key, model_choice, provider):
         "Analyze text snippets to detect potential copyright infringement by comparing generated text with ground truth."
     )
 
+    # Prompt Selection (moved from sidebar to main page)
+    prompt_type = st.selectbox(
+        "Choose the Prompt Type:",
+        [
+            "Sequential Continuation Evaluation",
+            "Preceding Context Reconstruction",
+            "Copyright Attribution Inference",
+        ],
+        help="Select the type of prompt to guide the Text Snippet Analysis. (Choose only; typing custom values is not allowed.)",
+    )
+
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("**Input Text**")
@@ -114,17 +125,6 @@ def render_text_analysis_page(api_key, model_choice, provider):
             placeholder="Enter the ground truth text or expected target to compare against (e.g., the known reference or target continuation). Leave blank if not applicable.",
             label_visibility="collapsed",
         )
-
-    # Prompt Selection (moved from sidebar to main page)
-    prompt_type = st.selectbox(
-        "Choose the Prompt Type:",
-        [
-            "Sequential Continuation Evaluation",
-            "Preceding Context Reconstruction",
-            "Copyright Attribution Inference",
-        ],
-        help="Select the type of prompt to guide the Text Snippet Analysis. (Choose only; typing custom values is not allowed.)",
-    )
 
     # Explanatory notes for each prompt type
     if prompt_type == "Sequential Continuation Evaluation":
@@ -196,15 +196,35 @@ def render_text_analysis_page(api_key, model_choice, provider):
     #     prompt_preview(prompt_to_preview)
 
     st.markdown("---")
-    st.markdown("**Inference Time Scaling**")
-    inference_runs = st.number_input(
-        "Number of Inference Runs",
-        min_value=1,
-        max_value=100,
-        value=1,
-        step=1,
-        help="Specify how many times to run the inference for statistical analysis.",
-    )
+    st.markdown("**Inference Time Scaling & Parameters**")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        inference_runs = st.number_input(
+            "Number of Inference Runs",
+            min_value=1,
+            max_value=100,
+            value=1,
+            step=1,
+            help="Specify how many times to run the inference for statistical analysis.",
+        )
+    with col2:
+        temperature = st.slider(
+            "Temperature",
+            min_value=0.0,
+            max_value=2.0,
+            value=0.7,
+            step=0.01,
+            help="Controls randomness. Lower values make the model more deterministic.",
+        )
+    with col3:
+        top_p = st.slider(
+            "Top-P",
+            min_value=0.0,
+            max_value=1.0,
+            value=1.0,
+            step=0.01,
+            help="Controls diversity via nucleus sampling. 0.5 means half of all likelihood-weighted options are considered.",
+        )
 
     st.markdown("---")
     col_center = st.columns([1, 2, 1])[1]
@@ -235,6 +255,8 @@ def render_text_analysis_page(api_key, model_choice, provider):
                             text1,
                             text2,
                             chunk_size=chunk_size,
+                            temperature=temperature,
+                            top_p=top_p,
                         )
                     else:
                         result = compare_texts(
@@ -245,6 +267,8 @@ def render_text_analysis_page(api_key, model_choice, provider):
                             provider=provider,
                             prompt_type=prompt_type,
                             chunk_size=chunk_size,
+                            temperature=temperature,
+                            top_p=top_p,
                         )
                     
                     # Handle potential errors from both functions
@@ -306,6 +330,8 @@ def render_text_analysis_page(api_key, model_choice, provider):
                             text1,
                             text2,
                             chunk_size=chunk_size,
+                            temperature=temperature,
+                            top_p=top_p,
                         )
                     else:
                         result = compare_texts(
@@ -316,6 +342,8 @@ def render_text_analysis_page(api_key, model_choice, provider):
                             provider=provider,
                             prompt_type=prompt_type,
                             chunk_size=chunk_size,
+                            temperature=temperature,
+                            top_p=top_p,
                         )
 
                     # Handle potential errors from both functions

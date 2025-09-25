@@ -21,7 +21,7 @@ def _enforce_exact_char_count(text: str, target: Optional[int]) -> str:
     
     return normalized_text
 
-def get_llm_completion(prompt, api_key, model_name, provider="OpenAI"):
+def get_llm_completion(prompt, api_key, model_name, provider="OpenAI", temperature=0.7, top_p=1.0):
     """
     Gets a completion from the specified LLM.
     """
@@ -34,7 +34,9 @@ def get_llm_completion(prompt, api_key, model_name, provider="OpenAI"):
             ]
             response = client.chat.completions.create(
                 model=model_name,
-                messages=messages
+                messages=messages,
+                temperature=temperature,
+                top_p=top_p,
             )
             return response.choices[0].message.content.strip()
         
@@ -50,6 +52,8 @@ def get_llm_completion(prompt, api_key, model_name, provider="OpenAI"):
             response = client.chat.completions.create(
                 model=model_name,
                 messages=messages,
+                temperature=temperature,
+                top_p=top_p,
                 extra_headers={
                     "HTTP-Referer": "http://localhost",
                     "X-Title": "Copyright Detective"
@@ -64,14 +68,20 @@ def get_llm_completion(prompt, api_key, model_name, provider="OpenAI"):
                 max_tokens=1000,
                 messages=[
                     {"role": "user", "content": prompt}
-                ]
+                ],
+                temperature=temperature,
+                top_p=top_p,
             )
             return response.content[0].text.strip()
         
         elif provider == "Google Gemini":
             genai.configure(api_key=api_key)
             model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
+            generation_config = genai.types.GenerationConfig(
+                temperature=temperature,
+                top_p=top_p,
+            )
+            response = model.generate_content(prompt, generation_config=generation_config)
             return response.text.strip()
         
         else:
@@ -100,7 +110,7 @@ def calculate_jaccard_index(text1, text2):
         return 0.0
     return len(intersection) / len(union)
 
-def compare_texts(input_text, reference_text, api_key, model_name, provider="OpenAI", prompt_type="Sequential Continuation Evaluation", chunk_size=None):
+def compare_texts(input_text, reference_text, api_key, model_name, provider="OpenAI", prompt_type="Sequential Continuation Evaluation", chunk_size=None, temperature=0.7, top_p=1.0):
     """
     Generates text based on the input_text according to prompt_type and compares it to reference_text.
     prompt_type choices:
@@ -133,7 +143,7 @@ def compare_texts(input_text, reference_text, api_key, model_name, provider="Ope
             "Provide only a short, likely title or attribution for the following text snippet. Do NOT include commentary, summaries, or extra formatting — return only the inferred title/attribution.\n\nSnippet:\n" + input_text
         )
 
-    generated_text = get_llm_completion(prompt, api_key, model_name, provider)
+    generated_text = get_llm_completion(prompt, api_key, model_name, provider, temperature=temperature, top_p=top_p)
     # Return early if API error to avoid post-processing masking the error message
     if isinstance(generated_text, str) and generated_text.startswith("Error"):
         return generated_text, 0.0, 0.0, 0
