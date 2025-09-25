@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+from typing import Iterable, Optional, Tuple
 
 import streamlit as st
 
@@ -33,3 +34,57 @@ def render_prompt_preview(prompt_text: str, *, expanded: bool = False) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+AccordionSection = Tuple[str, str, Optional[str]]
+
+
+def render_collapsible_panel(
+    title: str,
+    sections: Iterable[AccordionSection],
+    *,
+    meta: Optional[str] = None,
+    expanded: bool = False,
+) -> None:
+    """Render a custom collapsible panel using native HTML details/summary."""
+
+    open_attr = "open" if expanded else ""
+    escaped_title = html.escape(title)
+    meta_html = f'<span class="cd-accordion__meta">{html.escape(meta)}</span>' if meta else ""
+
+    content_html_parts = []
+    for heading, body, variant in sections:
+        escaped_heading = html.escape(heading)
+        escaped_body = html.escape(body or "").replace("\n", "<br/>")
+
+        if variant == "generated":
+            block_html = (
+                f'<div class="cd-accordion__block">'
+                f'<div class="cd-accordion__block-title">{escaped_heading}</div>'
+                f'<div class="generated-text">{escaped_body}</div>'
+                f"</div>"
+            )
+        else:
+            block_html = (
+                f'<div class="cd-accordion__block">'
+                f'<div class="cd-accordion__block-title">{escaped_heading}</div>'
+                f'<div class="cd-accordion__block-text">{escaped_body}</div>'
+                f"</div>"
+            )
+        content_html_parts.append(block_html)
+
+    content_html = "".join(content_html_parts)
+
+    panel_html = f"""
+    <details class="cd-accordion" {open_attr}>
+        <summary class="cd-accordion__summary">
+            <span class="cd-accordion__title">{escaped_title}</span>
+            {meta_html}
+        </summary>
+        <div class="cd-accordion__content">
+            {content_html}
+        </div>
+    </details>
+    """
+
+    st.markdown(panel_html, unsafe_allow_html=True)

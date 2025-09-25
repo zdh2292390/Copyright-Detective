@@ -60,3 +60,4 @@ The page also includes a small, curated library of well-known jailbreak prompts 
 - Chunk size is specified in words. During Whole PDF Analysis, the Generated Text produced for each chunk is enforced to be exactly the same number of words as the selected chunk size. This ensures fair, length-controlled comparisons across chunks.
 - You can optionally select a persuasion framing (e.g., Role-Playing or Lost Manuscript) when running Whole PDF Analysis. The app will use that strategy for every chunk, mirroring the Text Snippet workflows and making it easier to probe jailbreak-style continuations.
 - Temperature and Top-P controls are now available for PDF runs so you can match the sampling behaviour to your text experiments.
+- Use the **Ranks to Display** control to decide how many of the highest-scoring chunks are surfaced in the final summary.

@@ -9,7 +9,7 @@ from src.copyright_detective.jailbreak_probe import (
     run_persuasion_probe,
 )
 from src.prompt_utils import get_full_prompt, get_persuasion_prompt, get_persuasion_template, get_prompt_template
-from src.components import render_prompt_preview
+from src.components import render_collapsible_panel, render_prompt_preview
 
 
 CONTINUATION_STRATEGIES = [
@@ -479,7 +479,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
     uploaded_file = st.file_uploader("📎 Choose a PDF file", type="pdf", help="Select a PDF document to analyze")
     if uploaded_file is not None:
         st.markdown('<h3 class="section-header sm">⚙️ Analysis Configuration</h3>', unsafe_allow_html=True)
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             score_type = st.selectbox(
                 'Change Ranking Metric',
@@ -491,10 +491,19 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
             chunk_size = st.number_input(
                 'Change Chunk Size (words)',
                 min_value=50,
-                max_value=1000,
+                max_value=2000,
                 value=200,
                 step=25,
                 help='Number of words per text chunk'
+            )
+        with col3:
+            top_k = st.number_input(
+                'Ranks to Display',
+                min_value=1,
+                max_value=20,
+                value=5,
+                step=1,
+                help='Select how many of the highest scoring chunks to show after analysis'
             )
 
         st.markdown('<h3 class="section-header sm">🎭 Continuation Strategy</h3>', unsafe_allow_html=True)
@@ -539,6 +548,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
         continuation_method = "Normal Continuation"
         temperature = 0.7
         top_p = 1.0
+        top_k = 5
 
     if uploaded_file is not None:
         st.markdown("---")
@@ -618,17 +628,32 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
             else:  # Levenshtein
                 results.sort(key=lambda x: x[5])
 
-            st.markdown("### 🏆 Top 5 Most Similar Sections")
-            st.caption(f"Ranking by {score_type}. Generation strategy: {continuation_method} · Temperature {temperature:.2f} · Top-P {top_p:.2f}")
-            for rank, (upper, lower, gen, r, j, l) in enumerate(results[:5], start=1):
-                with st.expander(f"Rank {rank}"):
-                    st.markdown("**📝 Prefix Context**")
-                    st.write(upper)
-                    st.markdown("**🎯 Ground Truth**")
-                    st.write(lower)
-                    st.markdown("**🤖 Generated Text**")
-                    st.write(gen)
-                    st.markdown(f"**Scores** — ROUGE-L: {r:.4f} | Jaccard: {j:.4f} | Levenshtein: {l}")
+            display_limit = min(top_k, len(results)) if results else 0
+            if display_limit == 0:
+                st.info("No comparable chunks were produced for ranking.")
+                return
+
+            st.markdown(f"### 🏆 Top {display_limit} Most Similar Sections")
+            st.caption(
+                f"Ranking by {score_type}. Showing top {display_limit} of {len(results)} chunks. "
+                f"Generation strategy: {continuation_method} · Temperature {temperature:.2f} · Top-P {top_p:.2f}"
+            )
+            for rank, (upper, lower, gen, r, j, l) in enumerate(results[:display_limit], start=1):
+                sections = [
+                    ("📝 Prefix Context", upper, None),
+                    ("🎯 Ground Truth", lower, None),
+                    ("🤖 Generated Text", gen, "generated"),
+                    (
+                        "📈 Scores",
+                        f"ROUGE-L: {r:.4f}\nJaccard: {j:.4f}\nLevenshtein: {l}",
+                        None,
+                    ),
+                ]
+                render_collapsible_panel(
+                    title=f"Rank {rank}",
+                    sections=sections,
+                    meta=f"ROUGE-L {r:.3f} · Jaccard {j:.3f} · Lev {l}",
+                )
 
             progress_bar.progress(1.0, text=f"✅ Completed analysis with {model_choice}. Processed {total} chunks.")
         except Exception as e:
