@@ -1,3 +1,5 @@
+import io
+
 import streamlit as st
 from src.copyright_detective.comparison import compare_texts
 from src.copyright_detective.pdf_utils import extract_text_from_pdf, split_text_into_chunks
@@ -10,13 +12,23 @@ from src.prompt_utils import get_full_prompt, get_persuasion_prompt, get_persuas
 from src.components import render_prompt_preview
 
 
+CONTINUATION_STRATEGIES = [
+    "Normal Continuation",
+    "Role-Playing: The Author",
+    "Hypothetical Scenario: A Lost Manuscript",
+    "Creative Writing Exercise",
+    "Translation and Back-Translation",
+    "Tom and Jerry Game",
+]
+
+
 def render_header():
     """Render the app header with title and description."""
     st.markdown(
         """
         <div class="app-header">
             <div class="title">🔍 Copyright Detective</div>
-            <div class="subtitle">Analyze snippets or full PDFs for potential copyright overlap</div>
+            <div class="subtitle">Analyze snippets or full PDFs for potential copyright infringement</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -134,14 +146,7 @@ def render_text_analysis_page(api_key, model_choice, provider):
         
         continuation_method = st.selectbox(
             "Choose a continuation method:",
-            [
-                "Normal Continuation",
-                "Role-Playing: The Author",
-                "Hypothetical Scenario: A Lost Manuscript",
-                "Creative Writing Exercise",
-                "Translation and Back-Translation",
-                "Tom and Jerry Game",
-            ],
+            CONTINUATION_STRATEGIES,
             help="Select 'Normal Continuation' for a direct prompt or a persuasion strategy to frame the request differently.",
             key="continuation_method_selector",
         )
@@ -168,14 +173,7 @@ def render_text_analysis_page(api_key, model_choice, provider):
         )
         preceding_method = st.selectbox(
             "Choose a continuation method:",
-            [
-                "Normal Continuation",
-                "Role-Playing: The Author",
-                "Hypothetical Scenario: A Lost Manuscript",
-                "Creative Writing Exercise",
-                "Translation and Back-Translation",
-                "Tom and Jerry Game",
-            ],
+            CONTINUATION_STRATEGIES,
             help="Select a reconstruction framing. Each strategy nudges the model toward recreating the missing preceding context.",
             key="preceding_method_selector",
         )
@@ -499,20 +497,48 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                 help='Number of words per text chunk'
             )
 
-        st.markdown('<h3 class="section-header sm">💡 Size Recommendations</h3>', unsafe_allow_html=True)
-        st.markdown(
-            """
-            <div class="hint">
-                <div style="margin-bottom: 0.5rem;"><strong>50-200:</strong> Precise analysis — detects specific phrases</div>
-                <div style="margin-bottom: 0.5rem;"><strong>200-400:</strong> Balanced — general copyright detection</div>
-                <div><strong>400-1000:</strong> Contextual — preserves broader context</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        st.markdown('<h3 class="section-header sm">🎭 Continuation Strategy</h3>', unsafe_allow_html=True)
+        continuation_method = st.selectbox(
+            'Select persuasion framing',
+            CONTINUATION_STRATEGIES,
+            index=0,
+            help='Pick how the model should be nudged when generating chunk continuations. "Normal Continuation" keeps the default behaviour.',
+            key='pdf_continuation_method'
         )
+        template_text = get_persuasion_template(continuation_method)
+        if template_text:
+            preview_text = template_text.replace('{input_text}', '[PDF chunk]').replace('{word_count}', str(chunk_size))
+            st.info(preview_text)
+
+        st.markdown('<h3 class="section-header sm">🛠️ Generation Controls</h3>', unsafe_allow_html=True)
+        ctrl_col1, ctrl_col2 = st.columns(2)
+        with ctrl_col1:
+            temperature = st.slider(
+                'Temperature',
+                min_value=0.0,
+                max_value=2.0,
+                value=0.7,
+                step=0.01,
+                help='Controls randomness. Lower values make the model more deterministic.',
+                key='pdf_temperature'
+            )
+        with ctrl_col2:
+            top_p = st.slider(
+                'Top-P',
+                min_value=0.0,
+                max_value=1.0,
+                value=1.0,
+                step=0.01,
+                help='Controls nucleus sampling diversity. 0.5 considers the top 50% probability mass.',
+                key='pdf_top_p'
+            )
+
     else:
         score_type = None
         chunk_size = None
+        continuation_method = "Normal Continuation"
+        temperature = 0.7
+        top_p = 1.0
 
     if uploaded_file is not None:
         st.markdown("---")
@@ -535,7 +561,8 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
             return
         try:
             progress_bar = st.progress(0, text=f"🔄 Analyzing PDF with {model_choice}... Preparing document...")
-            pdf_text = extract_text_from_pdf(uploaded_file)
+            pdf_buffer = io.BytesIO(uploaded_file.getvalue())
+            pdf_text = extract_text_from_pdf(pdf_buffer)
             if "Error" in pdf_text:
                 st.error(f"❌ {pdf_text}")
                 return
@@ -543,14 +570,45 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
             if not chunk_pairs:
                 st.warning("⚠️ Could not split the PDF into enough text chunks for analysis.")
                 return
+
             results = []
             total = len(chunk_pairs)
             for i, (upper, lower) in enumerate(chunk_pairs):
-                generated_text, rouge_score, jaccard_index, levenshtein_dist = compare_texts(
-                    upper, lower, api_key, model_name=model_choice, provider=provider, chunk_size=chunk_size
-                )
+                target_words = len(lower.split()) if lower else chunk_size
+                if continuation_method != "Normal Continuation":
+                    result = run_persuasion_probe(
+                        api_key,
+                        model_choice,
+                        provider,
+                        continuation_method,
+                        upper,
+                        lower,
+                        chunk_size=target_words,
+                        temperature=temperature,
+                        top_p=top_p,
+                    )
+                    if isinstance(result[0], str) and result[0].startswith("Error"):
+                        st.error(f"❌ {result[0]}")
+                        return
+                else:
+                    result = compare_texts(
+                        upper,
+                        lower,
+                        api_key,
+                        model_name=model_choice,
+                        provider=provider,
+                        chunk_size=target_words,
+                        temperature=temperature,
+                        top_p=top_p,
+                        continuation_method=continuation_method,
+                    )
+                    if isinstance(result, str) and result.startswith("Error"):
+                        st.error(f"❌ {result}")
+                        return
+
+                generated_text, rouge_score, jaccard_index, levenshtein_dist = result
                 results.append((upper, lower, generated_text, rouge_score, jaccard_index, levenshtein_dist))
-                progress_bar.progress((i + 1)/total, text=f"🔄 Processing chunk {i+1}/{total}")
+                progress_bar.progress((i + 1)/total, text=f"🔄 Processing chunk {i+1}/{total} · {continuation_method}")
 
             # Sort
             if score_type == "ROUGE-L":
@@ -561,6 +619,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                 results.sort(key=lambda x: x[5])
 
             st.markdown("### 🏆 Top 5 Most Similar Sections")
+            st.caption(f"Ranking by {score_type}. Generation strategy: {continuation_method} · Temperature {temperature:.2f} · Top-P {top_p:.2f}")
             for rank, (upper, lower, gen, r, j, l) in enumerate(results[:5], start=1):
                 with st.expander(f"Rank {rank}"):
                     st.markdown("**📝 Prefix Context**")
