@@ -13,8 +13,6 @@
     --bg-gradient-start: #f9fbff;
     --bg-gradient-mid: #eef2ff;
     --bg-gradient-end: #f8fbff;
-    --curtain-stripe-light: rgba(255, 255, 255, 0.55);
-    --curtain-stripe-shadow: rgba(219, 227, 255, 0.25);
     --card: #ffffff;
     --border: #e2e8f0; /* slate-200 */
     --text: #0f172a; /* slate-900 */
@@ -35,13 +33,7 @@
     inset: 0;
     background:
         radial-gradient(900px 480px at -10% -10%, rgba(173, 209, 255, 0.28), transparent 60%),
-        radial-gradient(760px 520px at 110% 10%, rgba(129, 230, 217, 0.22), transparent 65%),
-        repeating-linear-gradient(110deg,
-            var(--curtain-stripe-light) 0px,
-            var(--curtain-stripe-light) 120px,
-            var(--curtain-stripe-shadow) 120px,
-            var(--curtain-stripe-shadow) 220px
-        );
+        radial-gradient(760px 520px at 110% 10%, rgba(129, 230, 217, 0.22), transparent 65%);
     filter: blur(0.4px);
     opacity: 0.8;
     pointer-events: none;
