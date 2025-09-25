@@ -140,7 +140,6 @@ def render_text_analysis_page(api_key, model_choice, provider):
                 "Hypothetical Scenario: A Lost Manuscript",
                 "Creative Writing Exercise",
                 "Translation and Back-Translation",
-                "Stylistic Transformation",
                 "Tom and Jerry Game",
             ],
             help="Select 'Normal Continuation' for a direct prompt or a persuasion strategy to frame the request differently.",

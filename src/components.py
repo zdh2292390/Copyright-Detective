@@ -11,7 +11,7 @@ def render_prompt_preview(prompt_text: str, *, expanded: bool = False) -> None:
 
     raw_text = prompt_text or ""
     escaped_text = html.escape(raw_text)
-    copy_payload = json.dumps(raw_text)
+    copy_payload = json.dumps(raw_text).replace("'", "&apos;")
     open_attr = "open" if expanded else ""
 
     st.markdown(
