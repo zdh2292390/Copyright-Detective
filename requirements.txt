@@ -1,6 +1,6 @@
 streamlit
-numpy==1.26.4
-pandas==2.0.3
+numpy
+pandas
 PyPDF2
 rouge-score
 openai>=1.0.0
