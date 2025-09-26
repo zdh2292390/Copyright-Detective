@@ -220,6 +220,105 @@
 /* Smaller section heading helper */
 .multi-run-title { font-size: 1rem !important; font-weight: 700; margin-top: 0.5rem; }
 
+/* Output diversity diagnostics */
+.diversity-title {
+    font-size: 0.82rem !important;
+    font-weight: 700;
+    color: #1e293b;
+    margin: 0.2rem 0 0.35rem;
+    letter-spacing: 0.35px;
+    text-transform: uppercase;
+}
+
+.diversity-subtitle {
+    font-size: 0.8rem !important;
+    font-weight: 700;
+    color: #475569;
+    margin: 0.45rem 0 0.2rem;
+    letter-spacing: 0.45px;
+    text-transform: uppercase;
+}
+
+.diversity-diagnostics [data-testid="stMetricValue"] {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--primary-800);
+}
+
+.diversity-diagnostics [data-testid="stMetricLabel"] {
+    font-size: 0.6rem;
+    letter-spacing: 0.4px;
+    color: #475569;
+}
+
+.diversity-diagnostics [data-baseweb="table"] {
+    font-size: 0.82rem;
+}
+
+.topk-card {
+    background: linear-gradient(135deg, rgba(255,255,255,0.92), rgba(240,245,255,0.85));
+    border: 1px solid rgba(203, 213, 225, 0.7);
+    border-radius: 14px;
+    padding: 0.35rem 0.6rem 0.6rem;
+    box-shadow: 0 18px 36px rgba(15, 23, 42, 0.08);
+    overflow-x: auto;
+}
+
+.topk-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+    color: #1e293b;
+}
+
+.topk-table thead th {
+    text-transform: uppercase;
+    font-size: 0.72rem;
+    letter-spacing: 0.45px;
+    font-weight: 700;
+    color: #475569;
+    padding: 0.35rem 0.5rem;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.45);
+    background: rgba(226, 232, 240, 0.35);
+}
+
+.topk-table tbody td {
+    padding: 0.38rem 0.5rem;
+    border-bottom: 1px solid rgba(226, 232, 240, 0.5);
+    vertical-align: middle;
+}
+
+.topk-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.topk-cell-rank {
+    font-weight: 700;
+    color: var(--primary-800);
+    width: 3rem;
+}
+
+.topk-cell-frequency {
+    font-weight: 600;
+    color: #334155;
+}
+
+.topk-cell-probability {
+    font-weight: 700;
+    color: #1d4ed8;
+}
+
+.topk-cell-preview {
+    font-family: "Inter", sans-serif;
+    font-size: 0.8rem;
+    color: #1f2937;
+    line-height: 1.45;
+}
+
+.topk-cell-preview:hover {
+    color: var(--primary-800);
+}
+
 /* Scores grid */
 .scores-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; padding: 1rem; background: #f8fafc; border: 1px solid var(--border); border-radius: 12px; margin-top: 0.75rem; }
 .score-item { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem; background: white; border-radius: 8px; border: 1px solid var(--border); }
@@ -430,7 +529,7 @@ p { line-height: 1.7; color: #334155; }
 /* Section headers and cards */
 .section-header { font-size: 1.05rem; font-weight: 800; color: #0f172a; margin: 0.25rem 0 0.75rem; }
 /* Smaller variant for tighter sections */
-.section-header.sm { font-size: 0.92rem; font-weight: 700; }
+.section-header.sm { font-size: 0.86rem; font-weight: 700; }
 .section-card {
     background: rgba(255, 255, 255, 0.88);
     border: 1px solid rgba(209, 213, 225, 0.55);

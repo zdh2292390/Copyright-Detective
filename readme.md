@@ -61,6 +61,12 @@ Inside the **Text Snippet Analysis** tab you can choose **Custom Prompt** from t
 
 The same **Custom Prompt** option is available on the **Whole PDF Analysis** tab. Whatever template you supply is injected into every chunk before the model is asked to continue it, so you can drive consistent jailbreak persuasion experiments across long-form documents without losing control over the framing.
 
+### Multi-run diversity diagnostics
+
+When you request multiple inference runs, the results page now augments the similarity stats with **output diversity diagnostics**. The tool aggregates all generated samples, computes their Shannon entropy (both in raw bits and as a percentage of the theoretical maximum), and highlights how much probability mass collapses onto the most common continuation. A ranked table plus bar chart surfaces the top-$k$ variants so you can quickly spot mode collapse or suspiciously stable reproductions that may hint at residual memorisation.
+
+If the entropy stays low or a single continuation dominates the distribution, the interface raises an inline warning to encourage deeper investigation (e.g., bumping temperature or trying alternative prompts).
+
 ## Jailbreak Persuasion Probe
 
 This new page helps you design and evaluate jailbreak/persuasion prompts in a safety-first manner. It analyzes prompts for risky indicators (e.g., location-based extraction or exact-length replication) and provides compliant alternatives and refusal templates. The probe only performs meta-analysis and does not request or display copyrighted text.

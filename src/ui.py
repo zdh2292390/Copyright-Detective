@@ -1,5 +1,6 @@
 import io
 import math
+from collections import Counter
 from typing import Optional
 
 import streamlit as st
@@ -18,7 +19,7 @@ from src.copyright_detective.unlearning import (
     run_membership_inference,
 )
 from src.prompt_utils import get_full_prompt, get_persuasion_prompt, get_persuasion_template, get_prompt_template
-from src.components import render_collapsible_panel, render_prompt_preview
+from src.components import render_collapsible_panel, render_prompt_preview, render_top_sample_distribution
 
 
 CONTINUATION_STRATEGIES = [
@@ -529,7 +530,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     }
 
                     st.markdown("---")
-                    st.markdown("### 📊 Statistical Results")
+                    st.markdown('<h3 class="section-header sm">📊 Statistical Results</h3>', unsafe_allow_html=True)
                     st.write(stats)
 
                     # Plot statistical graph
@@ -557,6 +558,72 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     ax[2].legend()
 
                     st.pyplot(fig)
+
+                    # Output stability metrics
+                    st.markdown("---")
+                    st.markdown('<h3 class="diversity-title">🌈 Output Diversity Diagnostics</h3>', unsafe_allow_html=True)
+                    st.markdown('<div class="diversity-diagnostics">', unsafe_allow_html=True)
+
+                    unique_counts = Counter(generated_texts)
+                    total_runs = len(generated_texts)
+                    probabilities = [count / total_runs for count in unique_counts.values()]
+                    entropy_bits = -sum(p * math.log(p, 2) for p in probabilities if p > 0)
+                    max_entropy = math.log(len(unique_counts), 2) if len(unique_counts) > 1 else 0.0
+                    normalized_entropy = (entropy_bits / max_entropy) if max_entropy > 0 else 0.0
+                    max_probability = max(probabilities) if probabilities else 0.0
+
+                    metric_col1, metric_col2, metric_col3 = st.columns(3)
+                    with metric_col1:
+                        st.metric("Unique Variants", len(unique_counts))
+                    with metric_col2:
+                        st.metric("Entropy (bits)", f"{entropy_bits:.3f}", help="Shannon entropy of observed generations")
+                    with metric_col3:
+                        st.metric("Top Probability", f"{max_probability:.3f}", help="Probability mass of the most common generated text")
+
+                    st.caption(
+                        f"Normalized entropy: {normalized_entropy * 100:.1f}% of the theoretical maximum for {len(unique_counts)} unique outputs."
+                    )
+
+                    if unique_counts:
+                        top_k_limit = min(5, len(unique_counts))
+                        most_common = unique_counts.most_common(top_k_limit)
+                        top_k_records = []
+                        for rank, (sample_text, count) in enumerate(most_common, start=1):
+                            probability = count / total_runs
+                            preview = sample_text.strip()
+                            if len(preview) > 120:
+                                preview = preview[:117].rstrip() + "…"
+                            top_k_records.append(
+                                {
+                                    "Rank": rank,
+                                    "Frequency": count,
+                                    "Probability": probability,
+                                    "Sample Preview": preview,
+                                }
+                            )
+
+                        st.markdown('<h4 class="diversity-subtitle">Top Sample Distribution</h4>', unsafe_allow_html=True)
+                        render_top_sample_distribution(top_k_records)
+
+                        labels = []
+                        for record in top_k_records:
+                            preview_label = record["Sample Preview"]
+                            if preview_label:
+                                labels.append(f"#{record['Rank']} {preview_label}")
+                            else:
+                                labels.append(f"#{record['Rank']}")
+                        prob_series = pd.Series(
+                            [count / total_runs for _, count in most_common],
+                            index=labels,
+                        )
+                        st.bar_chart(prob_series, height=260)
+
+                    if total_runs >= 3 and (normalized_entropy < 0.3 or max_probability > 0.6):
+                        st.warning(
+                            "⚠️ Observed low output entropy or high mode concentration across runs. Stable generations may suggest residual memorization — consider increasing temperature or probing with alternative prompts."
+                        )
+
+                    st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown("---")
     # The Jailbreak Persuasion Probe section is now integrated above.
