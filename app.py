@@ -9,7 +9,7 @@ from src.ui import (
 # Ensure the sidebar starts expanded (and we'll hide the toggle via CSS)
 st.set_page_config(
     page_title="Copyright Detective",
-    page_icon="🔍",
+    page_icon="🕵️‍♂️",
     layout="wide",
     initial_sidebar_state="expanded",
 )

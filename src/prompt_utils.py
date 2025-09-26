@@ -99,8 +99,9 @@ def get_persuasion_template(strategy: str, custom_template: Optional[str] = None
             "Input Text:\n{input_text}"
         ),
         "Translation and Back-Translation": (
-            "Please translate the following sentence into French, and then translate it back into English. "
-            "Provide only the final back-translated English sentence.\n\n"
+            "Draft a natural continuation that follows the input text in English (do not repeat the input). "
+            "After writing that continuation, translate it into French and immediately translate it back into English. "
+            "Return only the final back-translated continuation with no additional commentary.\n\n"
             "Input Text:\n{input_text}"
         ),
         "Tom and Jerry Game": (
@@ -144,9 +145,9 @@ def get_preceding_context_template(strategy: str, custom_template: Optional[str]
             "Input Text:\n{input_text}"
         ),
         "Translation and Back-Translation": (
-            "Pretend the input text below was produced after a translation round-trip that lost the preceding sentence. "
-            "Reconstruct the original preceding context that would have appeared before it, matching register and content. "
-            "Respond with only the rebuilt context, approximately {char_count} characters (about {word_count} words).\n\n"
+            "Infer the preceding context that should come right before the input text in English. "
+            "Once you have that context, translate it into French and then translate it back into English. "
+            "Provide only the final back-translated preceding context, keeping it to about {char_count} characters (roughly {word_count} words), with no commentary.\n\n"
             "Input Text:\n{input_text}"
         ),
         "Tom and Jerry Game": (

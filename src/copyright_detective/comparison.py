@@ -12,7 +12,7 @@ def _normalize_spaces(s: str) -> str:
     return " ".join(s.strip().split())
 
 
-def _enforce_exact_char_count(text: str, target: Optional[int]) -> str:
+def enforce_exact_char_count(text: str, target: Optional[int]) -> str:
     """Ensure output has at most `target` characters by truncating."""
     if not target:
         return _normalize_spaces(text)
@@ -22,6 +22,9 @@ def _enforce_exact_char_count(text: str, target: Optional[int]) -> str:
         return normalized_text[:target]
     
     return normalized_text
+
+# Backward-compatible alias (internal use in legacy imports)
+_enforce_exact_char_count = enforce_exact_char_count
 
 def get_llm_completion(prompt, api_key, model_name, provider="OpenAI", temperature=0.7, top_p=1.0):
     """
@@ -182,7 +185,7 @@ def compare_texts(
         return generated_text, 0.0, 0.0, 0
 
     # Enforce exact character length to match the ground truth
-    generated_text = _enforce_exact_char_count(
+    generated_text = enforce_exact_char_count(
         generated_text,
         target_char_count,
     )

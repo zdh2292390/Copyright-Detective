@@ -4,7 +4,7 @@ from typing import Optional
 
 import streamlit as st
 import pandas as pd
-from src.copyright_detective.comparison import compare_texts
+from src.copyright_detective.comparison import compare_texts, enforce_exact_char_count
 from src.copyright_detective.pdf_utils import extract_text_from_pdf, split_text_into_chunks
 from src.config import DEFAULT_OPENROUTER_KEY
 import matplotlib.pyplot as plt
@@ -351,6 +351,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     if continuation_method == "Custom Prompt"
                     else None
                 )
+            target_char_count = len(text2)
             chunk_size = len(text2.split())
 
             if continuation_method == "Custom Prompt" and not custom_template:
@@ -402,6 +403,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
 
                     if not error_occurred:
                         generated_text, rouge_score, jaccard_index, levenshtein_dist = result
+                        generated_text = enforce_exact_char_count(generated_text, target_char_count)
 
                         # Results section
                         st.markdown("---")
@@ -481,6 +483,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                         
                     if not error_occurred:
                         generated_text, rouge_score, jaccard_index, levenshtein_dist = result
+                        generated_text = enforce_exact_char_count(generated_text, target_char_count)
                         similarity_scores.append(
                             {
                                 "rouge": rouge_score,
@@ -766,7 +769,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                 st.info("No comparable chunks were produced for ranking.")
                 return
 
-            st.markdown(f"### 🏆 Top {display_limit} Most Similar Sections")
+            st.markdown(f"#### 🏆 Top {display_limit} Most Similar Sections")
             st.caption(
                 f"Ranking by {score_type}. Showing top {display_limit} of {len(results)} chunks. "
                 f"Generation strategy: {continuation_method} · Temperature {temperature:.2f} · Top-P {top_p:.2f}"

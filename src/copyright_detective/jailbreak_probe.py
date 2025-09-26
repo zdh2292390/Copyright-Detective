@@ -5,6 +5,7 @@ from .comparison import (
     get_llm_completion,
     calculate_rouge_score,
     calculate_jaccard_index,
+    enforce_exact_char_count,
 )
 from Levenshtein import distance
 from src.prompt_utils import get_full_prompt
@@ -263,6 +264,8 @@ def run_persuasion_probe(
 
     if isinstance(generated_text, str) and generated_text.startswith("Error"):
         return generated_text, 0, 0, 0
+
+    generated_text = enforce_exact_char_count(generated_text, char_count)
 
     # Calculate similarity scores
     rouge_score = calculate_rouge_score(ground_truth_text, generated_text)
