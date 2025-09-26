@@ -37,7 +37,7 @@ def render_header():
     st.markdown(
         """
         <div class="app-header">
-            <div class="title">🔍 Copyright Detective</div>
+            <div class="title">🕵️‍♂️ Copyright Detective</div>
             <div class="subtitle">Analyze potential text copyright infringement in LLM application</div>
         </div>
         """,
