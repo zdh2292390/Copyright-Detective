@@ -1,5 +1,6 @@
 import io
 import math
+import textwrap
 from collections import Counter
 from typing import Optional
 
@@ -572,13 +573,55 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     normalized_entropy = (entropy_bits / max_entropy) if max_entropy > 0 else 0.0
                     max_probability = max(probabilities) if probabilities else 0.0
 
-                    metric_col1, metric_col2, metric_col3 = st.columns(3)
-                    with metric_col1:
-                        st.metric("Unique Variants", len(unique_counts))
-                    with metric_col2:
-                        st.metric("Entropy (bits)", f"{entropy_bits:.3f}", help="Shannon entropy of observed generations")
-                    with metric_col3:
-                        st.metric("Top Probability", f"{max_probability:.3f}", help="Probability mass of the most common generated text")
+                    diversity_metrics = [
+                        {
+                            "label": "Unique Variants",
+                            "value": f"{len(unique_counts)}",
+                            "detail": "Distinct generations observed",
+                        },
+                        {
+                            "label": "Entropy (bits)",
+                            "value": f"{entropy_bits:.3f}",
+                            "detail": "Shannon entropy across unique outputs",
+                        },
+                        {
+                            "label": "Top Probability",
+                            "value": f"{max_probability:.3f}",
+                            "detail": "Share of the most common generation",
+                        },
+                    ]
+
+                    metrics_rows = "\n".join(
+                        (
+                            "<tr>"
+                            f"<td class=\"diversity-metrics-label\">{metric['label']}</td>"
+                            f"<td class=\"diversity-metrics-value\">{metric['value']}</td>"
+                            f"<td class=\"diversity-metrics-detail\">{metric['detail']}</td>"
+                            "</tr>"
+                        )
+                        for metric in diversity_metrics
+                    )
+
+                    table_html = textwrap.dedent(
+                        f"""
+                        <div class=\"diversity-metrics-card\">
+                            <table class=\"diversity-metrics-table\">
+                                <thead>
+                                    <tr>
+                                        <th>Metric</th>
+                                        <th>Value</th>
+                                        <th>Details</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {metrics_rows}
+                                </tbody>
+                            </table>
+                        </div>
+                        """
+                    ).strip()
+
+                    st.markdown(table_html, unsafe_allow_html=True)
 
                     st.caption(
                         f"Normalized entropy: {normalized_entropy * 100:.1f}% of the theoretical maximum for {len(unique_counts)} unique outputs."
@@ -617,6 +660,8 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                             index=labels,
                         )
                         st.bar_chart(prob_series, height=260)
+
+                    st.markdown("</div>", unsafe_allow_html=True)
 
                     if total_runs >= 3 and (normalized_entropy < 0.3 or max_probability > 0.6):
                         st.warning(
