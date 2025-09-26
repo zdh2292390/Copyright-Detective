@@ -2,12 +2,17 @@ import io
 from typing import Optional
 
 import streamlit as st
+import pandas as pd
 from src.copyright_detective.comparison import compare_texts
 from src.copyright_detective.pdf_utils import extract_text_from_pdf, split_text_into_chunks
 from src.config import DEFAULT_OPENROUTER_KEY
 import matplotlib.pyplot as plt
 from src.copyright_detective.jailbreak_probe import (
     run_persuasion_probe,
+)
+from src.copyright_detective.unlearning import (
+    list_unlearning_strategies,
+    run_unlearning_detection,
 )
 from src.prompt_utils import get_full_prompt, get_persuasion_prompt, get_persuasion_template, get_prompt_template
 from src.components import render_collapsible_panel, render_prompt_preview
@@ -96,6 +101,7 @@ def render_sidebar():
             [
                 "Text Snippet Analysis",
                 "Whole PDF Analysis",
+                "LLM Unlearning Detection",
             ],
             label_visibility="collapsed",
         )
