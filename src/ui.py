@@ -13,6 +13,7 @@ from src.copyright_detective.jailbreak_probe import (
 )
 from src.copyright_detective.unlearning import (
     list_unlearning_strategies,
+    build_unlearning_prompt,
     run_unlearning_detection,
     run_membership_inference,
 )
@@ -774,19 +775,6 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
         key="unlearning_target_description",
     )
 
-    reference_text = st.text_area(
-        "Reference text (ground truth)",
-        height=220,
-        placeholder="Paste the canonical reference text. It remains local and is only used for similarity scoring.",
-        key="unlearning_reference_text",
-    )
-
-    keyword_input = st.text_input(
-        "Optional keyword lexicon",
-        help="Comma or newline separated keywords expected in memorised outputs. Leave blank for automatic extraction.",
-        key="unlearning_keyword_input",
-    )
-
     strategies = list_unlearning_strategies()
     strategy_lookup = {strategy.id: strategy for strategy in strategies}
     strategy_options = [strategy.id for strategy in strategies]
@@ -811,8 +799,19 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
             key="unlearning_custom_prompt",
         )
 
+    if strategy_selection:
+        st.markdown("#### Prompt previews")
+        for strategy_id in strategy_selection:
+            preview_prompt = build_unlearning_prompt(strategy_id, target_description or "the withheld passage")
+            render_prompt_preview(preview_prompt, expanded=False)
+
+    if custom_prompt_enabled and custom_prompt.strip():
+        st.markdown("#### Custom prompt preview")
+        sample_prompt = build_unlearning_prompt("custom", target_description or "the withheld passage", custom_prompt=custom_prompt)
+        render_prompt_preview(sample_prompt, expanded=False)
+
     st.markdown("---")
-    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns(3)
+    ctrl_col1, ctrl_col2 = st.columns(2)
     with ctrl_col1:
         temperature = st.slider(
             "Temperature",
@@ -833,21 +832,18 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
             help="Restrict sampling to the most likely tokens to surface memorisation.",
             key="unlearning_top_p",
         )
-    with ctrl_col3:
-        similarity_threshold = st.slider(
-            "Similarity flag threshold",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.45,
-            step=0.01,
-            help="If ROUGE-L or Jaccard meets/exceeds this value the response is flagged.",
-            key="unlearning_similarity_threshold",
-        )
 
     st.markdown("---")
     st.markdown("#### 📉 Membership Inference (Perplexity Probe)")
     st.caption(
         "Estimate whether the reference text still lives in the model's training data by comparing perplexity against a matched control passage."
+    )
+
+    membership_reference = st.text_area(
+        "Reference text for perplexity probe",
+        height=220,
+        placeholder="Provide the original passage to test for memorisation.",
+        key="membership_reference_text",
     )
 
     control_text = st.text_area(
@@ -910,8 +906,6 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
             st.error("⚠️ Please select a model in the sidebar.")
         elif not target_description.strip():
             st.warning("⚠️ Provide a target description before running detection.")
-        elif not reference_text.strip():
-            st.warning("⚠️ Provide the reference text so similarity can be measured.")
         else:
             selected_ids = list(strategy_selection)
             custom_prompt_value = custom_prompt.strip() if custom_prompt_enabled else None
@@ -923,7 +917,6 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                 if not selected_ids:
                     st.warning("⚠️ Select at least one probe strategy or add a custom prompt.")
                 else:
-                    keywords = [kw.strip() for kw in keyword_input.replace(",", "\n").splitlines() if kw.strip()]
                     with st.spinner(f"🔍 Evaluating memorisation with {model_choice}..."):
                         try:
                             summary = run_unlearning_detection(
@@ -931,13 +924,10 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                                 model_choice,
                                 provider,
                                 target_description=target_description,
-                                reference_text=reference_text,
                                 strategy_ids=selected_ids,
                                 temperature=temperature,
                                 top_p=top_p,
                                 custom_prompt=custom_prompt_value,
-                                keyword_list=keywords,
-                                similarity_threshold=similarity_threshold,
                             )
                         except ValueError as exc:
                             st.error(f"❌ {exc}")
@@ -948,70 +938,26 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
 
                     if summary:
                         st.markdown("---")
-                        if summary.overall_flagged:
-                            st.error(
-                                "🚨 Potential memorisation detected. At least one probe exceeded the similarity threshold."
-                            )
-                        else:
-                            st.success(
-                                "✅ Prompt probes did not exceed the similarity threshold for the supplied strategies."
-                            )
-
-                        st.markdown(
-                            f"**Highest similarity:** {summary.highest_similarity:.4f} (threshold {summary.threshold:.2f})"
-                        )
-                        if summary.keywords:
-                            st.caption("Keyword lexicon used: " + ", ".join(summary.keywords))
-
-                        rows = []
-                        for result in summary.results:
-                            status = "Flagged" if result.flagged else "Safe"
-                            if result.error:
-                                status = "Error"
-                            rows.append(
-                                {
-                                    "Strategy": result.strategy_name,
-                                    "ROUGE-L": round(result.rouge_l, 4),
-                                    "Jaccard": round(result.jaccard, 4),
-                                    "Levenshtein": result.levenshtein,
-                                    "Keyword Hits": result.keyword_hits,
-                                    "Keyword %": round(result.keyword_ratio * 100, 1),
-                                    "Status": status,
-                                }
-                            )
-
-                        if rows:
-                            st.dataframe(pd.DataFrame(rows), use_container_width=True)
+                        st.success("Prompt probes completed. Review the model responses below.")
 
                         for result in summary.results:
-                            meta = "Flagged" if result.flagged else "Safe"
                             if result.error:
-                                meta = "Error"
                                 sections = [
-                                    ("Prompt", result.prompt, None),
-                                    ("Error", result.error, None),
+                                    ("Status", "Error while generating response.", None),
+                                    ("Details", result.error, None),
                                 ]
+                                meta = "Error"
                             else:
                                 sections = [
-                                    ("Prompt", result.prompt, None),
                                     ("Model Response", result.response, "generated"),
-                                    (
-                                        "Similarity Metrics",
-                                        (
-                                            f"ROUGE-L: {result.rouge_l:.4f}\n"
-                                            f"Jaccard: {result.jaccard:.4f}\n"
-                                            f"Levenshtein: {result.levenshtein}\n"
-                                            f"Keyword Hits: {result.keyword_hits} ({result.keyword_ratio * 100:.1f}% overlap)"
-                                        ),
-                                        None,
-                                    ),
                                 ]
+                                meta = "Response"
 
                             render_collapsible_panel(
                                 title=f"Strategy · {result.strategy_name}",
                                 sections=sections,
                                 meta=meta,
-                                expanded=result.flagged,
+                                expanded=False,
                             )
 
     if run_membership:
@@ -1021,7 +967,7 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
             st.error("⚠️ Please select a model in the sidebar.")
         elif provider != "OpenAI":
             st.error("⚠️ Perplexity-based membership inference currently supports OpenAI models only.")
-        elif not reference_text.strip():
+        elif not membership_reference.strip():
             st.warning("⚠️ Provide the reference text before running membership inference.")
         elif not control_text.strip():
             st.warning("⚠️ Provide a control passage to compare against.")
@@ -1032,7 +978,7 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                         api_key,
                         model_choice,
                         provider,
-                        reference_text=reference_text,
+                        reference_text=membership_reference,
                         control_text=control_text,
                         chunk_size=int(chunk_size),
                         max_chunks=int(max_chunks),

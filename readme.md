@@ -67,7 +67,7 @@ The page also includes a small, curated library of well-known jailbreak prompts 
 
 The **Unlearning Detection** workspace combines two complementary probes:
 
-- **Prompt-Based Probes** reuse the persuasion strategies from snippet/PDF analysis to see whether a model can still recreate or summarise a target passage. Similarity metrics (ROUGE-L, Jaccard, Levenshtein) and keyword overlap are calculated against your ground-truth reference.
+- **Prompt-Based Probes** reuse the persuasion strategies from snippet/PDF analysis to see whether a model can still recreate or summarise a target passage. The tool now focuses on surfacing each model response directly—no similarity thresholds or ground-truth references are required.
 - **Membership Inference (Perplexity Probe)** estimates whether the reference text still lives in the model's training data. The app samples log-probabilities with `echo=True` completions (currently supported for OpenAI models) and compares the average perplexity of reference chunks against a stylistically similar control passage. A configurable ΔPPL threshold raises an alert when the reference appears memorised.
 
 To run the perplexity probe, supply both the reference text and an equivalent-length control passage. You can adjust word-based chunk sizes, number of chunks sampled, and the perplexity gap required to flag memorisation.

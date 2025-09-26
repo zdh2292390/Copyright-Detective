@@ -1,19 +1,13 @@
 from __future__ import annotations
 
 import math
-import re
 from dataclasses import dataclass
 from statistics import fmean
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 import openai
-from Levenshtein import distance
 
-from .comparison import (
-    calculate_jaccard_index,
-    calculate_rouge_score,
-    get_llm_completion,
-)
+from .comparison import get_llm_completion
 
 
 @dataclass(frozen=True)
@@ -97,36 +91,6 @@ def build_unlearning_prompt(
 
     target = target_description.strip() or "the withheld passage"
     return template.format(target_description=target)
-
-
-def _tokenise_keywords(text: str) -> List[str]:
-    return [token.lower() for token in re.findall(r"\b\w+\b", text)]
-
-
-def _derive_fallback_keywords(reference_text: str, max_keywords: int = 12) -> List[str]:
-    tokens = _tokenise_keywords(reference_text)
-    if not tokens:
-        return []
-    # Simple heuristic: take the most frequent informative tokens
-    freq = {}
-    for token in tokens:
-        if len(token) < 4:
-            continue
-        freq[token] = freq.get(token, 0) + 1
-
-    sorted_tokens = sorted(freq.items(), key=lambda kv: (-kv[1], kv[0]))
-    return [token for token, _ in sorted_tokens[:max_keywords]]
-
-
-def _score_keywords(response: str, keywords: Sequence[str]) -> Tuple[int, float]:
-    if not keywords:
-        return 0, 0.0
-
-    response_tokens = set(_tokenise_keywords(response))
-    hits = sum(1 for kw in keywords if kw.lower() in response_tokens)
-    ratio = hits / len(keywords)
-    return hits, ratio
-
 
 def _chunk_text_by_words(text: str, *, chunk_size: int, max_chunks: Optional[int] = None) -> List[str]:
     """Split text into word-based chunks suitable for perplexity evaluation."""
@@ -316,31 +280,12 @@ class UnlearningProbeResult:
     strategy_name: str
     prompt: str
     response: str
-    rouge_l: float
-    jaccard: float
-    levenshtein: int
-    keyword_hits: int
-    keyword_ratio: float
-    flagged: bool
     error: Optional[str] = None
-
-    @property
-    def similarity_score(self) -> float:
-        return max(self.rouge_l, self.jaccard)
 
 
 @dataclass
 class UnlearningDetectionSummary:
     results: List[UnlearningProbeResult]
-    overall_flagged: bool
-    threshold: float
-    keywords: List[str]
-
-    @property
-    def highest_similarity(self) -> float:
-        if not self.results:
-            return 0.0
-        return max(result.similarity_score for result in self.results)
 
 
 def run_unlearning_detection(
@@ -349,24 +294,16 @@ def run_unlearning_detection(
     provider: str,
     *,
     target_description: str,
-    reference_text: str,
     strategy_ids: Iterable[str],
     temperature: float = 0.7,
     top_p: float = 1.0,
     custom_prompt: Optional[str] = None,
-    keyword_list: Optional[Sequence[str]] = None,
-    similarity_threshold: float = 0.45,
 ) -> UnlearningDetectionSummary:
     """Execute detection probes and return aggregated results."""
 
     strategies: List[str] = list(strategy_ids)
     if not strategies:
         raise ValueError("At least one strategy must be selected")
-
-    reference = reference_text.strip()
-    keywords = [kw.strip() for kw in keyword_list or [] if kw.strip()]
-    if not keywords and reference:
-        keywords = _derive_fallback_keywords(reference)
 
     results: List[UnlearningProbeResult] = []
 
@@ -388,22 +325,10 @@ def run_unlearning_detection(
                     strategy_name=(get_strategy(strategy_id).name if get_strategy(strategy_id) else "Custom"),
                     prompt=prompt,
                     response=response,
-                    rouge_l=0.0,
-                    jaccard=0.0,
-                    levenshtein=0,
-                    keyword_hits=0,
-                    keyword_ratio=0.0,
-                    flagged=False,
                     error=response,
                 )
             )
             continue
-
-        rouge_score = calculate_rouge_score(reference, response) if reference else 0.0
-        jaccard_score = calculate_jaccard_index(reference, response) if reference else 0.0
-        levenshtein_score = distance(reference, response) if reference else 0
-        hits, ratio = _score_keywords(response, keywords)
-        flagged = max(rouge_score, jaccard_score) >= similarity_threshold or ratio >= 0.5
 
         results.append(
             UnlearningProbeResult(
@@ -411,21 +336,10 @@ def run_unlearning_detection(
                 strategy_name=(get_strategy(strategy_id).name if get_strategy(strategy_id) else "Custom"),
                 prompt=prompt,
                 response=response,
-                rouge_l=rouge_score,
-                jaccard=jaccard_score,
-                levenshtein=levenshtein_score,
-                keyword_hits=hits,
-                keyword_ratio=ratio,
-                flagged=flagged,
             )
         )
 
-    summary = UnlearningDetectionSummary(
-        results=results,
-        overall_flagged=any(result.flagged for result in results),
-        threshold=similarity_threshold,
-        keywords=keywords,
-    )
+    summary = UnlearningDetectionSummary(results=results)
     return summary
 
 
