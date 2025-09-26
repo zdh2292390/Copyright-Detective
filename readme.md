@@ -53,6 +53,8 @@ You can now interact with the "Copyright Detective" tool. Make sure you have a v
 
 When analysing text snippets you can now choose **Custom Prompt** from the continuation method selector. This lets you paste a full instruction template tailored to your experiment. Use the `{input_text}` placeholder wherever the user-supplied snippet should appear. You can also optionally reference `{word_count}` or `{char_count}` to mirror the target length derived from your ground truth. The preview panel will render the final prompt with any available values filled in so you can double-check the framing before running inference.
 
+The same **Custom Prompt** option is available during whole-PDF analysis. Whatever template you supply is injected into every chunk before the model is asked to continue it, so you can drive consistent jailbreak persuasion experiments across long-form documents without losing control over the framing.
+
 ## Jailbreak Persuasion Probe
 
 This new page helps you design and evaluate jailbreak/persuasion prompts in a safety-first manner. It analyzes prompts for risky indicators (e.g., location-based extraction or exact-length replication) and provides compliant alternatives and refusal templates. The probe only performs meta-analysis and does not request or display copyrighted text.
@@ -63,5 +65,6 @@ The page also includes a small, curated library of well-known jailbreak prompts 
 
 - Chunk size is specified in words. During Whole PDF Analysis, the Generated Text produced for each chunk is enforced to be exactly the same number of words as the selected chunk size. This ensures fair, length-controlled comparisons across chunks.
 - You can optionally select a persuasion framing (e.g., Role-Playing or Lost Manuscript) when running Whole PDF Analysis. The app will use that strategy for every chunk, mirroring the Text Snippet workflows and making it easier to probe jailbreak-style continuations.
+- If you pick **Custom Prompt**, the PDF analyzer will apply your template to every chunk. Ensure you include `{input_text}` (and optionally `{word_count}` or `{char_count}`) so the chunk content and length guidance are inserted automatically.
 - Temperature and Top-P controls are now available for PDF runs so you can match the sampling behaviour to your text experiments.
 - Use the **Ranks to Display** control to decide how many of the highest-scoring chunks are surfaced in the final summary.

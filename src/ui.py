@@ -562,10 +562,35 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
             help='Pick how the model should be nudged when generating chunk continuations. "Normal Continuation" keeps the default behaviour.',
             key='pdf_continuation_method'
         )
-        template_text = get_persuasion_template(continuation_method)
-        if template_text:
-            preview_text = template_text.replace('{input_text}', '[PDF chunk]').replace('{word_count}', str(chunk_size))
-            st.info(preview_text)
+
+        custom_pdf_prompt: Optional[str] = None
+        if continuation_method == "Custom Prompt":
+            custom_pdf_prompt = st.text_area(
+                "Custom prompt template",
+                height=180,
+                placeholder="Write the instruction to use for each PDF chunk. Include {input_text} where the chunk should appear, and optionally {word_count} or {char_count} for length hints.",
+                key="pdf_custom_prompt",
+                help="This template overrides the built-in strategies when analyzing PDF chunks.",
+            )
+            st.caption("Tip: Use placeholders like {input_text}, {word_count}, or {char_count} to auto-fill chunk details.")
+            if not (custom_pdf_prompt or "").strip():
+                st.warning("Provide a custom prompt template to enable PDF analysis with the Custom Prompt option.")
+        else:
+            custom_pdf_prompt = st.session_state.get("pdf_custom_prompt", "")
+
+        preview_custom_template = (
+            (custom_pdf_prompt or "").strip()
+            if continuation_method == "Custom Prompt" and (custom_pdf_prompt or "").strip()
+            else None
+        )
+        preview_prompt = get_full_prompt(
+            prompt_type="Sequential Continuation Evaluation",
+            input_text="[PDF chunk]",
+            chunk_size=chunk_size,
+            continuation_method=continuation_method,
+            custom_template=preview_custom_template,
+        )
+        render_prompt_preview(preview_prompt)
 
         st.markdown('<h3 class="section-header sm">🛠️ Generation Controls</h3>', unsafe_allow_html=True)
         ctrl_col1, ctrl_col2 = st.columns(2)
@@ -597,6 +622,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
         temperature = 0.7
         top_p = 1.0
         top_k = 5
+        custom_pdf_prompt = ""
 
     if uploaded_file is not None:
         st.markdown("---")
@@ -617,6 +643,13 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
         if not api_key:
             st.error("⚠️ Please enter your API key in the sidebar.")
             return
+        custom_template = None
+        if continuation_method == "Custom Prompt":
+            custom_template = (custom_pdf_prompt or "").strip()
+            if not custom_template:
+                st.error("⚠️ Please provide a custom prompt template before running the analysis.")
+                return
+
         try:
             progress_bar = st.progress(0, text=f"🔄 Analyzing PDF with {model_choice}... Preparing document...")
             pdf_buffer = io.BytesIO(uploaded_file.getvalue())
@@ -644,6 +677,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                         chunk_size=target_words,
                         temperature=temperature,
                         top_p=top_p,
+                        custom_template=custom_template,
                     )
                     if isinstance(result[0], str) and result[0].startswith("Error"):
                         st.error(f"❌ {result[0]}")
@@ -659,6 +693,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
                         temperature=temperature,
                         top_p=top_p,
                         continuation_method=continuation_method,
+                        custom_template=custom_template,
                     )
                     if isinstance(result, str) and result.startswith("Error"):
                         st.error(f"❌ {result}")
