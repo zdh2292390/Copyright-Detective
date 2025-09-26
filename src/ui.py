@@ -768,306 +768,312 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
         "Combine targeted jailbreak prompts with perplexity-based probes to uncover lingering memorisation."
     )
 
-    target_description = st.text_area(
-        "Target knowledge or passage",
-        height=140,
-        placeholder="Describe the copyrighted passage or knowledge that should have been unlearned.",
-        key="unlearning_target_description",
-    )
+    probe_tab, membership_tab = st.tabs(["Prompt-Based Probes", "Membership Inference"])
 
-    strategies = list_unlearning_strategies()
-    strategy_lookup = {strategy.id: strategy for strategy in strategies}
-    strategy_options = [strategy.id for strategy in strategies]
-    default_options = strategy_options[:2] if len(strategy_options) >= 2 else strategy_options
-
-    strategy_selection = st.multiselect(
-        "Probe strategies",
-        options=strategy_options,
-        default=default_options,
-        format_func=lambda strategy_id: f"{strategy_lookup[strategy_id].name} — {strategy_lookup[strategy_id].description}",
-        help="Select the prompt framings that will be used to probe the model.",
-        key="unlearning_strategy_selection",
-    )
-
-    custom_prompt_enabled = st.checkbox("Add custom probe prompt", key="unlearning_use_custom_prompt")
-    custom_prompt = ""
-    if custom_prompt_enabled:
-        custom_prompt = st.text_area(
-            "Custom prompt template",
-            height=160,
-            placeholder="Provide the exact instructions. Use {target_description} where the description should appear.",
-            key="unlearning_custom_prompt",
+    with probe_tab:
+        target_description = st.text_area(
+            "Target knowledge or passage",
+            height=140,
+            placeholder="Describe the copyrighted passage or knowledge that should have been unlearned.",
+            key="unlearning_target_description",
         )
 
-    if strategy_selection:
-        st.markdown("#### Prompt previews")
-        for strategy_id in strategy_selection:
-            preview_prompt = build_unlearning_prompt(strategy_id, target_description or "the withheld passage")
-            render_prompt_preview(preview_prompt, expanded=False)
+        strategies = list_unlearning_strategies()
+        strategy_lookup = {strategy.id: strategy for strategy in strategies}
+        strategy_options = [strategy.id for strategy in strategies]
+        default_options = strategy_options[:2] if len(strategy_options) >= 2 else strategy_options
 
-    if custom_prompt_enabled and custom_prompt.strip():
-        st.markdown("#### Custom prompt preview")
-        sample_prompt = build_unlearning_prompt("custom", target_description or "the withheld passage", custom_prompt=custom_prompt)
-        render_prompt_preview(sample_prompt, expanded=False)
-
-    st.markdown("---")
-    ctrl_col1, ctrl_col2 = st.columns(2)
-    with ctrl_col1:
-        temperature = st.slider(
-            "Temperature",
-            min_value=0.0,
-            max_value=2.0,
-            value=0.3,
-            step=0.01,
-            help="Lower temperatures encourage deterministic echoes of memorised content.",
-            key="unlearning_temperature",
-        )
-    with ctrl_col2:
-        top_p = st.slider(
-            "Top-P",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.9,
-            step=0.01,
-            help="Restrict sampling to the most likely tokens to surface memorisation.",
-            key="unlearning_top_p",
+        strategy_selection = st.multiselect(
+            "Probe strategies",
+            options=strategy_options,
+            default=default_options,
+            format_func=lambda strategy_id: f"{strategy_lookup[strategy_id].name} — {strategy_lookup[strategy_id].description}",
+            help="Select the prompt framings that will be used to probe the model.",
+            key="unlearning_strategy_selection",
         )
 
-    st.markdown("---")
-    st.markdown("#### 📉 Membership Inference (Perplexity Probe)")
-    st.caption(
-        "Estimate whether the reference text still lives in the model's training data by comparing perplexity against a matched control passage."
-    )
+        custom_prompt_enabled = st.checkbox("Add custom probe prompt", key="unlearning_use_custom_prompt")
+        custom_prompt = ""
+        if custom_prompt_enabled:
+            custom_prompt = st.text_area(
+                "Custom prompt template",
+                height=160,
+                placeholder="Provide the exact instructions. Use {target_description} where the description should appear.",
+                key="unlearning_custom_prompt",
+            )
 
-    membership_reference = st.text_area(
-        "Reference text for perplexity probe",
-        height=220,
-        placeholder="Provide the original passage to test for memorisation.",
-        key="membership_reference_text",
-    )
+        if strategy_selection:
+            st.markdown("#### Prompt previews")
+            for strategy_id in strategy_selection:
+                preview_prompt = build_unlearning_prompt(strategy_id, target_description or "the withheld passage")
+                render_prompt_preview(preview_prompt, expanded=False)
 
-    control_text = st.text_area(
-        "Control text (public baseline)",
-        height=220,
-        placeholder="Provide a stylistically similar passage that the model definitely should not have memorised.",
-        key="membership_control_text",
-    )
+        if custom_prompt_enabled and custom_prompt.strip():
+            st.markdown("#### Custom prompt preview")
+            sample_prompt = build_unlearning_prompt("custom", target_description or "the withheld passage", custom_prompt=custom_prompt)
+            render_prompt_preview(sample_prompt, expanded=False)
 
-    membership_cols = st.columns(3)
-    with membership_cols[0]:
-        chunk_size = st.slider(
-            "Chunk size (words)",
-            min_value=50,
-            max_value=200,
-            value=120,
-            step=10,
-            help="Each passage will be scored in word-based windows of this size.",
-            key="membership_chunk_size",
-        )
-    with membership_cols[1]:
-        max_chunks = st.number_input(
-            "Chunks per passage",
-            min_value=1,
-            max_value=12,
-            value=4,
-            step=1,
-            help="Limit how many segments are sampled from each passage.",
-            key="membership_max_chunks",
-        )
-    with membership_cols[2]:
-        ppl_gap_threshold = st.slider(
-            "Flag gap (Δ PPL)",
-            min_value=0.0,
-            max_value=30.0,
-            value=5.0,
-            step=0.5,
-            help="Minimum perplexity gap (control minus reference) to raise an alert.",
-            key="membership_gap_threshold",
-        )
+        st.markdown("---")
+        ctrl_col1, ctrl_col2 = st.columns(2)
+        with ctrl_col1:
+            temperature = st.slider(
+                "Temperature",
+                min_value=0.0,
+                max_value=2.0,
+                value=0.3,
+                step=0.01,
+                help="Lower temperatures encourage deterministic echoes of memorised content.",
+                key="unlearning_temperature",
+            )
+        with ctrl_col2:
+            top_p = st.slider(
+                "Top-P",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.9,
+                step=0.01,
+                help="Restrict sampling to the most likely tokens to surface memorisation.",
+                key="unlearning_top_p",
+            )
 
-    action_col1, action_col2 = st.columns(2)
-    with action_col1:
-        run_prompt_probe = st.button(
-            "🚀 Run Prompt-Based Probes",
-            use_container_width=True,
-            key="run_unlearning_prompt_button",
-        )
-    with action_col2:
-        run_membership = st.button(
-            "🧮 Run Membership Inference",
-            use_container_width=True,
-            key="run_membership_inference_button",
-        )
+        st.markdown("---")
+        probe_button_col = st.columns([1, 1, 1])[1]
+        with probe_button_col:
+            run_prompt_probe = st.button(
+                "🚀 Run Prompt-Based Probes",
+                use_container_width=True,
+                key="run_unlearning_prompt_button",
+            )
 
-    if run_prompt_probe:
-        if not api_key:
-            st.error("⚠️ Please enter your API key in the sidebar.")
-        elif not model_choice:
-            st.error("⚠️ Please select a model in the sidebar.")
-        elif not target_description.strip():
-            st.warning("⚠️ Provide a target description before running detection.")
-        else:
-            selected_ids = list(strategy_selection)
-            custom_prompt_value = custom_prompt.strip() if custom_prompt_enabled else None
-            if custom_prompt_enabled and not custom_prompt_value:
-                st.warning("⚠️ Enter a custom prompt or disable the custom prompt option.")
+        if run_prompt_probe:
+            if not api_key:
+                st.error("⚠️ Please enter your API key in the sidebar.")
+            elif not model_choice:
+                st.error("⚠️ Please select a model in the sidebar.")
+            elif not target_description.strip():
+                st.warning("⚠️ Provide a target description before running detection.")
             else:
-                if custom_prompt_value:
-                    selected_ids.append("custom")
-                if not selected_ids:
-                    st.warning("⚠️ Select at least one probe strategy or add a custom prompt.")
+                selected_ids = list(strategy_selection)
+                custom_prompt_value = custom_prompt.strip() if custom_prompt_enabled else None
+                if custom_prompt_enabled and not custom_prompt_value:
+                    st.warning("⚠️ Enter a custom prompt or disable the custom prompt option.")
                 else:
-                    with st.spinner(f"🔍 Evaluating memorisation with {model_choice}..."):
-                        try:
-                            summary = run_unlearning_detection(
-                                api_key,
-                                model_choice,
-                                provider,
-                                target_description=target_description,
-                                strategy_ids=selected_ids,
-                                temperature=temperature,
-                                top_p=top_p,
-                                custom_prompt=custom_prompt_value,
-                            )
-                        except ValueError as exc:
-                            st.error(f"❌ {exc}")
-                            summary = None
-                        except Exception as exc:  # pragma: no cover - runtime/SDK errors
-                            st.error(f"❌ Detection failed: {exc}")
-                            summary = None
+                    if custom_prompt_value:
+                        selected_ids.append("custom")
+                    if not selected_ids:
+                        st.warning("⚠️ Select at least one probe strategy or add a custom prompt.")
+                    else:
+                        with st.spinner(f"🔍 Evaluating memorisation with {model_choice}..."):
+                            try:
+                                summary = run_unlearning_detection(
+                                    api_key,
+                                    model_choice,
+                                    provider,
+                                    target_description=target_description,
+                                    strategy_ids=selected_ids,
+                                    temperature=temperature,
+                                    top_p=top_p,
+                                    custom_prompt=custom_prompt_value,
+                                )
+                            except ValueError as exc:
+                                st.error(f"❌ {exc}")
+                                summary = None
+                            except Exception as exc:  # pragma: no cover - runtime/SDK errors
+                                st.error(f"❌ Detection failed: {exc}")
+                                summary = None
 
-                    if summary:
-                        st.markdown("---")
-                        st.success("Prompt probes completed. Review the model responses below.")
+                        if summary:
+                            st.markdown("---")
+                            st.success("Prompt probes completed. Review the model responses below.")
 
-                        for result in summary.results:
+                            for result in summary.results:
+                                if result.error:
+                                    sections = [
+                                        ("Status", "Error while generating response.", None),
+                                        ("Details", result.error, None),
+                                    ]
+                                    meta = "Error"
+                                else:
+                                    sections = [
+                                        ("Model Response", result.response, "generated"),
+                                    ]
+                                    meta = "Response"
+
+                                render_collapsible_panel(
+                                    title=f"Strategy · {result.strategy_name}",
+                                    sections=sections,
+                                    meta=meta,
+                                    expanded=False,
+                                )
+
+    with membership_tab:
+        st.markdown("#### 📉 Membership Inference (Perplexity Probe)")
+        st.caption(
+            "Estimate whether the reference text still lives in the model's training data by comparing perplexity against a matched control passage."
+        )
+
+        membership_reference = st.text_area(
+            "Reference text for perplexity probe",
+            height=220,
+            placeholder="Provide the original passage to test for memorisation.",
+            key="membership_reference_text",
+        )
+
+        control_text = st.text_area(
+            "Control text (public baseline)",
+            height=220,
+            placeholder="Provide a stylistically similar passage that the model definitely should not have memorised.",
+            key="membership_control_text",
+        )
+
+        membership_cols = st.columns(3)
+        with membership_cols[0]:
+            chunk_size = st.slider(
+                "Chunk size (words)",
+                min_value=50,
+                max_value=200,
+                value=120,
+                step=10,
+                help="Each passage will be scored in word-based windows of this size.",
+                key="membership_chunk_size",
+            )
+        with membership_cols[1]:
+            max_chunks = st.number_input(
+                "Chunks per passage",
+                min_value=1,
+                max_value=12,
+                value=4,
+                step=1,
+                help="Limit how many segments are sampled from each passage.",
+                key="membership_max_chunks",
+            )
+        with membership_cols[2]:
+            ppl_gap_threshold = st.slider(
+                "Flag gap (Δ PPL)",
+                min_value=0.0,
+                max_value=30.0,
+                value=5.0,
+                step=0.5,
+                help="Minimum perplexity gap (control minus reference) to raise an alert.",
+                key="membership_gap_threshold",
+            )
+
+        membership_button_col = st.columns([1, 1, 1])[1]
+        with membership_button_col:
+            run_membership = st.button(
+                "🧮 Run Membership Inference",
+                use_container_width=True,
+                key="run_membership_inference_button",
+            )
+
+        if run_membership:
+            if not api_key:
+                st.error("⚠️ Please enter your API key in the sidebar.")
+            elif not model_choice:
+                st.error("⚠️ Please select a model in the sidebar.")
+            elif provider != "OpenAI":
+                st.error("⚠️ Perplexity-based membership inference currently supports OpenAI models only.")
+            elif not membership_reference.strip():
+                st.warning("⚠️ Provide the reference text before running membership inference.")
+            elif not control_text.strip():
+                st.warning("⚠️ Provide a control passage to compare against.")
+            else:
+                with st.spinner(f"📉 Sampling log probabilities with {model_choice}..."):
+                    try:
+                        membership_summary = run_membership_inference(
+                            api_key,
+                            model_choice,
+                            provider,
+                            reference_text=membership_reference,
+                            control_text=control_text,
+                            chunk_size=int(chunk_size),
+                            max_chunks=int(max_chunks),
+                            ppl_gap_threshold=ppl_gap_threshold,
+                        )
+                    except ValueError as exc:
+                        st.error(f"❌ {exc}")
+                        membership_summary = None
+                    except Exception as exc:  # pragma: no cover - network/SDK errors
+                        st.error(f"❌ Membership inference failed: {exc}")
+                        membership_summary = None
+
+                if membership_summary:
+                    st.markdown("---")
+                    if membership_summary.flagged:
+                        st.error(
+                            "🚨 The reference passages show significantly lower perplexity than the control, indicating possible memorisation."
+                        )
+                    else:
+                        st.success("✅ No significant perplexity gap detected between reference and control passages.")
+
+                    mean_ref = "—" if math.isinf(membership_summary.mean_target_ppl) else f"{membership_summary.mean_target_ppl:.2f}"
+                    mean_ctrl = "—" if math.isinf(membership_summary.mean_control_ppl) else f"{membership_summary.mean_control_ppl:.2f}"
+                    gap = "—" if math.isnan(membership_summary.ppl_gap) else f"{membership_summary.ppl_gap:.2f}"
+
+                    metric_col1, metric_col2, metric_col3 = st.columns(3)
+                    metric_col1.metric("Mean PPL · Reference", mean_ref)
+                    metric_col2.metric("Mean PPL · Control", mean_ctrl)
+                    metric_col3.metric("Δ PPL", gap)
+
+                    if membership_summary.errors:
+                        st.warning("; ".join(membership_summary.errors))
+
+                    table_rows = []
+                    for result in membership_summary.target_results + membership_summary.control_results:
+                        status = "Error" if result.error else "Flagged" if (
+                            membership_summary.flagged and result.label == "reference" and not math.isinf(result.perplexity)
+                        ) else "OK"
+                        snippet_preview = result.snippet.strip()
+                        if len(snippet_preview) > 180:
+                            snippet_preview = snippet_preview[:177] + "…"
+                        table_rows.append(
+                            {
+                                "Group": "Reference" if result.label == "reference" else "Control",
+                                "Tokens": result.token_count,
+                                "Avg LogProb": None if math.isnan(result.avg_logprob) else round(result.avg_logprob, 4),
+                                "Perplexity": None if math.isinf(result.perplexity) else round(result.perplexity, 3),
+                                "Trace Score": round(result.training_trace_score, 4),
+                                "Status": status,
+                                "Snippet": snippet_preview,
+                            }
+                        )
+
+                    if table_rows:
+                        st.dataframe(pd.DataFrame(table_rows), use_container_width=True)
+
+                    for group_name, results in (
+                        ("Reference", membership_summary.target_results),
+                        ("Control", membership_summary.control_results),
+                    ):
+                        for idx, result in enumerate(results, start=1):
                             if result.error:
                                 sections = [
-                                    ("Status", "Error while generating response.", None),
-                                    ("Details", result.error, None),
+                                    ("Snippet", result.snippet, None),
+                                    ("Error", result.error, None),
                                 ]
                                 meta = "Error"
                             else:
                                 sections = [
-                                    ("Model Response", result.response, "generated"),
+                                    ("Snippet", result.snippet, None),
+                                    (
+                                        "Metrics",
+                                        (
+                                            f"Tokens: {result.token_count}\n"
+                                            f"Avg logprob: {result.avg_logprob:.4f}\n"
+                                            f"Perplexity: {result.perplexity:.3f}\n"
+                                            f"Trace score: {result.training_trace_score:.4f}"
+                                        ),
+                                        None,
+                                    ),
                                 ]
-                                meta = "Response"
+                                meta = "Flagged" if membership_summary.flagged and result.label == "reference" else "OK"
 
                             render_collapsible_panel(
-                                title=f"Strategy · {result.strategy_name}",
+                                title=f"{group_name} chunk {idx}",
                                 sections=sections,
                                 meta=meta,
-                                expanded=False,
+                                expanded=membership_summary.flagged and result.label == "reference",
                             )
-
-    if run_membership:
-        if not api_key:
-            st.error("⚠️ Please enter your API key in the sidebar.")
-        elif not model_choice:
-            st.error("⚠️ Please select a model in the sidebar.")
-        elif provider != "OpenAI":
-            st.error("⚠️ Perplexity-based membership inference currently supports OpenAI models only.")
-        elif not membership_reference.strip():
-            st.warning("⚠️ Provide the reference text before running membership inference.")
-        elif not control_text.strip():
-            st.warning("⚠️ Provide a control passage to compare against.")
-        else:
-            with st.spinner(f"📉 Sampling log probabilities with {model_choice}..."):
-                try:
-                    membership_summary = run_membership_inference(
-                        api_key,
-                        model_choice,
-                        provider,
-                        reference_text=membership_reference,
-                        control_text=control_text,
-                        chunk_size=int(chunk_size),
-                        max_chunks=int(max_chunks),
-                        ppl_gap_threshold=ppl_gap_threshold,
-                    )
-                except ValueError as exc:
-                    st.error(f"❌ {exc}")
-                    membership_summary = None
-                except Exception as exc:  # pragma: no cover - network/SDK errors
-                    st.error(f"❌ Membership inference failed: {exc}")
-                    membership_summary = None
-
-            if membership_summary:
-                st.markdown("---")
-                if membership_summary.flagged:
-                    st.error(
-                        "🚨 The reference passages show significantly lower perplexity than the control, indicating possible memorisation."
-                    )
-                else:
-                    st.success("✅ No significant perplexity gap detected between reference and control passages.")
-
-                mean_ref = "—" if math.isinf(membership_summary.mean_target_ppl) else f"{membership_summary.mean_target_ppl:.2f}"
-                mean_ctrl = "—" if math.isinf(membership_summary.mean_control_ppl) else f"{membership_summary.mean_control_ppl:.2f}"
-                gap = "—" if math.isnan(membership_summary.ppl_gap) else f"{membership_summary.ppl_gap:.2f}"
-
-                metric_col1, metric_col2, metric_col3 = st.columns(3)
-                metric_col1.metric("Mean PPL · Reference", mean_ref)
-                metric_col2.metric("Mean PPL · Control", mean_ctrl)
-                metric_col3.metric("Δ PPL", gap)
-
-                if membership_summary.errors:
-                    st.warning("; ".join(membership_summary.errors))
-
-                table_rows = []
-                for result in membership_summary.target_results + membership_summary.control_results:
-                    status = "Error" if result.error else "Flagged" if (
-                        membership_summary.flagged and result.label == "reference" and not math.isinf(result.perplexity)
-                    ) else "OK"
-                    snippet_preview = result.snippet.strip()
-                    if len(snippet_preview) > 180:
-                        snippet_preview = snippet_preview[:177] + "…"
-                    table_rows.append(
-                        {
-                            "Group": "Reference" if result.label == "reference" else "Control",
-                            "Tokens": result.token_count,
-                            "Avg LogProb": None if math.isnan(result.avg_logprob) else round(result.avg_logprob, 4),
-                            "Perplexity": None if math.isinf(result.perplexity) else round(result.perplexity, 3),
-                            "Trace Score": round(result.training_trace_score, 4),
-                            "Status": status,
-                            "Snippet": snippet_preview,
-                        }
-                    )
-
-                if table_rows:
-                    st.dataframe(pd.DataFrame(table_rows), use_container_width=True)
-
-                for group_name, results in (
-                    ("Reference", membership_summary.target_results),
-                    ("Control", membership_summary.control_results),
-                ):
-                    for idx, result in enumerate(results, start=1):
-                        if result.error:
-                            sections = [
-                                ("Snippet", result.snippet, None),
-                                ("Error", result.error, None),
-                            ]
-                            meta = "Error"
-                        else:
-                            sections = [
-                                ("Snippet", result.snippet, None),
-                                (
-                                    "Metrics",
-                                    (
-                                        f"Tokens: {result.token_count}\n"
-                                        f"Avg logprob: {result.avg_logprob:.4f}\n"
-                                        f"Perplexity: {result.perplexity:.3f}\n"
-                                        f"Trace score: {result.training_trace_score:.4f}"
-                                    ),
-                                    None,
-                                ),
-                            ]
-                            meta = "Flagged" if membership_summary.flagged and result.label == "reference" else "OK"
-
-                        render_collapsible_panel(
-                            title=f"{group_name} chunk {idx}",
-                            sections=sections,
-                            meta=meta,
-                            expanded=membership_summary.flagged and result.label == "reference",
-                        )
 
 
 def render_jailbreak_persuasion_probe_section(api_key, model_choice, provider):
