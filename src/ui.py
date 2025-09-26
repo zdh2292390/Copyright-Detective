@@ -326,7 +326,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     with col_center:
         run_analysis = st.button(
             "🚀 Run Analysis",
-            use_container_width=True,
+            width='stretch',
             key="run_snippet_analysis_button",
         )
 
@@ -676,7 +676,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         st.markdown("---")
         analyze_pdf = st.button(
             "🔍 Analyze PDF",
-            use_container_width=True,
+            width='stretch',
             type="primary",
             key="analyze_pdf_button",
         )
@@ -876,7 +876,7 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
         with probe_button_col:
             run_prompt_probe = st.button(
                 "🚀 Run Prompt-Based Probes",
-                use_container_width=True,
+                width='stretch',
                 key="run_unlearning_prompt_button",
             )
 
@@ -995,11 +995,33 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                 key="membership_gap_threshold",
             )
 
+        advanced_expander = st.expander("Advanced settings", expanded=False)
+        with advanced_expander:
+            st.caption("Tune confidence reporting and sampling depth for the perplexity probe.")
+            bootstrap_samples = st.slider(
+                "Bootstrap iterations",
+                min_value=0,
+                max_value=2000,
+                value=500,
+                step=50,
+                help="Number of bootstrap resamples to estimate a confidence interval for the perplexity gap.",
+                key="membership_bootstrap_samples",
+            )
+            confidence_level = st.slider(
+                "Confidence level",
+                min_value=0.5,
+                max_value=0.99,
+                value=0.9,
+                step=0.01,
+                help="Confidence level for the bootstrap interval.",
+                key="membership_confidence_level",
+            )
+
         membership_button_col = st.columns([1, 1, 1])[1]
         with membership_button_col:
             run_membership = st.button(
                 "🧮 Run Membership Inference",
-                use_container_width=True,
+                width='stretch',
                 key="run_membership_inference_button",
             )
 
@@ -1026,6 +1048,8 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                             chunk_size=int(chunk_size),
                             max_chunks=int(max_chunks),
                             ppl_gap_threshold=ppl_gap_threshold,
+                            bootstrap_samples=int(bootstrap_samples),
+                            confidence_level=float(confidence_level),
                         )
                     except ValueError as exc:
                         st.error(f"❌ {exc}")
@@ -1043,14 +1067,37 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                     else:
                         st.success("✅ No significant perplexity gap detected between reference and control passages.")
 
-                        mean_ref = "—" if math.isinf(membership_summary.mean_target_ppl) else f"{membership_summary.mean_target_ppl:.2f}"
-                        mean_ctrl = "—" if math.isinf(membership_summary.mean_control_ppl) else f"{membership_summary.mean_control_ppl:.2f}"
-                        gap = "—" if math.isnan(membership_summary.ppl_gap) else f"{membership_summary.ppl_gap:.2f}"
+                    mean_ref = "—" if math.isinf(membership_summary.mean_target_ppl) else f"{membership_summary.mean_target_ppl:.2f}"
+                    mean_ctrl = "—" if math.isinf(membership_summary.mean_control_ppl) else f"{membership_summary.mean_control_ppl:.2f}"
+                    gap = "—" if math.isnan(membership_summary.ppl_gap) else f"{membership_summary.ppl_gap:.2f}"
 
-                        metric_col1, metric_col2, metric_col3 = st.columns(3)
-                        metric_col1.metric("Mean PPL · Reference", mean_ref)
-                        metric_col2.metric("Mean PPL · Control", mean_ctrl)
-                        metric_col3.metric("Δ PPL", gap)
+                    metric_col1, metric_col2, metric_col3 = st.columns(3)
+                    metric_col1.metric("Mean PPL · Reference", mean_ref)
+                    metric_col2.metric("Mean PPL · Control", mean_ctrl)
+                    metric_col3.metric("Δ PPL", gap)
+
+                    median_col1, median_col2, effect_col = st.columns(3)
+                    median_col1.metric(
+                        "Median PPL · Reference",
+                        "—" if math.isinf(membership_summary.median_target_ppl) else f"{membership_summary.median_target_ppl:.2f}",
+                    )
+                    median_col2.metric(
+                        "Median PPL · Control",
+                        "—" if math.isinf(membership_summary.median_control_ppl) else f"{membership_summary.median_control_ppl:.2f}",
+                    )
+                    effect_display = "—" if membership_summary.effect_size is None else f"g = {membership_summary.effect_size:.2f}"
+                    effect_col.metric("Effect Size", effect_display)
+
+                    if membership_summary.bootstrap_iterations:
+                        if membership_summary.ppl_gap_ci:
+                            lower, upper = membership_summary.ppl_gap_ci
+                            if any(math.isnan(val) for val in (lower, upper)):
+                                st.caption("Bootstrap confidence interval unavailable.")
+                            else:
+                                confidence_pct = int(round(confidence_level * 100))
+                                st.caption(f"Bootstrap Δ PPL {confidence_pct}% CI · [{lower:.2f}, {upper:.2f}]")
+                        else:
+                            st.caption("Bootstrap confidence interval could not be computed with the collected samples.")
 
                         ref_samples, ctrl_samples = membership_summary.sample_sizes
                         st.caption(
@@ -1083,12 +1130,16 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                         snippet_preview = result.snippet.strip()
                         if len(snippet_preview) > 180:
                             snippet_preview = snippet_preview[:177] + "…"
+                        delta_display = None if result.relative_perplexity is None else round(result.relative_perplexity, 3)
+                        z_score_display = None if result.z_score is None else round(result.z_score, 2)
                         table_rows.append(
                             {
                                 "Group": "Reference" if result.label == "reference" else "Control",
                                 "Tokens": result.token_count,
                                 "Avg LogProb": None if math.isnan(result.avg_logprob) else round(result.avg_logprob, 4),
                                 "Perplexity": None if math.isinf(result.perplexity) else round(result.perplexity, 3),
+                                "Δ vs Ctrl Mean": delta_display,
+                                "Z-score": z_score_display,
                                 "Trace Score": round(result.training_trace_score, 4),
                                 "Status": status,
                                 "Snippet": snippet_preview,
@@ -1096,7 +1147,7 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                         )
 
                     if table_rows:
-                        st.dataframe(pd.DataFrame(table_rows), use_container_width=True)
+                        st.dataframe(pd.DataFrame(table_rows), width='stretch')
 
                     for group_name, results in (
                         ("Reference", membership_summary.target_results),
@@ -1110,6 +1161,8 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                                 ]
                                 meta = "Error"
                             else:
+                                delta_display = "—" if result.relative_perplexity is None else f"{result.relative_perplexity:.3f}"
+                                z_score_display = "—" if result.z_score is None else f"{result.z_score:.2f}"
                                 sections = [
                                     ("Snippet", result.snippet, None),
                                     (
@@ -1118,7 +1171,9 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                                             f"Tokens: {result.token_count}\n"
                                             f"Avg logprob: {result.avg_logprob:.4f}\n"
                                             f"Perplexity: {result.perplexity:.3f}\n"
-                                            f"Trace score: {result.training_trace_score:.4f}"
+                                            f"Trace score: {result.training_trace_score:.4f}\n"
+                                            f"Δ vs control mean: {delta_display}\n"
+                                            f"Z-score: {z_score_display}"
                                         ),
                                         None,
                                     ),
@@ -1190,7 +1245,7 @@ def render_jailbreak_persuasion_probe_section(api_key, model_choice, provider):
         prompt_to_preview = get_persuasion_prompt(persuasion_strategy, input_text_probe, chunk_size=chunk_size)
         render_prompt_preview(prompt_to_preview)
 
-    if st.button("🚀 Run Probe", use_container_width=True, key="run_probe_button"):
+    if st.button("🚀 Run Probe", width='stretch', key="run_probe_button"):
         if not api_key:
             st.error("⚠️ Please enter your API key in the sidebar.")
         elif not input_text_probe or not ground_truth_probe:

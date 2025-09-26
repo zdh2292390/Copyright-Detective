@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass
-from statistics import fmean, variance
+from statistics import StatisticsError, fmean, median, stdev, variance
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 import openai
+
+try:  # pragma: no cover - openai may not expose this class in older versions
+    from openai import BadRequestError
+except ImportError:  # pragma: no cover - backwards compatibility
+    BadRequestError = None  # type: ignore[assignment]
 
 from .comparison import get_llm_completion
 
@@ -178,7 +184,7 @@ def _fetch_logprobs_for_text(
     provider: str,
     text: str,
 ) -> Tuple[List[float], Optional[str]]:
-    """Return log probabilities for each prompt token via completion echo."""
+    """Return log probabilities for each prompt token."""
 
     if provider != "OpenAI":
         return [], f"Logprob extraction is currently supported for OpenAI models only (got {provider})."
@@ -194,12 +200,26 @@ def _fetch_logprobs_for_text(
             echo=True,
         )
     except Exception as exc:  # pragma: no cover - network/SDK errors
-        return [], f"Failed to retrieve logprobs: {exc}"
+        fallback_reason = str(exc)
+        is_bad_request = BadRequestError is not None and isinstance(exc, BadRequestError)
+        invalid_combo = "invalid_parameter_combination" in fallback_reason or "Setting 'echo' and 'logprobs'" in fallback_reason
+
+        if is_bad_request and not invalid_combo:
+            return [], f"Failed to retrieve logprobs: {exc}"
+
+        values, error = _fetch_logprobs_via_responses(client, model_name, text)
+        if error:
+            return [], f"Failed to retrieve logprobs: {fallback_reason}; {error}"
+        return values, None
 
     choice = response.choices[0]
     logprobs = choice.logprobs
     if not logprobs or not logprobs.token_logprobs:
-        return [], "Provider returned no token log probabilities."
+        # Attempt to fall back to the Responses API when prompt logprobs aren't returned.
+        values, error = _fetch_logprobs_via_responses(client, model_name, text)
+        if error:
+            return [], error
+        return values, None
 
     values = [lp for lp in logprobs.token_logprobs if lp is not None]
     if not values:
@@ -217,6 +237,279 @@ def _compute_perplexity(logprobs: Sequence[float]) -> Tuple[float, float]:
     return avg_logprob, perplexity
 
 
+def _normalise_openai_obj(value):  # type: ignore[override]
+    """Return dict-like access for OpenAI objects or plain dicts."""
+
+    if value is None:
+        return None
+    if hasattr(value, "to_dict"):
+        try:
+            return value.to_dict()  # type: ignore[assignment]
+        except Exception:  # pragma: no cover - defensive fallback
+            pass
+    if isinstance(value, dict):
+        return value
+    return value
+
+
+def _extract_token_logprobs_from_prompt_section(prompt_section) -> List[float]:
+    values: List[float] = []
+    if not prompt_section:
+        return values
+
+    section_iterable = prompt_section if isinstance(prompt_section, (list, tuple)) else [prompt_section]
+    for segment in section_iterable:
+        segment_dict = _normalise_openai_obj(segment)
+        if segment_dict is None:
+            continue
+        content_items = segment_dict.get("content") if isinstance(segment_dict, dict) else getattr(segment, "content", None)
+        if not content_items:
+            continue
+        for item in content_items:
+            item_dict = _normalise_openai_obj(item)
+            if item_dict is None:
+                continue
+            logprob_block = item_dict.get("logprobs") if isinstance(item_dict, dict) else getattr(item, "logprobs", None)
+            if not logprob_block:
+                continue
+            block_dict = _normalise_openai_obj(logprob_block)
+            if block_dict is None:
+                continue
+            token_logprobs = (
+                block_dict.get("token_logprobs")
+                if isinstance(block_dict, dict)
+                else getattr(logprob_block, "token_logprobs", None)
+            )
+            if not token_logprobs:
+                continue
+            values.extend(lp for lp in token_logprobs if lp is not None)
+    return values
+
+
+def _fetch_logprobs_via_responses(
+    client: "openai.OpenAI",
+    model_name: str,
+    text: str,
+) -> Tuple[List[float], Optional[str]]:
+    """Fallback path using the Responses API for models that disallow echo logprobs."""
+
+    try:
+        response = client.responses.create(
+            model=model_name,
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": text,
+                        }
+                    ],
+                }
+            ],
+            logprobs=True,
+            max_output_tokens=0,
+            temperature=0.0,
+        )
+    except Exception as exc:  # pragma: no cover - network/SDK errors
+        return [], f"Responses API fallback failed: {exc}"
+
+    prompt_section = getattr(response, "prompt", None) or getattr(response, "input", None)
+    values = _extract_token_logprobs_from_prompt_section(prompt_section)
+    if values:
+        return values, None
+
+    # Some SDK versions expose prompt logprobs under response.metadata["prompt"]
+    metadata = getattr(response, "metadata", None)
+    if metadata and isinstance(metadata, dict):
+        prompt_meta = metadata.get("prompt")
+        values = _extract_token_logprobs_from_prompt_section(prompt_meta)
+        if values:
+            return values, None
+
+    return [], (
+        "Provider returned no token log probabilities via responses API. "
+        "Ensure the selected model supports logprob outputs for prompt tokens."
+    )
+
+
+def _safe_median(values: Sequence[float]) -> float:
+    if not values:
+        return float("inf")
+    try:
+        return median(values)
+    except StatisticsError:  # pragma: no cover - safeguard against degenerate input
+        return float("inf")
+
+
+def _safe_stdev(values: Sequence[float]) -> float:
+    if len(values) < 2:
+        return float("nan")
+    try:
+        return stdev(values)
+    except StatisticsError:  # pragma: no cover - safeguard against degenerate input
+        return float("nan")
+
+
+def _hedges_g(control: Sequence[float], target: Sequence[float]) -> Optional[float]:
+    if len(control) < 2 or len(target) < 2:
+        return None
+
+    mean_control = fmean(control)
+    mean_target = fmean(target)
+    var_control = variance(control)
+    var_target = variance(target)
+
+    n_control = len(control)
+    n_target = len(target)
+    pooled_denominator = (n_control + n_target - 2)
+    if pooled_denominator <= 0:
+        return None
+
+    pooled_variance = ((n_control - 1) * var_control + (n_target - 1) * var_target) / pooled_denominator
+    if pooled_variance <= 0:
+        return None
+
+    d = (mean_control - mean_target) / math.sqrt(pooled_variance)
+    correction = 1 - 3 / (4 * (n_control + n_target) - 9)
+    return d * correction
+
+
+def _bootstrap_gap_confidence_interval(
+    target: Sequence[float],
+    control: Sequence[float],
+    *,
+    samples: int,
+    confidence: float,
+    rng: Optional[random.Random] = None,
+) -> Optional[Tuple[float, float]]:
+    if samples <= 0 or len(target) < 2 or len(control) < 2:
+        return None
+
+    rng = rng or random.Random()
+    deltas: List[float] = []
+    lower_tail = (1 - confidence) / 2
+    upper_tail = 1 - lower_tail
+
+    for _ in range(samples):
+        resampled_target = [rng.choice(target) for _ in range(len(target))]
+        resampled_control = [rng.choice(control) for _ in range(len(control))]
+        mean_target = fmean(resampled_target)
+        mean_control = fmean(resampled_control)
+        deltas.append(mean_control - mean_target)
+
+    if not deltas:
+        return None
+
+    deltas.sort()
+    lower_index = max(0, min(samples - 1, int(lower_tail * samples)))
+    upper_index = max(0, min(samples - 1, int(math.ceil(upper_tail * samples)) - 1))
+
+    return deltas[lower_index], deltas[upper_index]
+
+
+def _annotate_relative_metrics(
+    *,
+    target_results: Sequence[MembershipSnippetResult],
+    control_results: Sequence[MembershipSnippetResult],
+    mean_control: float,
+    std_control: float,
+) -> None:
+    if math.isinf(mean_control):
+        return
+
+    has_std = not math.isnan(std_control) and std_control not in (0.0, float("inf"))
+    combined = list(target_results) + list(control_results)
+    for result in combined:
+        if result.error or math.isinf(result.perplexity):
+            result.relative_perplexity = None
+            result.z_score = None
+            continue
+
+        result.relative_perplexity = mean_control - result.perplexity
+        if has_std:
+            result.z_score = (mean_control - result.perplexity) / std_control
+        else:
+            result.z_score = None
+
+
+def _summarize_membership_results(
+    target_results: Sequence[MembershipSnippetResult],
+    control_results: Sequence[MembershipSnippetResult],
+    *,
+    ppl_gap_threshold: float,
+    additional_errors: Sequence[str],
+    bootstrap_samples: int,
+    confidence_level: float,
+    rng: Optional[random.Random] = None,
+) -> MembershipInferenceSummary:
+    valid_target = [res.perplexity for res in target_results if not math.isinf(res.perplexity) and not math.isnan(res.perplexity)]
+    valid_control = [res.perplexity for res in control_results if not math.isinf(res.perplexity) and not math.isnan(res.perplexity)]
+
+    mean_target = fmean(valid_target) if valid_target else float("inf")
+    mean_control = fmean(valid_control) if valid_control else float("inf")
+    median_target = _safe_median(valid_target)
+    median_control = _safe_median(valid_control)
+    std_target = _safe_stdev(valid_target)
+    std_control = _safe_stdev(valid_control)
+
+    ppl_gap = (
+        mean_control - mean_target
+        if valid_target and valid_control and not math.isinf(mean_target) and not math.isinf(mean_control)
+        else float("nan")
+    )
+    flagged = bool(valid_target and valid_control and not math.isnan(ppl_gap) and ppl_gap >= ppl_gap_threshold)
+
+    tests: List[StatisticalTestOutcome] = []
+    if valid_target and valid_control:
+        tests.append(_welch_t_test(valid_target, valid_control))
+        tests.append(_ks_test(valid_target, valid_control))
+
+    effect_size = _hedges_g(valid_control, valid_target)
+    ppl_gap_ci = _bootstrap_gap_confidence_interval(
+        valid_target,
+        valid_control,
+        samples=bootstrap_samples,
+        confidence=confidence_level,
+        rng=rng,
+    ) if bootstrap_samples > 0 else None
+
+    _annotate_relative_metrics(
+        target_results=target_results,
+        control_results=control_results,
+        mean_control=mean_control,
+        std_control=std_control,
+    )
+
+    combined_errors: List[str] = list(additional_errors)
+    if not valid_target:
+        combined_errors.append("No valid reference perplexity samples were collected.")
+    if not valid_control:
+        combined_errors.append("No valid control perplexity samples were collected.")
+
+    errors = list(dict.fromkeys(err for err in combined_errors if err))
+
+    return MembershipInferenceSummary(
+        target_results=list(target_results),
+        control_results=list(control_results),
+        mean_target_ppl=mean_target,
+        mean_control_ppl=mean_control,
+        ppl_gap=ppl_gap,
+        threshold=ppl_gap_threshold,
+        flagged=flagged,
+        sample_sizes=(len(valid_target), len(valid_control)),
+        statistical_tests=tests,
+        errors=errors,
+        median_target_ppl=median_target,
+        median_control_ppl=median_control,
+        std_target_ppl=std_target,
+        std_control_ppl=std_control,
+        effect_size=effect_size,
+        ppl_gap_ci=ppl_gap_ci,
+        bootstrap_iterations=bootstrap_samples if bootstrap_samples > 0 else 0,
+    )
+
+
 @dataclass
 class MembershipSnippetResult:
     label: str
@@ -226,6 +519,8 @@ class MembershipSnippetResult:
     perplexity: float
     logprobs: List[float]
     error: Optional[str] = None
+    relative_perplexity: Optional[float] = None
+    z_score: Optional[float] = None
 
     @property
     def training_trace_score(self) -> float:
@@ -246,6 +541,13 @@ class MembershipInferenceSummary:
     sample_sizes: Tuple[int, int]
     statistical_tests: List[StatisticalTestOutcome]
     errors: List[str]
+    median_target_ppl: float = float("inf")
+    median_control_ppl: float = float("inf")
+    std_target_ppl: float = float("nan")
+    std_control_ppl: float = float("nan")
+    effect_size: Optional[float] = None
+    ppl_gap_ci: Optional[Tuple[float, float]] = None
+    bootstrap_iterations: int = 0
 
     @property
     def training_signal_score(self) -> float:
@@ -393,6 +695,9 @@ def run_membership_inference(
     chunk_size: int = 120,
     max_chunks: int = 4,
     ppl_gap_threshold: float = 5.0,
+    bootstrap_samples: int = 500,
+    confidence_level: float = 0.90,
+    rng: Optional[random.Random] = None,
 ) -> MembershipInferenceSummary:
     """Compute perplexity-based membership inference statistics."""
 
@@ -454,31 +759,17 @@ def run_membership_inference(
     target_results = evaluate_chunks(reference_chunks, "reference")
     control_results = evaluate_chunks(control_chunks, "control")
 
-    valid_target = [res.perplexity for res in target_results if not math.isinf(res.perplexity)]
-    valid_control = [res.perplexity for res in control_results if not math.isinf(res.perplexity)]
-
-    mean_target = fmean(valid_target) if valid_target else float("inf")
-    mean_control = fmean(valid_control) if valid_control else float("inf")
-    ppl_gap = mean_control - mean_target if all(not math.isinf(val) for val in (mean_target, mean_control)) else float("nan")
-    flagged = bool(valid_target and valid_control and ppl_gap >= ppl_gap_threshold)
-
-    tests: List[StatisticalTestOutcome] = []
-    if valid_target and valid_control:
-        tests.append(_welch_t_test(valid_target, valid_control))
-        tests.append(_ks_test(valid_target, valid_control))
-
-    return MembershipInferenceSummary(
+    summary = _summarize_membership_results(
         target_results=target_results,
         control_results=control_results,
-        mean_target_ppl=mean_target,
-        mean_control_ppl=mean_control,
-        ppl_gap=ppl_gap,
-        threshold=ppl_gap_threshold,
-        flagged=flagged,
-        sample_sizes=(len(valid_target), len(valid_control)),
-        statistical_tests=tests,
-        errors=list(dict.fromkeys(errors)),
+        ppl_gap_threshold=ppl_gap_threshold,
+        additional_errors=errors,
+        bootstrap_samples=max(0, int(bootstrap_samples)),
+        confidence_level=max(0.0, min(0.999, confidence_level)),
+        rng=rng,
     )
+
+    return summary
 
 
 @dataclass
