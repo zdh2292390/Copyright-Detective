@@ -261,14 +261,17 @@
 /* Prompt preview */
 .cd-prompt-preview { margin: 0.25rem 0 0.6rem; }
 .cd-prompt-preview__container {
-    border: 1px solid #d0d4dd;
-    border-radius: 12px;
-    background: linear-gradient(145deg, #f7f9fc 0%, #eef2f8 100%);
-    padding: 14px;
+    border: 1px solid rgba(203, 213, 225, 0.8);
+    border-radius: 14px;
+    background: linear-gradient(145deg, rgba(255, 255, 255, 0.95) 0%, rgba(237, 242, 247, 0.92) 100%);
+    padding: 16px;
     color: #1f2937;
-    transition: box-shadow 0.2s ease;
+    transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }
-.cd-prompt-preview__container[open] { box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12); }
+.cd-prompt-preview__container[open] {
+    box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
+    border-color: rgba(148, 163, 184, 0.8);
+}
 .cd-prompt-preview__summary {
     list-style: none;
     cursor: pointer;
@@ -277,40 +280,43 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    color: #1d4ed8;
+    color: #475569;
 }
 .cd-prompt-preview__summary::-webkit-details-marker { display: none; }
 .cd-prompt-preview__summary::before {
     content: "\25B6";
     display: inline-flex;
     transition: transform 0.2s ease;
+    color: #2563eb;
 }
 .cd-prompt-preview__container[open] > .cd-prompt-preview__summary::before { transform: rotate(90deg); }
 .cd-prompt-preview__content {
     position: relative;
-    background: #0f172a;
-    color: #f8fafc;
-    border-radius: 10px;
-    margin-top: 14px;
-    padding: 18px;
+    background: linear-gradient(140deg, rgba(255, 255, 255, 0.98), rgba(236, 243, 255, 0.92));
+    color: #1e293b;
+    border: 1px solid rgba(148, 163, 184, 0.45);
+    border-radius: 14px;
+    margin-top: 16px;
+    padding: 20px 18px 26px;
     overflow: auto;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 16px 32px rgba(15, 23, 42, 0.08);
 }
 .cd-prompt-preview__copy {
     position: absolute;
-    right: 0.5rem;
-    bottom: 0.5rem;
+    right: 0.75rem;
+    bottom: 0.75rem;
     z-index: 1;
-    background: rgba(148, 163, 184, 0.2);
-    border: 1px solid rgba(148, 163, 184, 0.3);
-    border-radius: 8px;
-    color: #e2e8f0;
-    padding: 6px 12px;
-    font-size: 0.8rem;
+    background: rgba(37, 99, 235, 0.12);
+    border: 1px solid rgba(37, 99, 235, 0.25);
+    border-radius: 10px;
+    color: #1d4ed8;
+    padding: 6px 14px;
+    font-size: 0.82rem;
     cursor: pointer;
     transition: background 0.2s ease, transform 0.2s ease;
 }
 .cd-prompt-preview__copy:hover {
-    background: rgba(148, 163, 184, 0.35);
+    background: rgba(37, 99, 235, 0.22);
     transform: translateY(-1px);
 }
 .cd-prompt-preview__text {
@@ -318,8 +324,8 @@
     white-space: pre-wrap;
     word-break: break-word;
     font-family: "JetBrains Mono", "Fira Code", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-    font-size: 0.95rem;
-    line-height: 1.6;
+    font-size: 0.94rem;
+    line-height: 1.65;
 }
 
 /* Custom accordion panels */

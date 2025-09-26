@@ -1,4 +1,5 @@
 import io
+from typing import Optional
 
 import streamlit as st
 from src.copyright_detective.comparison import compare_texts
@@ -19,6 +20,7 @@ CONTINUATION_STRATEGIES = [
     "Creative Writing Exercise",
     "Translation and Back-Translation",
     "Tom and Jerry Game",
+    "Custom Prompt",
 ]
 
 
@@ -151,6 +153,19 @@ def render_text_analysis_page(api_key, model_choice, provider):
             key="continuation_method_selector",
         )
 
+        custom_continuation_prompt: Optional[str] = None
+        if continuation_method == "Custom Prompt":
+            custom_continuation_prompt = st.text_area(
+                "Custom prompt template",
+                height=180,
+                placeholder="Write the full instruction the model should follow. Use {input_text} where the snippet should appear. Optional placeholders: {word_count}, {char_count}.",
+                key="custom_continuation_prompt",
+                help="This template replaces the built-in continuation prompt. It should contain {input_text} so the snippet is inserted correctly.",
+            )
+            st.caption("Tip: Include placeholders like {input_text}, {word_count}, or {char_count} to auto-fill the preview values.")
+        else:
+            custom_continuation_prompt = st.session_state.get("custom_continuation_prompt", "")
+
         # Immediately preview the prompt after selecting the continuation method
         # Use placeholder text if the input is empty
         chunk_size_preview = len(text2.split()) if text2 else None
@@ -161,6 +176,7 @@ def render_text_analysis_page(api_key, model_choice, provider):
             chunk_size=chunk_size_preview,
             continuation_method=continuation_method,
             char_count=char_count_preview,
+            custom_template=custom_continuation_prompt if continuation_method == "Custom Prompt" else None,
         )
         st.markdown(
             "ℹ️ The length of the generated text will be adjusted to match the character count of your **Ground Truth** input."
@@ -177,6 +193,19 @@ def render_text_analysis_page(api_key, model_choice, provider):
             help="Select a reconstruction framing. Each strategy nudges the model toward recreating the missing preceding context.",
             key="preceding_method_selector",
         )
+
+        custom_preceding_prompt: Optional[str] = None
+        if preceding_method == "Custom Prompt":
+            custom_preceding_prompt = st.text_area(
+                "Custom prompt template",
+                height=180,
+                placeholder="Describe how the model should reconstruct the preceding context. Use {input_text} for the continuation and {word_count}/{char_count} if needed.",
+                key="custom_preceding_prompt",
+                help="Your custom template replaces the selected strategy. Remember to include {input_text} to reference the continuation snippet.",
+            )
+            st.caption("Tip: Use {char_count} or {word_count} to remind the model of desired length.")
+        else:
+            custom_preceding_prompt = st.session_state.get("custom_preceding_prompt", "")
         chunk_size_preview = len(text2.split()) if text2 else None
         char_count_preview = len(text2) if text2 else None
         prompt_to_preview = get_full_prompt(
@@ -185,6 +214,7 @@ def render_text_analysis_page(api_key, model_choice, provider):
             chunk_size=chunk_size_preview,
             continuation_method=preceding_method,
             char_count=char_count_preview,
+            custom_template=custom_preceding_prompt if preceding_method == "Custom Prompt" else None,
         )
         st.markdown(
             "ℹ️ The length of the generated text will be adjusted to match the character count of your **Ground Truth** input."
@@ -266,9 +296,23 @@ def render_text_analysis_page(api_key, model_choice, provider):
             # Define a variable for continuation_method if it's not set
             if prompt_type == "Preceding Context Reconstruction":
                 continuation_method = st.session_state.get("preceding_method_selector", "Normal Continuation")
+                custom_template = (
+                    st.session_state.get("custom_preceding_prompt", "").strip()
+                    if continuation_method == "Custom Prompt"
+                    else None
+                )
             else:
                 continuation_method = st.session_state.get("continuation_method_selector", "Normal Continuation")
+                custom_template = (
+                    st.session_state.get("custom_continuation_prompt", "").strip()
+                    if continuation_method == "Custom Prompt"
+                    else None
+                )
             chunk_size = len(text2.split())
+
+            if continuation_method == "Custom Prompt" and not custom_template:
+                st.error("⚠️ Please provide a custom prompt template before running the analysis.")
+                return
 
             if inference_runs == 1:
                 # Single run: Original Analysis Results
@@ -286,6 +330,7 @@ def render_text_analysis_page(api_key, model_choice, provider):
                             chunk_size=chunk_size,
                             temperature=temperature,
                             top_p=top_p,
+                            custom_template=custom_template,
                         )
                     else:
                         result = compare_texts(
@@ -299,6 +344,7 @@ def render_text_analysis_page(api_key, model_choice, provider):
                             temperature=temperature,
                             top_p=top_p,
                             continuation_method=continuation_method,
+                            custom_template=custom_template,
                         )
                     
                     # Handle potential errors from both functions
@@ -362,6 +408,7 @@ def render_text_analysis_page(api_key, model_choice, provider):
                             chunk_size=chunk_size,
                             temperature=temperature,
                             top_p=top_p,
+                            custom_template=custom_template,
                         )
                     else:
                         result = compare_texts(
@@ -375,6 +422,7 @@ def render_text_analysis_page(api_key, model_choice, provider):
                             temperature=temperature,
                             top_p=top_p,
                             continuation_method=continuation_method,
+                            custom_template=custom_template,
                         )
 
                     # Handle potential errors from both functions

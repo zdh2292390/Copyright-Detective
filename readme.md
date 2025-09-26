@@ -49,6 +49,10 @@ Streamlit will start a local server and open the application in a new tab in you
 
 You can now interact with the "Copyright Detective" tool. Make sure you have a valid OpenAI API key to use the model-based features.
 
+### Custom continuation prompts
+
+When analysing text snippets you can now choose **Custom Prompt** from the continuation method selector. This lets you paste a full instruction template tailored to your experiment. Use the `{input_text}` placeholder wherever the user-supplied snippet should appear. You can also optionally reference `{word_count}` or `{char_count}` to mirror the target length derived from your ground truth. The preview panel will render the final prompt with any available values filled in so you can double-check the framing before running inference.
+
 ## Jailbreak Persuasion Probe
 
 This new page helps you design and evaluate jailbreak/persuasion prompts in a safety-first manner. It analyzes prompts for risky indicators (e.g., location-based extraction or exact-length replication) and provides compliant alternatives and refusal templates. The probe only performs meta-analysis and does not request or display copyrighted text.
