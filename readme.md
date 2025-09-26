@@ -68,9 +68,9 @@ The page also includes a small, curated library of well-known jailbreak prompts 
 The **Unlearning Detection** workspace combines two complementary probes. Use the tabs at the top of the workspace to switch between them so that their controls and outputs stay neatly separated:
 
 - **Prompt-Based Probes** reuse the persuasion strategies from snippet/PDF analysis to see whether a model can still recreate or summarise a target passage. The tool now focuses on surfacing each model response directly—no similarity thresholds or ground-truth references are required.
-- **Membership Inference (Perplexity Probe)** estimates whether the reference text still lives in the model's training data. The app samples log-probabilities with `echo=True` completions (currently supported for OpenAI models) and compares the average perplexity of reference chunks against a stylistically similar control passage. A configurable ΔPPL threshold raises an alert when the reference appears memorised.
+- **Membership Inference (Perplexity Probe)** estimates whether the reference text still lives in the model's training data. The app slices both passages into 50–200 token windows (falling back to word windows if the tokenizer is unavailable), samples per-token log-probabilities with `echo=True` completions (currently supported for OpenAI models), computes average perplexity via $\text{PPL} = e^{-\overline{\log p}}$, and reports a "training trace" score for each chunk. A configurable ΔPPL threshold, together with Welch's t-test and Kolmogorov–Smirnov comparisons, highlights statistically significant gaps between reference and control distributions.
 
-To run the perplexity probe, supply both the reference text and an equivalent-length control passage. You can adjust word-based chunk sizes, number of chunks sampled, and the perplexity gap required to flag memorisation.
+To run the perplexity probe, supply both the reference text and an equivalent-length control passage. You can adjust token window size, number of sampled windows, and the perplexity gap required to flag memorisation. When SciPy is unavailable the statistical tests degrade gracefully to analytical approximations, and the UI will annotate any fallbacks or tokenizer limitations.
 
 ## PDF Analysis Notes
 

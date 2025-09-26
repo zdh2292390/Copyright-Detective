@@ -929,12 +929,14 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
         membership_cols = st.columns(3)
         with membership_cols[0]:
             chunk_size = st.slider(
-                "Chunk size (words)",
+                "Chunk size (tokens)",
                 min_value=50,
                 max_value=200,
                 value=120,
                 step=10,
-                help="Each passage will be scored in word-based windows of this size.",
+                help=(
+                    "Each passage will be evaluated in fixed-size token windows. If the tokenizer is unavailable, the app falls back to word chunks."
+                ),
                 key="membership_chunk_size",
             )
         with membership_cols[1]:
@@ -1006,17 +1008,37 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                     else:
                         st.success("✅ No significant perplexity gap detected between reference and control passages.")
 
-                    mean_ref = "—" if math.isinf(membership_summary.mean_target_ppl) else f"{membership_summary.mean_target_ppl:.2f}"
-                    mean_ctrl = "—" if math.isinf(membership_summary.mean_control_ppl) else f"{membership_summary.mean_control_ppl:.2f}"
-                    gap = "—" if math.isnan(membership_summary.ppl_gap) else f"{membership_summary.ppl_gap:.2f}"
+                        mean_ref = "—" if math.isinf(membership_summary.mean_target_ppl) else f"{membership_summary.mean_target_ppl:.2f}"
+                        mean_ctrl = "—" if math.isinf(membership_summary.mean_control_ppl) else f"{membership_summary.mean_control_ppl:.2f}"
+                        gap = "—" if math.isnan(membership_summary.ppl_gap) else f"{membership_summary.ppl_gap:.2f}"
 
-                    metric_col1, metric_col2, metric_col3 = st.columns(3)
-                    metric_col1.metric("Mean PPL · Reference", mean_ref)
-                    metric_col2.metric("Mean PPL · Control", mean_ctrl)
-                    metric_col3.metric("Δ PPL", gap)
+                        metric_col1, metric_col2, metric_col3 = st.columns(3)
+                        metric_col1.metric("Mean PPL · Reference", mean_ref)
+                        metric_col2.metric("Mean PPL · Control", mean_ctrl)
+                        metric_col3.metric("Δ PPL", gap)
 
-                    if membership_summary.errors:
-                        st.warning("; ".join(membership_summary.errors))
+                        ref_samples, ctrl_samples = membership_summary.sample_sizes
+                        st.caption(
+                            f"Valid perplexity samples · Reference: {ref_samples} · Control: {ctrl_samples}"
+                        )
+
+                        if membership_summary.statistical_tests:
+                            st.markdown("#### Statistical comparison")
+                            for outcome in membership_summary.statistical_tests:
+                                cols = st.columns([2, 1, 2])
+                                with cols[0]:
+                                    st.markdown(f"**{outcome.name}**")
+                                with cols[1]:
+                                    stat_display = "—" if outcome.statistic is None else f"{outcome.statistic:.4f}"
+                                    st.markdown(f"Stat: {stat_display}")
+                                with cols[2]:
+                                    p_display = "—" if outcome.pvalue is None else f"p = {outcome.pvalue:.4f}"
+                                    st.markdown(p_display)
+                                if outcome.detail:
+                                    st.caption(outcome.detail)
+
+                        if membership_summary.errors:
+                            st.warning("; ".join(membership_summary.errors))
 
                     table_rows = []
                     for result in membership_summary.target_results + membership_summary.control_results:
