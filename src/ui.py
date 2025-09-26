@@ -111,8 +111,7 @@ def render_sidebar():
         page = st.radio(
             "Go to",
             [
-                "Text Snippet Analysis",
-                "Whole PDF Analysis",
+                "Snippet-to-Document Analysis",
                 "Unlearning Detection",
             ],
             label_visibility="collapsed",
@@ -122,16 +121,38 @@ def render_sidebar():
     return api_key, model_choice, provider, page
 
 
-def render_text_analysis_page(api_key, model_choice, provider):
-    """Render the text snippet analysis page."""
-    st.markdown("### 📝 Text Snippet Analysis")
+def render_snippet_to_document_page(api_key, model_choice, provider):
+    """Render the combined snippet-to-document analysis workspace."""
+
+    st.markdown("### 🔎 Snippet-to-Document Analysis")
     st.markdown(
-        "Analyze text snippets to detect potential copyright infringement by comparing generated text with ground truth."
+        "Investigate potential copyright issues from a single excerpt through to an entire document."
     )
+
+    snippet_tab, pdf_tab = st.tabs([
+        "Text Snippet Analysis",
+        "Whole PDF Analysis",
+    ])
+
+    with snippet_tab:
+        render_text_analysis_page(api_key, model_choice, provider, show_page_header=False)
+
+    with pdf_tab:
+        render_pdf_analysis_page(api_key, model_choice, provider, show_page_header=False)
+
+
+def render_text_analysis_page(api_key, model_choice, provider, *, show_page_header: bool = True):
+    """Render the text snippet analysis workflow."""
+
+    if show_page_header:
+        st.markdown("### 📝 Text Snippet Analysis")
+        st.markdown(
+            "Analyze text snippets to detect potential copyright infringement by comparing generated text with ground truth."
+        )
 
     # Prompt Selection (moved from sidebar to main page)
     prompt_type = st.selectbox(
-        "Choose the Prompt Type:",
+        "📎Choose the Prompt Type:",
         [
             "Sequential Continuation Evaluation",
             "Preceding Context Reconstruction",
@@ -303,7 +324,11 @@ def render_text_analysis_page(api_key, model_choice, provider):
     st.markdown("---")
     col_center = st.columns([1, 2, 1])[1]
     with col_center:
-        run_analysis = st.button("🚀 Run Analysis", use_container_width=True)
+        run_analysis = st.button(
+            "🚀 Run Analysis",
+            use_container_width=True,
+            key="run_snippet_analysis_button",
+        )
 
     if run_analysis:
         if not api_key:
@@ -535,12 +560,14 @@ def render_text_analysis_page(api_key, model_choice, provider):
     # render_jailbreak_persuasion_probe_section(api_key, model_choice, provider)
 
 
-def render_pdf_analysis_page(api_key, model_choice, provider):
-    """Render the whole PDF analysis page (restored)."""
-    st.markdown("### 📄 Whole PDF Analysis")
-    st.markdown(
-        "Upload a whole PDF document to automatically analyze text chunks for potential copyright infringement."
-    )
+def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_header: bool = True):
+    """Render the document-scale PDF analysis workflow."""
+
+    if show_page_header:
+        st.markdown("### 📄 Whole PDF Analysis")
+        st.markdown(
+            "Upload a whole PDF document to automatically analyze text chunks for potential copyright infringement."
+        )
 
     uploaded_file = st.file_uploader("📎 Choose a PDF file", type="pdf", help="Select a PDF document to analyze")
     if uploaded_file is not None:
@@ -644,7 +671,12 @@ def render_pdf_analysis_page(api_key, model_choice, provider):
 
     if uploaded_file is not None:
         st.markdown("---")
-        analyze_pdf = st.button("🔍 Analyze PDF", use_container_width=True, type="primary")
+        analyze_pdf = st.button(
+            "🔍 Analyze PDF",
+            use_container_width=True,
+            type="primary",
+            key="analyze_pdf_button",
+        )
         st.markdown(
             """
             <div class="analysis-note">
@@ -1186,10 +1218,8 @@ def main():
     render_header()
     api_key, model_choice, provider, page = render_sidebar()
 
-    if page == "Text Snippet Analysis":
-        render_text_analysis_page(api_key, model_choice, provider)
-    elif page == "Whole PDF Analysis":
-        render_pdf_analysis_page(api_key, model_choice, provider)
+    if page == "Snippet-to-Document Analysis":
+        render_snippet_to_document_page(api_key, model_choice, provider)
     else:
         render_unlearning_detection_page(api_key, model_choice, provider)
 

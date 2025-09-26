@@ -51,11 +51,15 @@ Streamlit will start a local server and open the application in a new tab in you
 
 You can now interact with the "Copyright Detective" tool. Make sure you have a valid OpenAI API key to use the model-based features.
 
+## Snippet-to-Document Analysis
+
+The primary workspace now bundles both the snippet evaluator and the PDF sweeps behind a single navigation entry. Once you open **Snippet-to-Document Analysis** you'll find two tabs mirroring the Unlearning Detection layout: one for short-form snippets and another for full documents. Each tab preserves the controls you already know, so you can jump between granular spot checks and long-form discovery without leaving the page.
+
 ### Custom continuation prompts
 
-When analysing text snippets you can now choose **Custom Prompt** from the continuation method selector. This lets you paste a full instruction template tailored to your experiment. Use the `{input_text}` placeholder wherever the user-supplied snippet should appear. You can also optionally reference `{word_count}` or `{char_count}` to mirror the target length derived from your ground truth. The preview panel will render the final prompt with any available values filled in so you can double-check the framing before running inference.
+Inside the **Text Snippet Analysis** tab you can choose **Custom Prompt** from the continuation method selector. This lets you paste a full instruction template tailored to your experiment. Use the `{input_text}` placeholder wherever the user-supplied snippet should appear. You can also optionally reference `{word_count}` or `{char_count}` to mirror the target length derived from your ground truth. The preview panel will render the final prompt with any available values filled in so you can double-check the framing before running inference.
 
-The same **Custom Prompt** option is available during whole-PDF analysis. Whatever template you supply is injected into every chunk before the model is asked to continue it, so you can drive consistent jailbreak persuasion experiments across long-form documents without losing control over the framing.
+The same **Custom Prompt** option is available on the **Whole PDF Analysis** tab. Whatever template you supply is injected into every chunk before the model is asked to continue it, so you can drive consistent jailbreak persuasion experiments across long-form documents without losing control over the framing.
 
 ## Jailbreak Persuasion Probe
 
@@ -72,7 +76,7 @@ The **Unlearning Detection** workspace combines two complementary probes. Use th
 
 To run the perplexity probe, supply both the reference text and an equivalent-length control passage. You can adjust token window size, number of sampled windows, and the perplexity gap required to flag memorisation. When SciPy is unavailable the statistical tests degrade gracefully to analytical approximations, and the UI will annotate any fallbacks or tokenizer limitations.
 
-## PDF Analysis Notes
+### Whole PDF Analysis Notes
 
 - Chunk size is specified in words. During Whole PDF Analysis, the Generated Text produced for each chunk is enforced to be exactly the same number of words as the selected chunk size. This ensures fair, length-controlled comparisons across chunks.
 - You can optionally select a persuasion framing (e.g., Role-Playing or Lost Manuscript) when running Whole PDF Analysis. The app will use that strategy for every chunk, mirroring the Text Snippet workflows and making it easier to probe jailbreak-style continuations.

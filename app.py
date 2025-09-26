@@ -2,8 +2,7 @@ import streamlit as st
 from src.ui import (
     render_header,
     render_sidebar,
-    render_text_analysis_page,
-    render_pdf_analysis_page,
+    render_snippet_to_document_page,
     render_unlearning_detection_page,
 )
 
@@ -29,10 +28,8 @@ render_header()
 api_key, model_choice, provider, page = render_sidebar()
 
 # Render main content based on selected page
-if page == "Text Snippet Analysis":
-    render_text_analysis_page(api_key, model_choice, provider)
-elif page == "Whole PDF Analysis":
-    render_pdf_analysis_page(api_key, model_choice, provider)
+if page == "Snippet-to-Document Analysis":
+    render_snippet_to_document_page(api_key, model_choice, provider)
 elif page == "Unlearning Detection":
     render_unlearning_detection_page(api_key, model_choice, provider)
 
