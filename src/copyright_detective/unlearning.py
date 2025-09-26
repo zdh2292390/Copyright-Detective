@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
+from statistics import fmean
 from typing import Iterable, List, Optional, Sequence, Tuple
 
+import openai
 from Levenshtein import distance
 
 from .comparison import (
@@ -123,6 +126,188 @@ def _score_keywords(response: str, keywords: Sequence[str]) -> Tuple[int, float]
     hits = sum(1 for kw in keywords if kw.lower() in response_tokens)
     ratio = hits / len(keywords)
     return hits, ratio
+
+
+def _chunk_text_by_words(text: str, *, chunk_size: int, max_chunks: Optional[int] = None) -> List[str]:
+    """Split text into word-based chunks suitable for perplexity evaluation."""
+
+    words = text.split()
+    if not words or chunk_size <= 0:
+        return []
+
+    chunks: List[str] = []
+    total = len(words)
+    for start in range(0, total, chunk_size):
+        end = min(start + chunk_size, total)
+        chunk_words = words[start:end]
+        if not chunk_words:
+            continue
+        chunks.append(" ".join(chunk_words))
+        if max_chunks is not None and len(chunks) >= max_chunks:
+            break
+    return chunks
+
+
+def _fetch_logprobs_for_text(
+    api_key: str,
+    model_name: str,
+    provider: str,
+    text: str,
+) -> Tuple[List[float], Optional[str]]:
+    """Return log probabilities for each prompt token via completion echo."""
+
+    if provider != "OpenAI":
+        return [], f"Logprob extraction is currently supported for OpenAI models only (got {provider})."
+
+    client = openai.OpenAI(api_key=api_key)
+    try:
+        response = client.completions.create(
+            model=model_name,
+            prompt=text,
+            max_tokens=0,
+            temperature=0.0,
+            logprobs=1,
+            echo=True,
+        )
+    except Exception as exc:  # pragma: no cover - network/SDK errors
+        return [], f"Failed to retrieve logprobs: {exc}"
+
+    choice = response.choices[0]
+    logprobs = choice.logprobs
+    if not logprobs or not logprobs.token_logprobs:
+        return [], "Provider returned no token log probabilities."
+
+    values = [lp for lp in logprobs.token_logprobs if lp is not None]
+    if not values:
+        return [], "Token log probabilities were empty."
+
+    return values, None
+
+
+def _compute_perplexity(logprobs: Sequence[float]) -> Tuple[float, float]:
+    if not logprobs:
+        return float("nan"), float("inf")
+
+    avg_logprob = fmean(logprobs)
+    perplexity = math.exp(-avg_logprob)
+    return avg_logprob, perplexity
+
+
+@dataclass
+class MembershipSnippetResult:
+    label: str
+    snippet: str
+    token_count: int
+    avg_logprob: float
+    perplexity: float
+    logprobs: List[float]
+    error: Optional[str] = None
+
+    @property
+    def training_trace_score(self) -> float:
+        if self.perplexity in (0, float("inf")):
+            return 0.0
+        return 1.0 / self.perplexity
+
+
+@dataclass
+class MembershipInferenceSummary:
+    target_results: List[MembershipSnippetResult]
+    control_results: List[MembershipSnippetResult]
+    mean_target_ppl: float
+    mean_control_ppl: float
+    ppl_gap: float
+    threshold: float
+    flagged: bool
+    errors: List[str]
+
+    @property
+    def training_signal_score(self) -> float:
+        if not self.control_results:
+            return 0.0
+        denominator = max(self.mean_control_ppl, 1e-6)
+        raw = max(0.0, self.mean_control_ppl - self.mean_target_ppl) / denominator
+        return min(raw, 1.0)
+
+
+def run_membership_inference(
+    api_key: str,
+    model_name: str,
+    provider: str,
+    *,
+    reference_text: str,
+    control_text: str,
+    chunk_size: int = 120,
+    max_chunks: int = 4,
+    ppl_gap_threshold: float = 5.0,
+) -> MembershipInferenceSummary:
+    """Compute perplexity-based membership inference statistics."""
+
+    reference_chunks = _chunk_text_by_words(reference_text, chunk_size=chunk_size, max_chunks=max_chunks)
+    control_chunks = _chunk_text_by_words(control_text, chunk_size=chunk_size, max_chunks=max_chunks)
+
+    if not reference_chunks:
+        raise ValueError("Reference text is too short to generate membership probes.")
+    if not control_chunks:
+        raise ValueError("Control text is required to establish a perplexity baseline.")
+
+    errors: List[str] = []
+    target_results: List[MembershipSnippetResult] = []
+    control_results: List[MembershipSnippetResult] = []
+
+    def evaluate_chunks(chunks: Sequence[str], label: str) -> List[MembershipSnippetResult]:
+        evaluations: List[MembershipSnippetResult] = []
+        for chunk in chunks:
+            logprobs, err = _fetch_logprobs_for_text(api_key, model_name, provider, chunk)
+            if err:
+                errors.append(err)
+                evaluations.append(
+                    MembershipSnippetResult(
+                        label=label,
+                        snippet=chunk,
+                        token_count=0,
+                        avg_logprob=float("nan"),
+                        perplexity=float("inf"),
+                        logprobs=[],
+                        error=err,
+                    )
+                )
+                continue
+
+            avg_logprob, perplexity = _compute_perplexity(logprobs)
+            evaluations.append(
+                MembershipSnippetResult(
+                    label=label,
+                    snippet=chunk,
+                    token_count=len(logprobs),
+                    avg_logprob=avg_logprob,
+                    perplexity=perplexity,
+                    logprobs=list(logprobs),
+                )
+            )
+        return evaluations
+
+    target_results = evaluate_chunks(reference_chunks, "reference")
+    control_results = evaluate_chunks(control_chunks, "control")
+
+    valid_target = [res.perplexity for res in target_results if not math.isinf(res.perplexity)]
+    valid_control = [res.perplexity for res in control_results if not math.isinf(res.perplexity)]
+
+    mean_target = fmean(valid_target) if valid_target else float("inf")
+    mean_control = fmean(valid_control) if valid_control else float("inf")
+    ppl_gap = mean_control - mean_target if all(not math.isinf(val) for val in (mean_target, mean_control)) else float("nan")
+    flagged = bool(valid_target and valid_control and ppl_gap >= ppl_gap_threshold)
+
+    return MembershipInferenceSummary(
+        target_results=target_results,
+        control_results=control_results,
+        mean_target_ppl=mean_target,
+        mean_control_ppl=mean_control,
+        ppl_gap=ppl_gap,
+        threshold=ppl_gap_threshold,
+        flagged=flagged,
+        errors=list(dict.fromkeys(errors)),
+    )
 
 
 @dataclass
@@ -248,8 +433,11 @@ __all__ = [
     "UnlearningStrategy",
     "UnlearningProbeResult",
     "UnlearningDetectionSummary",
+    "MembershipSnippetResult",
+    "MembershipInferenceSummary",
     "UNLEARNING_STRATEGIES",
     "build_unlearning_prompt",
     "list_unlearning_strategies",
     "run_unlearning_detection",
+    "run_membership_inference",
 ]
