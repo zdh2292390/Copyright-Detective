@@ -398,18 +398,13 @@
 /* Sidebar polish */
 [data-testid="stSidebar"] > div {
     position: relative;
-    background: linear-gradient(180deg, rgba(255,255,255,0.9) 0%, rgba(244, 247, 255, 0.72) 100%);
+    background: #ffffff;
     border-right: 1px solid rgba(209, 213, 255, 0.6);
-    box-shadow: 12px 0 30px rgba(15, 23, 42, 0.08);
-    backdrop-filter: blur(12px);
+    box-shadow: none;
+    backdrop-filter: none;
 }
 [data-testid="stSidebar"] > div::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: radial-gradient(520px 320px at 120% 0%, rgba(37,99,235,0.12), transparent 65%);
-    pointer-events: none;
-    opacity: 0.9;
+    content: none;
 }
 /* Hide sidebar toggles */
 [data-testid="collapsedControl"] { display: none !important; }
