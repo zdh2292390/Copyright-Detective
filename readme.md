@@ -37,7 +37,9 @@ With the virtual environment active, install all the necessary libraries from th
 pip install -r requirements.txt
 ```
 
-This will install `streamlit`, `openai`, `PyPDF2`, and `rouge-score`.
+This will install the baseline libraries (`streamlit`, `openai`, `PyPDF2`, `rouge-score`, etc.).
+
+> **GPU extras:** The new representational analysis probes rely on deep learning stacks. After the base install, add the optional dependencies with `pip install torch transformers scikit-learn` (or your preferred CUDA build of PyTorch). These are already listed in `requirements.txt`, but you may want to install a hardware-specific wheel manually to ensure GPU acceleration.
 
 ## 4. Run the Streamlit Application
 
@@ -75,10 +77,76 @@ The page also includes a small, curated library of well-known jailbreak prompts 
 
 ## Unlearning Detection
 
-The **Unlearning Detection** workspace combines two complementary probes. Use the tabs at the top of the workspace to switch between them so that their controls and outputs stay neatly separated:
+The **Unlearning Detection** workspace combines three complementary probes. Use the tabs at the top of the workspace to keep their controls and outputs neatly separated:
 
 - **Prompt-Based Probes** reuse the persuasion strategies from snippet/PDF analysis to measure residual recall through structured summaries and evidence inventories. Rather than nudging the model to continue the text, each probe now asks for audit-style descriptions that expose what, if anything, remains remembered. The tool surfaces every response directly—no similarity thresholds or ground-truth references are required.
 - **Membership Inference (Perplexity Probe)** estimates whether the reference text still lives in the model's training data. The app slices both passages into 50–200 token windows (falling back to word windows if the tokenizer is unavailable), samples per-token log-probabilities with `echo=True` completions (currently supported for OpenAI models), computes average perplexity via $\text{PPL} = e^{-\overline{\log p}}$, and reports a "training trace" score for each chunk. A configurable ΔPPL threshold, together with Welch's t-test and Kolmogorov–Smirnov comparisons, highlights statistically significant gaps between reference and control distributions.
+- **Representational Analysis (Feature Probes)** compares the hidden-state geometry of the reference and updated models. Pick from Fisher Information, PCA shift/similarity, or linear CKA analyses; supply a list of evaluation prompts along with the reference/deployed checkpoints; and the app will write per-layer PDFs (or a single plot) into your chosen output folder. Optional controls let you point to a CUDA device, adjust batch sizes, and cap tokenizer length.
+
+All representational probes run locally on your hardware. Ensure that the model checkpoints fit in GPU memory (or switch the device to `cpu` if you're validating smaller networks). The UI bundles directory outputs into a downloadable `.zip` when possible, and individual PDFs can be downloaded directly for a quick peek.
+
+### 🛠️ Python API (Representational Toolkit)
+
+You can use the same representational probes directly from Python by importing the unified helper:
+
+```python
+from representational_toolkit.analysis import run_feature_analysis
+
+query = [
+	"The quick brown fox jumps over the lazy dog.",
+	"Unlearning LLMs is an active area of research."
+]
+
+# 1) Fisher Information (writes one PDF per transformer layer)
+run_feature_analysis(
+	feature="fim",
+	model_reference_path="Qwen/Qwen2.5-7B",
+	model_path="your_own_model_path",
+	query=query,
+	output_path="./fim_output",   # directory for per-layer PDFs
+	device="cuda",
+	batch_size=4,
+	num_batches=10,
+	max_length=128,
+)
+
+# 2) PCA Shift (Δ PC1 vs. PC2)
+run_feature_analysis(
+	feature="pca_shift",
+	model_reference_path="Qwen/Qwen2.5-7B",
+	model_path="your_own_model_path",
+	query=query,
+	output_path="./pca_shift.pdf",  # single PDF (or .png)
+	device="cuda",
+	max_length=128,
+)
+
+# 3) PCA Cosine Similarity of PC1
+run_feature_analysis(
+	feature="pca_sim",
+	model_reference_path="Qwen/Qwen2.5-7B",
+	model_path="your_own_model_path",
+	query=query,
+	output_path="./pca_sim.pdf",    # single PDF (or .png)
+	device="cuda",
+	max_length=128,
+)
+
+# 4) Layer-wise Linear CKA
+run_feature_analysis(
+	feature="cka",
+	model_reference_path="Qwen/Qwen2.5-7B",
+	model_path="your_own_model_path",
+	query=query,
+	output_path="./cka.pdf",        # single PDF (or .png)
+	device="cuda",
+	batch_size=4,
+	num_batches=10,
+	max_length=128,
+)
+```
+
+Each probe shares the same signature—only the `feature` flag and `output_path` semantics change (directory for `fim`, single file for PCA/CKA plots). Feel free to switch `device="cpu"` if your GPU memory is limited.
 
 To run the perplexity probe, supply both the reference text and an equivalent-length control passage. You can adjust token window size, number of sampled windows, and the perplexity gap required to flag memorisation. When SciPy is unavailable the statistical tests degrade gracefully to analytical approximations, and the UI will annotate any fallbacks or tokenizer limitations.
 

@@ -17,9 +17,12 @@ except ImportError:  # pragma: no cover - backwards compatibility
 from .comparison import get_llm_completion
 
 try:  # pragma: no cover - optional dependency
-    from src.representational_toolkit.analysis import run_feature_analysis as _run_feature_analysis
+    from representational_toolkit.analysis import run_feature_analysis as _run_feature_analysis
 except Exception:  # pragma: no cover - optional dependency
-    _run_feature_analysis = None
+    try:  # fall back to local source layout
+        from src.representational_toolkit.analysis import run_feature_analysis as _run_feature_analysis  # type: ignore[no-redef]
+    except Exception:  # pragma: no cover - optional dependency
+        _run_feature_analysis = None
 
 try:  # pragma: no cover - optional dependency
     import tiktoken

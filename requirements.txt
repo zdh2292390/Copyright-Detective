@@ -5,8 +5,13 @@ PyPDF2
 rouge-score
 openai>=1.0.0
 python-Levenshtein
-matplotlib
 ghostscript
 requests
 anthropic
 google-generativeai
+# Optional: representational analysis toolkit
+matplotlib
+torch
+transformers
+scikit-learn
+representational-analysis
