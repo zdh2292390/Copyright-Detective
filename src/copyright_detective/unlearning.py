@@ -3,8 +3,9 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass
+from pathlib import Path
 from statistics import StatisticsError, fmean, median, stdev, variance
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple, Literal
 
 import openai
 
@@ -14,6 +15,11 @@ except ImportError:  # pragma: no cover - backwards compatibility
     BadRequestError = None  # type: ignore[assignment]
 
 from .comparison import get_llm_completion
+
+try:  # pragma: no cover - optional dependency
+    from src.representational_toolkit.analysis import run_feature_analysis as _run_feature_analysis
+except Exception:  # pragma: no cover - optional dependency
+    _run_feature_analysis = None
 
 try:  # pragma: no cover - optional dependency
     import tiktoken
@@ -81,6 +87,183 @@ UNLEARNING_STRATEGIES: Tuple[UnlearningStrategy, ...] = (
         ),
     ),
 )
+
+
+@dataclass(frozen=True)
+class RepresentationalFeature:
+    """Metadata describing a representational analysis capability."""
+
+    id: str
+    name: str
+    description: str
+    output_kind: Literal["directory", "file"]
+
+
+@dataclass
+class RepresentationalAnalysisResult:
+    feature_id: str
+    feature_name: str
+    output_path: str
+    generated_artifacts: List[str]
+    warnings: List[str]
+    error: Optional[str] = None
+
+    @property
+    def has_artifacts(self) -> bool:
+        return bool(self.generated_artifacts)
+
+
+REPRESENTATIONAL_FEATURES: Tuple[RepresentationalFeature, ...] = (
+    RepresentationalFeature(
+        id="fim",
+        name="Fisher Information Matrix",
+        description="Layer-wise Fisher diagonal comparison between a reference and updated model.",
+        output_kind="directory",
+    ),
+    RepresentationalFeature(
+        id="pca_shift",
+        name="PCA Shift",
+        description="Quantify how layer representations shift along principal components after unlearning.",
+        output_kind="file",
+    ),
+    RepresentationalFeature(
+        id="pca_sim",
+        name="PCA Similarity",
+        description="Track cosine similarity of leading principal components across layers post-unlearning.",
+        output_kind="file",
+    ),
+    RepresentationalFeature(
+        id="cka",
+        name="Linear CKA",
+        description="Evaluate layer-wise centered kernel alignment between reference and updated models.",
+        output_kind="file",
+    ),
+)
+
+
+def list_representational_features() -> List[RepresentationalFeature]:
+    """Return representational analysis options for UI consumption."""
+
+    return list(REPRESENTATIONAL_FEATURES)
+
+
+def get_representational_feature(feature_id: str) -> Optional[RepresentationalFeature]:
+    feature_id = feature_id.lower().strip()
+    for feature in REPRESENTATIONAL_FEATURES:
+        if feature.id == feature_id:
+            return feature
+    return None
+
+
+def is_representational_analysis_available() -> bool:
+    """Return whether optional representational toolkit dependencies are available."""
+
+    return _run_feature_analysis is not None
+
+
+def _normalise_query_inputs(query: Sequence[str]) -> List[str]:
+    normalised: List[str] = []
+    for item in query:
+        if not item:
+            continue
+        cleaned = item.strip()
+        if cleaned:
+            normalised.append(cleaned)
+    return normalised
+
+
+def run_representational_analysis(
+    *,
+    feature: str,
+    model_reference_path: str,
+    model_path: str,
+    query: Sequence[str],
+    output_path: str,
+    device: str = "cuda",
+    batch_size: int = 4,
+    num_batches: int = 10,
+    max_length: int = 128,
+) -> RepresentationalAnalysisResult:
+    """Execute representational analysis for model unlearning audits."""
+
+    if not is_representational_analysis_available():
+        raise RuntimeError(
+            "Representational analysis requires optional dependencies (torch, transformers, scikit-learn, matplotlib)."
+        )
+
+    feature_id = feature.lower().strip()
+    feature_meta = get_representational_feature(feature_id)
+    if feature_meta is None:
+        raise ValueError(f"Unknown representational feature: {feature}")
+
+    if not model_reference_path or not model_reference_path.strip():
+        raise ValueError("Reference model path is required for representational analysis.")
+    if not model_path or not model_path.strip():
+        raise ValueError("Updated model path is required for representational analysis.")
+
+    normalised_query = _normalise_query_inputs(query)
+    if not normalised_query:
+        raise ValueError("At least one non-empty query string is required for representational analysis.")
+
+    target_path = Path(output_path).expanduser()
+    generated_artifacts: List[str] = []
+    warnings: List[str] = []
+
+    if feature_meta.output_kind == "directory":
+        target_path.mkdir(parents=True, exist_ok=True)
+    else:
+        if target_path.is_dir() or not target_path.suffix:
+            target_path.mkdir(parents=True, exist_ok=True)
+            target_path = target_path / f"{feature_meta.id}_analysis.pdf"
+        else:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    before_snapshot = set()
+    if feature_meta.output_kind == "directory" and target_path.exists():
+        before_snapshot = {str(p.resolve()) for p in target_path.glob("*.pdf")}
+
+    try:
+        assert _run_feature_analysis is not None  # for type checkers
+        _run_feature_analysis(
+            feature=feature_meta.id,
+            model_reference_path=model_reference_path,
+            model_path=model_path,
+            query=normalised_query,
+            output_path=str(target_path),
+            device=device,
+            batch_size=batch_size,
+            num_batches=num_batches,
+            max_length=max_length,
+        )
+    except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency handling
+        raise RuntimeError(
+            f"Missing dependency for representational analysis: {exc}. Install the optional GPU/toolkit requirements and retry."
+        ) from exc
+    except Exception as exc:  # pragma: no cover - runtime errors
+        raise RuntimeError(f"Representational analysis failed: {exc}") from exc
+
+    if feature_meta.output_kind == "directory":
+        generated_artifacts = sorted(
+            str(p.resolve())
+            for p in target_path.glob("*.pdf")
+        )
+        if before_snapshot:
+            generated_artifacts = [path for path in generated_artifacts if path not in before_snapshot]
+        if not generated_artifacts:
+            warnings.append("Analysis completed but no PDF artifacts were detected in the output directory.")
+    else:
+        if target_path.exists():
+            generated_artifacts = [str(target_path.resolve())]
+        else:
+            warnings.append("Analysis completed but the expected output file was not created.")
+
+    return RepresentationalAnalysisResult(
+        feature_id=feature_meta.id,
+        feature_name=feature_meta.name,
+        output_path=str(target_path.resolve() if target_path.exists() else target_path),
+        generated_artifacts=generated_artifacts,
+        warnings=warnings,
+    )
 
 
 def list_unlearning_strategies() -> List[UnlearningStrategy]:
@@ -849,8 +1032,15 @@ __all__ = [
     "MembershipInferenceSummary",
     "StatisticalTestOutcome",
     "UNLEARNING_STRATEGIES",
+    "RepresentationalFeature",
+    "RepresentationalAnalysisResult",
+    "REPRESENTATIONAL_FEATURES",
     "build_unlearning_prompt",
     "list_unlearning_strategies",
+    "list_representational_features",
+    "get_representational_feature",
+    "is_representational_analysis_available",
     "run_unlearning_detection",
     "run_membership_inference",
+    "run_representational_analysis",
 ]
