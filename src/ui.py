@@ -157,7 +157,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
 
     # Prompt Selection (moved from sidebar to main page)
     prompt_type = st.selectbox(
-        "🎛️Choose the Prompt Type:",
+        "🎛️ Choose the Prompt Type:",
         [
             "Sequential Continuation Evaluation",
             "Preceding Context Reconstruction",
@@ -1312,19 +1312,20 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
             "Run Fisher Information, PCA shift/sim, and layer-wise CKA probes to quantify how unlearning reshapes the reference versus adapted model across every layer."
         )
 
-        if not is_representational_analysis_available():
+        dependencies_available = is_representational_analysis_available()
+        if not dependencies_available:
             st.warning(
                 "Representational analysis requires optional dependencies (PyTorch, Transformers, scikit-learn, matplotlib). Install the GPU toolkit extras before using this feature."
             )
-        else:
-            features = list_representational_features()
-            if not features:
-                st.info("No representational analysis features are currently available.")
-                return
 
-            feature_lookup = {feature.id: feature for feature in features}
+        features = list_representational_features()
+        if not features:
+            st.info("No representational analysis features are currently available.")
+            return
 
-            with st.form("representational_analysis_form"):
+        feature_lookup = {feature.id: feature for feature in features}
+
+        with st.form("representational_analysis_form"):
                 selected_feature_id = st.selectbox(
                     "Select representational probe",
                     options=[feature.id for feature in features],
@@ -1374,14 +1375,10 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                 )
 
                 st.markdown("##### Runtime parameters")
-                col_device, col_batch, col_batches, col_length = st.columns([2, 1, 1, 1])
-                with col_device:
-                    device = st.text_input(
-                        "Device",
-                        value="cuda",
-                        help="Torch device identifier (e.g. 'cuda', 'cuda:0', 'cpu').",
-                        key="representational_device",
-                    )
+                st.caption("Device is fixed to `cuda` for this analysis module.")
+                device = "cuda"
+
+                col_batch, col_batches, col_length = st.columns([1, 1, 1])
                 with col_batch:
                     batch_size = st.number_input(
                         "Batch size",
@@ -1418,12 +1415,12 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                 call_preview = textwrap.dedent(
                     f"""
                     run_feature_analysis(
-                        feature=\"{selected_feature.id}\",
-                        model_reference_path=\"{reference_model_path.strip() or '<reference_model>'}\",
-                        model_path=\"{updated_model_path.strip() or '<updated_model>'}\",
+                        feature="{selected_feature.id}",
+                        model_reference_path="{reference_model_path.strip() or '<reference_model>'}",
+                        model_path="{updated_model_path.strip() or '<updated_model>'}",
                         query=[{query_list_preview}],
-                        output_path=\"{output_path.strip() or recommended_output}\",
-                        device=\"{device.strip() or 'cuda'}\",
+                        output_path="{output_path.strip() or recommended_output}",
+                        device="{device}",
                         batch_size={int(batch_size)},
                         num_batches={int(num_batches)},
                         max_length={int(max_length)},
@@ -1438,40 +1435,40 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                     help="Submit the parameters above and execute the representational probe on the backend.",
                 )
 
-            rep_result = None
-            analysis_request = None
-            if submit_run:
-                queries = query_preview
-                if not reference_model_path.strip():
-                    st.warning("⚠️ Provide the reference model path before running representational analysis.")
-                elif not updated_model_path.strip():
-                    st.warning("⚠️ Provide the updated model path before running representational analysis.")
-                elif not queries:
-                    st.warning("⚠️ Enter at least one non-empty query prompt.")
-                elif not output_path.strip():
-                    st.warning("⚠️ Specify an output location for analysis artifacts.")
-                else:
-                    analysis_request = {
-                        "feature": selected_feature.id,
-                        "model_reference_path": reference_model_path.strip(),
-                        "model_path": updated_model_path.strip(),
-                        "query": queries,
-                        "output_path": output_path.strip(),
-                        "device": device.strip() or "cuda",
-                        "batch_size": int(batch_size),
-                        "num_batches": int(num_batches),
-                        "max_length": int(max_length),
-                    }
-                    with st.spinner("🔎 Computing representational differences... this may take several minutes for large models."):
-                        try:
-                            rep_result = run_representational_analysis(**analysis_request)
-                            st.session_state["representational_last_run_request"] = analysis_request
-                        except ValueError as exc:
-                            st.error(f"❌ {exc}")
-                            rep_result = None
-                        except RuntimeError as exc:
-                            st.error(f"❌ Representational analysis failed: {exc}")
-                            rep_result = None
+        rep_result = None
+        analysis_request = None
+        if submit_run:
+            queries = query_preview
+            if not reference_model_path.strip():
+                st.warning("⚠️ Provide the reference model path before running representational analysis.")
+            elif not updated_model_path.strip():
+                st.warning("⚠️ Provide the updated model path before running representational analysis.")
+            elif not queries:
+                st.warning("⚠️ Enter at least one non-empty query prompt.")
+            elif not output_path.strip():
+                st.warning("⚠️ Specify an output location for analysis artifacts.")
+            else:
+                analysis_request = {
+                    "feature": selected_feature.id,
+                    "model_reference_path": reference_model_path.strip(),
+                    "model_path": updated_model_path.strip(),
+                    "query": queries,
+                    "output_path": output_path.strip(),
+                    "device": device,
+                    "batch_size": int(batch_size),
+                    "num_batches": int(num_batches),
+                    "max_length": int(max_length),
+                }
+                with st.spinner("🔎 Computing representational differences... this may take several minutes for large models."):
+                    try:
+                        rep_result = run_representational_analysis(**analysis_request)
+                        st.session_state["representational_last_run_request"] = analysis_request
+                    except ValueError as exc:
+                        st.error(f"❌ {exc}")
+                        rep_result = None
+                    except RuntimeError as exc:
+                        st.error(f"❌ Representational analysis failed: {exc}")
+                        rep_result = None
 
             if rep_result:
                 st.markdown("---")
