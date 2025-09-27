@@ -5,7 +5,7 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import StatisticsError, fmean, median, stdev, variance
-from typing import Iterable, List, Optional, Sequence, Tuple, Literal
+from typing import Iterable, List, Optional, Sequence, Tuple, Literal, Union
 
 import openai
 
@@ -164,9 +164,14 @@ def is_representational_analysis_available() -> bool:
     return _run_feature_analysis is not None
 
 
-def _normalise_query_inputs(query: Sequence[str]) -> List[str]:
+def _normalise_query_inputs(query: Union[str, Sequence[str]]) -> List[str]:
+    if isinstance(query, str):
+        query_iterable: Iterable[str] = [query]
+    else:
+        query_iterable = query
+
     normalised: List[str] = []
-    for item in query:
+    for item in query_iterable:
         if not item:
             continue
         cleaned = item.strip()
@@ -180,7 +185,7 @@ def run_representational_analysis(
     feature: str,
     model_reference_path: str,
     model_path: str,
-    query: Sequence[str],
+    query: Union[str, Sequence[str]],
     output_path: str,
     device: str = "cuda",
     batch_size: int = 4,

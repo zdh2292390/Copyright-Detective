@@ -157,7 +157,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
 
     # Prompt Selection (moved from sidebar to main page)
     prompt_type = st.selectbox(
-        "📎Choose the Prompt Type:",
+        "🎛️Choose the Prompt Type:",
         [
             "Sequential Continuation Evaluation",
             "Preceding Context Reconstruction",
@@ -1324,92 +1324,124 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
 
             feature_lookup = {feature.id: feature for feature in features}
 
-            selected_feature_id = st.selectbox(
-                "Select representational probe",
-                options=[feature.id for feature in features],
-                index=0,
-                format_func=lambda feature_id: f"{feature_lookup[feature_id].name} — {feature_lookup[feature_id].description}",
-                key="representational_feature_selection",
-            )
-
-            selected_feature = feature_lookup[selected_feature_id]
-
-            col_ref, col_upd = st.columns(2)
-            with col_ref:
-                reference_model_path = st.text_input(
-                    "Reference model (baseline)",
-                    placeholder="e.g. Qwen/Qwen2.5-7B",
-                    key="representational_reference_model",
-                )
-            with col_upd:
-                updated_model_path = st.text_input(
-                    "Updated / deployed model",
-                    placeholder="Path or HF repo ID for the model under audit",
-                    key="representational_updated_model",
+            with st.form("representational_analysis_form"):
+                selected_feature_id = st.selectbox(
+                    "Select representational probe",
+                    options=[feature.id for feature in features],
+                    index=0,
+                    format_func=lambda feature_id: f"{feature_lookup[feature_id].name} — {feature_lookup[feature_id].description}",
+                    key="representational_feature_selection",
+                    help="Maps directly to the `feature` argument of `run_feature_analysis`.",
                 )
 
-            query_text = st.text_area(
-                "Evaluation prompts",
-                height=180,
-                placeholder="Enter one query per line that probes the model's behaviour post-unlearning.",
-                key="representational_query_text",
-            )
+                selected_feature = feature_lookup[selected_feature_id]
 
-            recommended_output = f"./representational_outputs/{selected_feature.id}"
-            if selected_feature.output_kind == "file":
-                recommended_output += ".pdf"
-            output_path = st.text_input(
-                "Output location",
-                value=recommended_output,
-                help=(
-                    "For Fisher Information Matrix, provide a directory. For other probes, provide a PDF file path (the parent directory will be created if needed)."
-                ),
-                key="representational_output_path",
-            )
+                st.markdown("##### Model checkpoints")
+                col_ref, col_upd = st.columns(2)
+                with col_ref:
+                    reference_model_path = st.text_input(
+                        "Reference model (baseline)",
+                        placeholder="e.g. Qwen/Qwen2.5-7B",
+                        key="representational_reference_model",
+                    )
+                with col_upd:
+                    updated_model_path = st.text_input(
+                        "Updated / deployed model",
+                        placeholder="Path or HF repo ID for the model under audit",
+                        key="representational_updated_model",
+                    )
 
-            with st.expander("Advanced configuration", expanded=False):
-                device = st.text_input(
-                    "Device",
-                    value="cuda",
-                    help="Torch device identifier (e.g. 'cuda', 'cuda:0', 'cpu').",
-                    key="representational_device",
+                st.markdown("##### Evaluation prompts")
+                query_text = st.text_area(
+                    "Evaluation prompts",
+                    height=180,
+                    placeholder="Enter one query per line that probes the model's behaviour post-unlearning.",
+                    help="Each non-empty line is passed as an element of the `query` list.",
+                    key="representational_query_text",
                 )
-                batch_size = st.number_input(
-                    "Batch size",
-                    min_value=1,
-                    max_value=128,
-                    value=4,
-                    step=1,
-                    help="Mini-batch size for analyses that stream batches (FIM, CKA).",
-                    key="representational_batch_size",
-                )
-                num_batches = st.number_input(
-                    "Batches to sample",
-                    min_value=1,
-                    max_value=200,
-                    value=10,
-                    step=1,
-                    help="Number of dataloader batches to use when estimating statistics (FIM, CKA).",
-                    key="representational_num_batches",
-                )
-                max_length = st.number_input(
-                    "Tokenizer max length",
-                    min_value=16,
-                    max_value=4096,
-                    value=128,
-                    step=16,
-                    help="Maximum sequence length for tokenization.",
-                    key="representational_max_length",
+                query_preview = [line.strip() for line in query_text.splitlines() if line.strip()]
+
+                recommended_output = f"./representational_outputs/{selected_feature.id}"
+                if selected_feature.output_kind == "file":
+                    recommended_output += ".pdf"
+                output_path = st.text_input(
+                    "Output location",
+                    value=recommended_output,
+                    help=(
+                        "For Fisher Information Matrix, provide a directory. For other probes, provide a PDF file path (the parent directory will be created if needed)."
+                    ),
+                    key="representational_output_path",
                 )
 
-            run_representation = st.button(
-                "🧬 Run Representational Analysis",
-                width='stretch',
-                key="run_representational_analysis_button",
-            )
+                st.markdown("##### Runtime parameters")
+                col_device, col_batch, col_batches, col_length = st.columns([2, 1, 1, 1])
+                with col_device:
+                    device = st.text_input(
+                        "Device",
+                        value="cuda",
+                        help="Torch device identifier (e.g. 'cuda', 'cuda:0', 'cpu').",
+                        key="representational_device",
+                    )
+                with col_batch:
+                    batch_size = st.number_input(
+                        "Batch size",
+                        min_value=1,
+                        max_value=128,
+                        value=4,
+                        step=1,
+                        help="Mini-batch size for analyses that stream batches (FIM, CKA).",
+                        key="representational_batch_size",
+                    )
+                with col_batches:
+                    num_batches = st.number_input(
+                        "Batches",
+                        min_value=1,
+                        max_value=200,
+                        value=10,
+                        step=1,
+                        help="Number of dataloader batches to use when estimating statistics (FIM, CKA).",
+                        key="representational_num_batches",
+                    )
+                with col_length:
+                    max_length = st.number_input(
+                        "Max length",
+                        min_value=16,
+                        max_value=4096,
+                        value=128,
+                        step=16,
+                        help="Maximum sequence length for tokenization.",
+                        key="representational_max_length",
+                    )
 
-            if run_representation:
-                queries = [line.strip() for line in query_text.splitlines() if line.strip()]
+                st.caption("Preview of the backend call that will be executed with your settings:")
+                query_list_preview = ", ".join(f'"{q}"' for q in query_preview) or '"<enter at least one query>"'
+                call_preview = textwrap.dedent(
+                    f"""
+                    run_feature_analysis(
+                        feature=\"{selected_feature.id}\",
+                        model_reference_path=\"{reference_model_path.strip() or '<reference_model>'}\",
+                        model_path=\"{updated_model_path.strip() or '<updated_model>'}\",
+                        query=[{query_list_preview}],
+                        output_path=\"{output_path.strip() or recommended_output}\",
+                        device=\"{device.strip() or 'cuda'}\",
+                        batch_size={int(batch_size)},
+                        num_batches={int(num_batches)},
+                        max_length={int(max_length)},
+                    )
+                    """.strip()
+                )
+                st.code(call_preview, language="python")
+
+                submit_run = st.form_submit_button(
+                    "🧬 Run Representational Analysis",
+                    use_container_width=True,
+                    help="Submit the parameters above and execute the representational probe on the backend.",
+                )
+
+            rep_result = None
+            analysis_request = None
+            if submit_run:
+                queries = query_preview
                 if not reference_model_path.strip():
                     st.warning("⚠️ Provide the reference model path before running representational analysis.")
                 elif not updated_model_path.strip():
@@ -1419,19 +1451,21 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                 elif not output_path.strip():
                     st.warning("⚠️ Specify an output location for analysis artifacts.")
                 else:
+                    analysis_request = {
+                        "feature": selected_feature.id,
+                        "model_reference_path": reference_model_path.strip(),
+                        "model_path": updated_model_path.strip(),
+                        "query": queries,
+                        "output_path": output_path.strip(),
+                        "device": device.strip() or "cuda",
+                        "batch_size": int(batch_size),
+                        "num_batches": int(num_batches),
+                        "max_length": int(max_length),
+                    }
                     with st.spinner("🔎 Computing representational differences... this may take several minutes for large models."):
                         try:
-                            rep_result = run_representational_analysis(
-                                feature=selected_feature.id,
-                                model_reference_path=reference_model_path.strip(),
-                                model_path=updated_model_path.strip(),
-                                query=queries,
-                                output_path=output_path.strip(),
-                                device=device.strip() or "cuda",
-                                batch_size=int(batch_size),
-                                num_batches=int(num_batches),
-                                max_length=int(max_length),
-                            )
+                            rep_result = run_representational_analysis(**analysis_request)
+                            st.session_state["representational_last_run_request"] = analysis_request
                         except ValueError as exc:
                             st.error(f"❌ {exc}")
                             rep_result = None
@@ -1439,64 +1473,68 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                             st.error(f"❌ Representational analysis failed: {exc}")
                             rep_result = None
 
-                    if rep_result:
-                        st.markdown("---")
-                        st.success(
-                            f"Completed {rep_result.feature_name} analysis. Review the generated artifacts below."
-                        )
+            if rep_result:
+                st.markdown("---")
+                st.success(
+                    f"Completed {rep_result.feature_name} analysis. Review the generated artifacts below."
+                )
 
-                        if rep_result.warnings:
-                            for warning in rep_result.warnings:
-                                st.warning(warning)
+                if analysis_request:
+                    st.markdown("##### Parameters sent to the backend")
+                    st.json(analysis_request)
 
-                        if rep_result.generated_artifacts:
-                            st.markdown("##### Generated artifacts")
-                            for artifact_path in rep_result.generated_artifacts:
-                                st.markdown(f"- `{artifact_path}`")
+                if rep_result.warnings:
+                    for warning in rep_result.warnings:
+                        st.warning(warning)
 
-                            from pathlib import Path as _ResultPath  # local import to avoid polluting module namespace
-                            import zipfile
+                if rep_result.generated_artifacts:
+                    st.markdown("##### Generated artifacts")
+                    for artifact_path in rep_result.generated_artifacts:
+                        st.markdown(f"- `{artifact_path}`")
 
-                            output_dir_path = _ResultPath(rep_result.output_path)
-                            if output_dir_path.is_dir() and len(rep_result.generated_artifacts) > 1:
-                                zip_target = output_dir_path / f"{rep_result.feature_id}_artifacts.zip"
-                                try:
-                                    with zipfile.ZipFile(zip_target, "w") as zipf:
-                                        for artifact in rep_result.generated_artifacts:
-                                            artifact_path_obj = _ResultPath(artifact)
-                                            if artifact_path_obj.exists():
-                                                zipf.write(artifact_path_obj, arcname=artifact_path_obj.name)
-                                    with open(zip_target, "rb") as zip_bytes:
-                                        st.download_button(
-                                            label="⬇️ Download all artifacts (ZIP)",
-                                            data=zip_bytes.read(),
-                                            file_name=zip_target.name,
-                                            mime="application/zip",
-                                            key="representational_zip_download",
-                                        )
-                                except Exception as exc:  # pragma: no cover - file IO errors
-                                    st.warning(f"Unable to bundle artifacts for download: {exc}")
+                    from pathlib import Path as _ResultPath  # local import to avoid polluting module namespace
+                    import zipfile
 
-                            for artifact_path in rep_result.generated_artifacts[:5]:
-                                artifact_obj = _ResultPath(artifact_path)
-                                if artifact_obj.is_file() and artifact_obj.suffix.lower() == ".pdf":
-                                    try:
-                                        with open(artifact_obj, "rb") as pdf_bytes:
-                                            st.download_button(
-                                                label=f"⬇️ Download {artifact_obj.name}",
-                                                data=pdf_bytes.read(),
-                                                file_name=artifact_obj.name,
-                                                mime="application/pdf",
-                                                key=f"representational_pdf_{artifact_obj.name}",
-                                            )
-                                    except Exception as exc:  # pragma: no cover - file IO errors
-                                        st.warning(f"Could not open {artifact_obj.name} for download: {exc}")
-                            if len(rep_result.generated_artifacts) > 5:
-                                st.caption(
-                                    "Additional artifacts are available in the output directory. Download them from the filesystem if needed."
+                    output_dir_path = _ResultPath(rep_result.output_path)
+                    if output_dir_path.is_dir() and len(rep_result.generated_artifacts) > 1:
+                        zip_target = output_dir_path / f"{rep_result.feature_id}_artifacts.zip"
+                        try:
+                            with zipfile.ZipFile(zip_target, "w") as zipf:
+                                for artifact in rep_result.generated_artifacts:
+                                    artifact_path_obj = _ResultPath(artifact)
+                                    if artifact_path_obj.exists():
+                                        zipf.write(artifact_path_obj, arcname=artifact_path_obj.name)
+                            with open(zip_target, "rb") as zip_bytes:
+                                st.download_button(
+                                    label="⬇️ Download all artifacts (ZIP)",
+                                    data=zip_bytes.read(),
+                                    file_name=zip_target.name,
+                                    mime="application/zip",
+                                    key="representational_zip_download",
                                 )
-                        else:
-                            st.info("No artifacts were detected. Check the logs and ensure the selected feature writes output files.")
+                        except Exception as exc:  # pragma: no cover - file IO errors
+                            st.warning(f"Unable to bundle artifacts for download: {exc}")
+
+                    for artifact_path in rep_result.generated_artifacts[:5]:
+                        artifact_obj = _ResultPath(artifact_path)
+                        if artifact_obj.is_file() and artifact_obj.suffix.lower() == ".pdf":
+                            try:
+                                with open(artifact_obj, "rb") as pdf_bytes:
+                                    st.download_button(
+                                        label=f"⬇️ Download {artifact_obj.name}",
+                                        data=pdf_bytes.read(),
+                                        file_name=artifact_obj.name,
+                                        mime="application/pdf",
+                                        key=f"representational_pdf_{artifact_obj.name}",
+                                    )
+                            except Exception as exc:  # pragma: no cover - file IO errors
+                                st.warning(f"Could not open {artifact_obj.name} for download: {exc}")
+                    if len(rep_result.generated_artifacts) > 5:
+                        st.caption(
+                            "Additional artifacts are available in the output directory. Download them from the filesystem if needed."
+                        )
+                else:
+                    st.info("No artifacts were detected. Check the logs and ensure the selected feature writes output files.")
 
 
 def render_jailbreak_persuasion_probe_section(api_key, model_choice, provider):
