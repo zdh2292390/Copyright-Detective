@@ -4,9 +4,6 @@ Analyze potential text copyright infringement in LLM application.
 
 Follow these steps to set up your environment and run the application.
 
-/home/changhu/miniconda3/envs/copyright-detective/bin/python /home/changhu/Copyright-Detective/
-
-
 ## 1. Create a Conda Environment
 
 It is highly recommended to use a Conda environment to manage project dependencies.
