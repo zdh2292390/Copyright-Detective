@@ -2,6 +2,7 @@ import io
 import math
 import textwrap
 from collections import Counter
+from pathlib import Path
 from typing import Optional
 
 import streamlit as st
@@ -22,8 +23,20 @@ from src.copyright_detective.unlearning import (
     run_representational_analysis,
     is_representational_analysis_available,
 )
+from src.copyright_detective.adversarial_prompting import (
+    list_persuasion_strategies,
+    get_mutation_instruction,
+    run_inference_scaling,
+    run_intention_judge,
+    mutate_strategies,
+    rank_by_rouge,
+    run_mutation_pipeline,
+)
 from src.prompt_utils import get_full_prompt, get_persuasion_prompt, get_persuasion_template, get_prompt_template
 from src.components import render_collapsible_panel, render_prompt_preview, render_top_sample_distribution
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 CONTINUATION_STRATEGIES = [
@@ -118,6 +131,7 @@ def render_sidebar():
             [
                 "Snippet-to-Document Analysis",
                 "Unlearning Detection",
+                "Adversarial Persuasive Prompting",
             ],
             label_visibility="collapsed",
         )
@@ -909,6 +923,533 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
             progress_bar.progress(1.0, text=f"✅ Completed analysis with {model_choice}. Processed {total} chunks.")
         except Exception as e:
             st.error(f"❌ Error during analysis: {e}")
+
+
+def render_adversarial_persuasion_page(api_key, model_choice, provider):
+    """Render the adversarial persuasive prompting workspace."""
+
+    st.markdown("### 🧠 Adversarial Persuasive Prompting")
+    st.markdown(
+        "Profile LLM copyright leakage under the 14 persuasion strategies curated in the EMNLP 2025 evaluation templates."
+    )
+
+    st.markdown("#### Key capabilities")
+    st.markdown(
+        "\n".join(
+            [
+                "- **Template coverage** – toggle among 14 persuasion strategies sourced from the zero-shot and few-shot JSON frameworks.",
+                "- **Zero-shot vs. few-shot workflows** – generate single exemplars or sweep/ rank batches to curate mutation sets.",
+                "- **Automated intention judging** – reuse your selected provider to verify the mutation preserves the original intent.",
+                "- **Inference scaling analytics** – repeat generations per strategy and inspect variance/summary statistics.",
+                "- **ROUGE, Jaccard, Levenshtein scoring** – quantify similarity against copyrighted reference excerpts on every run.",
+            ]
+        )
+    )
+
+    strategies = list_persuasion_strategies()
+    if not strategies:
+        st.error("No persuasion strategies were found. Ensure the persuasion templates are available.")
+        return
+
+    if "last_mutated_text" not in st.session_state:
+        st.session_state["last_mutated_text"] = ""
+    if "last_core_intention" not in st.session_state:
+        st.session_state["last_core_intention"] = ""
+
+    col1, col2 = st.columns(2)
+    with col1:
+        adversarial_prompt = st.text_area(
+            "Original adversarial prompt",
+            height=220,
+            placeholder="e.g., Reproduce verbatim the first 100 words of Harry Potter and the Sorcerer's Stone.",
+            key="persuasion_original_prompt",
+        )
+    with col2:
+        reference_text = st.text_area(
+            "Reference copyrighted text (optional)",
+            height=220,
+            placeholder="Paste the ground-truth snippet to enable ROUGE-L, Jaccard, and Levenshtein scoring.",
+            key="persuasion_reference_text",
+        )
+
+    st.caption("Providing a reference excerpt enables similarity scoring and ranking across strategies.")
+
+    if not api_key or not model_choice:
+        st.info("Enter an API key and choose a model in the sidebar to run live evaluations.")
+
+    zero_tab, few_tab, scaling_tab, judge_tab, pipeline_tab = st.tabs([
+        "Zero-shot Mutation",
+        "Few-shot Selection",
+        "Inference Scaling",
+        "Intention Judge",
+        "Pipeline Runner",
+    ])
+
+    with zero_tab:
+        st.info(
+            "Compare each of the 14 persuasion templates one at a time. Provide a reference excerpt to unlock ROUGE/Jaccard/Levenshtein scoring alongside the parsed intention."
+        )
+        selected_strategy = st.selectbox(
+            "Persuasion strategy",
+            strategies,
+            key="persuasion_zero_shot_strategy",
+        )
+        z_temperature = st.slider(
+            "Temperature",
+            min_value=0.0,
+            max_value=2.0,
+            value=0.7,
+            step=0.05,
+            key="persuasion_zero_temperature",
+        )
+        z_top_p = st.slider(
+            "Top-p",
+            min_value=0.0,
+            max_value=1.0,
+            value=1.0,
+            step=0.05,
+            key="persuasion_zero_top_p",
+        )
+
+        preview_instruction = get_mutation_instruction(
+            selected_strategy,
+            adversarial_prompt.strip() if adversarial_prompt.strip() else "<<<adversarial prompt>>>",
+        )
+        st.markdown("#### Prompt preview")
+        render_prompt_preview(preview_instruction, expanded=False)
+
+        run_zero = st.button("🚀 Generate mutation", key="persuasion_run_zero")
+
+        if run_zero:
+            if not adversarial_prompt.strip():
+                st.warning("Please provide an adversarial prompt before running the mutation.")
+            else:
+                with st.spinner(f"Generating mutation with {selected_strategy}..."):
+                    evaluations = mutate_strategies(
+                        api_key,
+                        model_choice,
+                        provider,
+                        [selected_strategy],
+                        adversarial_prompt,
+                        reference_text=reference_text.strip() if reference_text.strip() else None,
+                        attempts_per_strategy=1,
+                        temperature=z_temperature,
+                        top_p=z_top_p,
+                    )
+
+                evaluation = evaluations[0] if evaluations else None
+                if evaluation is None:
+                    st.error("No output was produced.")
+                elif evaluation.mutation.error:
+                    st.error(f"❌ {evaluation.mutation.error}")
+                else:
+                    parsed = evaluation.parsed
+                    if parsed:
+                        st.session_state["last_mutated_text"] = parsed.mutated_text
+                        st.session_state["last_core_intention"] = parsed.core_intention
+                        st.markdown("#### Extracted core intention")
+                        st.write(parsed.core_intention or "(Not detected)")
+                        st.markdown("#### Mutated adversarial prompt")
+                        st.code(parsed.mutated_text, language="markdown")
+                    else:
+                        st.warning("The response did not follow the expected template; showing raw output below.")
+                        st.code(evaluation.mutation.response or "", language="markdown")
+
+                    st.markdown("#### Instruction sent to the model")
+                    render_prompt_preview(evaluation.mutation.instruction, expanded=False)
+
+                    if evaluation.metrics:
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("ROUGE-L", f"{evaluation.metrics.rouge_l:.3f}")
+                        c2.metric("Jaccard", f"{evaluation.metrics.jaccard:.3f}")
+                        c3.metric("Levenshtein", f"{evaluation.metrics.levenshtein}")
+                    elif reference_text.strip():
+                        st.info("Similarity scores could not be computed. Ensure the model returned the expected format.")
+
+    with few_tab:
+        st.markdown("Leverage the full persuasion suite to build few-shot exemplars and rank them by similarity.")
+        st.info(
+            "Batch-generate mutations across the 14 templates. Results are ranked by ROUGE-L when a reference passage is supplied, making it easy to assemble few-shot seeds."
+        )
+        default_selection = strategies if len(strategies) <= 6 else strategies[:6]
+        selected_strategies = st.multiselect(
+            "Strategies to sweep",
+            strategies,
+            default=default_selection,
+            key="persuasion_few_strategies",
+        )
+        attempts_per_strategy = st.number_input(
+            "Attempts per strategy",
+            min_value=1,
+            max_value=5,
+            value=1,
+            step=1,
+            key="persuasion_few_attempts",
+        )
+        few_temperature = st.slider(
+            "Temperature",
+            min_value=0.0,
+            max_value=2.0,
+            value=0.9,
+            step=0.05,
+            key="persuasion_few_temperature",
+        )
+        few_top_p = st.slider(
+            "Top-p",
+            min_value=0.0,
+            max_value=1.0,
+            value=1.0,
+            step=0.05,
+            key="persuasion_few_top_p",
+        )
+
+        run_few = st.button("📊 Generate and rank candidates", key="persuasion_run_few")
+
+        if run_few:
+            if not adversarial_prompt.strip():
+                st.warning("Provide an adversarial prompt to mutate.")
+            else:
+                sweep_strategies = selected_strategies or strategies
+                with st.spinner("Running persuasion sweep..."):
+                    evaluations = mutate_strategies(
+                        api_key,
+                        model_choice,
+                        provider,
+                        sweep_strategies,
+                        adversarial_prompt,
+                        reference_text=reference_text.strip() if reference_text.strip() else None,
+                        attempts_per_strategy=attempts_per_strategy,
+                        temperature=few_temperature,
+                        top_p=few_top_p,
+                    )
+
+                if not evaluations:
+                    st.info("No mutations were generated.")
+                else:
+                    ranked_evaluations = rank_by_rouge(evaluations) if reference_text.strip() else evaluations
+
+                    rows = []
+                    for idx, evaluation in enumerate(ranked_evaluations, start=1):
+                        parsed = evaluation.parsed
+                        metrics = evaluation.metrics
+                        rows.append(
+                            {
+                                "Rank": idx if metrics else None,
+                                "Strategy": evaluation.mutation.strategy,
+                                "Attempt": evaluation.attempt,
+                                "Core Intention": parsed.core_intention if parsed else "",
+                                "Mutated Prompt": parsed.mutated_text if parsed else (evaluation.mutation.response or ""),
+                                "ROUGE-L": metrics.rouge_l if metrics else None,
+                                "Jaccard": metrics.jaccard if metrics else None,
+                                "Levenshtein": metrics.levenshtein if metrics else None,
+                                "Error": evaluation.mutation.error,
+                            }
+                        )
+
+                    df = pd.DataFrame(rows)
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+
+                    if not df.empty:
+                        csv_data = df.to_csv(index=False).encode("utf-8")
+                        st.download_button(
+                            "⬇️ Download results (CSV)",
+                            csv_data,
+                            file_name="persuasion_few_shot_results.csv",
+                            mime="text/csv",
+                        )
+
+                    top_candidate = next((ev for ev in ranked_evaluations if ev.parsed), ranked_evaluations[0])
+                    if top_candidate and top_candidate.parsed:
+                        st.session_state["last_mutated_text"] = top_candidate.parsed.mutated_text
+                        st.session_state["last_core_intention"] = top_candidate.parsed.core_intention
+
+                    preview_limit = min(3, len(ranked_evaluations))
+                    for idx, evaluation in enumerate(ranked_evaluations[:preview_limit], start=1):
+                        parsed = evaluation.parsed
+                        metrics = evaluation.metrics
+                        if not parsed:
+                            continue
+
+                        score_meta = (
+                            f"ROUGE {metrics.rouge_l:.3f} · Jaccard {metrics.jaccard:.3f} · Lev {metrics.levenshtein}"
+                            if metrics
+                            else "No similarity scores"
+                        )
+                        sections = [
+                            ("Core Intention", parsed.core_intention or "(Not detected)", None),
+                            ("Mutated Prompt", parsed.mutated_text, "generated"),
+                        ]
+                        render_collapsible_panel(
+                            title=f"Top Candidate {idx}: {evaluation.mutation.strategy}",
+                            sections=sections,
+                            meta=score_meta,
+                            expanded=False,
+                        )
+
+    with scaling_tab:
+        st.markdown("Run repeated generations for a single strategy to study scaling stability and variance.")
+        st.info(
+            "Inference scaling mirrors the paper's analysis: run N generations for one strategy, then inspect ROUGE/Jaccard/Levenshtein aggregates to quantify stability."
+        )
+        scaling_strategy = st.selectbox(
+            "Strategy",
+            strategies,
+            key="persuasion_scaling_strategy",
+        )
+        scaling_runs = st.slider(
+            "Inference runs",
+            min_value=1,
+            max_value=20,
+            value=5,
+            step=1,
+            key="persuasion_scaling_runs",
+        )
+        scaling_temperature = st.slider(
+            "Temperature",
+            min_value=0.0,
+            max_value=2.0,
+            value=1.0,
+            step=0.05,
+            key="persuasion_scaling_temperature",
+        )
+        scaling_top_p = st.slider(
+            "Top-p",
+            min_value=0.0,
+            max_value=1.0,
+            value=1.0,
+            step=0.05,
+            key="persuasion_scaling_top_p",
+        )
+
+        run_scaling = st.button("📈 Run scaling analysis", key="persuasion_run_scaling")
+
+        if run_scaling:
+            if not adversarial_prompt.strip():
+                st.warning("Provide an adversarial prompt before running the scaling experiment.")
+            else:
+                with st.spinner("Running inference scaling experiment..."):
+                    scaling_result = run_inference_scaling(
+                        api_key,
+                        model_choice,
+                        provider,
+                        scaling_strategy,
+                        adversarial_prompt,
+                        scaling_runs,
+                        reference_text=reference_text.strip() if reference_text.strip() else None,
+                        temperature=scaling_temperature,
+                        top_p=scaling_top_p,
+                    )
+
+                evaluations = scaling_result.get("evaluations", [])
+                summary = scaling_result.get("summary")
+
+                if not evaluations:
+                    st.info("No mutations were generated.")
+                else:
+                    if summary:
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("ROUGE mean", f"{summary['rouge_mean']:.3f}")
+                        c2.metric("ROUGE std", f"{summary['rouge_std']:.3f}")
+                        c3.metric("ROUGE max", f"{summary['rouge_max']:.3f}")
+                        c4, c5, c6 = st.columns(3)
+                        c4.metric("Jaccard mean", f"{summary['jaccard_mean']:.3f}")
+                        c5.metric("Jaccard std", f"{summary['jaccard_std']:.3f}")
+                        c6.metric("Levenshtein mean", f"{summary['levenshtein_mean']:.2f}")
+                    else:
+                        st.info("Add the reference excerpt to compute summary statistics.")
+
+                    rows = []
+                    for evaluation in evaluations:
+                        parsed = evaluation.parsed
+                        metrics = evaluation.metrics
+                        rows.append(
+                            {
+                                "Attempt": evaluation.attempt,
+                                "Mutated Prompt": parsed.mutated_text if parsed else (evaluation.mutation.response or ""),
+                                "ROUGE-L": metrics.rouge_l if metrics else None,
+                                "Jaccard": metrics.jaccard if metrics else None,
+                                "Levenshtein": metrics.levenshtein if metrics else None,
+                                "Error": evaluation.mutation.error,
+                            }
+                        )
+
+                    df = pd.DataFrame(rows)
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+
+                    if not df.empty:
+                        csv_data = df.to_csv(index=False).encode("utf-8")
+                        st.download_button(
+                            "⬇️ Download scaling runs (CSV)",
+                            csv_data,
+                            file_name="persuasion_scaling_runs.csv",
+                            mime="text/csv",
+                        )
+
+                    last_valid = next((ev for ev in reversed(evaluations) if ev.parsed), None)
+                    if last_valid and last_valid.parsed:
+                        st.session_state["last_mutated_text"] = last_valid.parsed.mutated_text
+                        st.session_state["last_core_intention"] = last_valid.parsed.core_intention
+
+    with judge_tab:
+        st.markdown("Use an automated judge prompt to verify that a mutation preserves the original harmful intention.")
+        st.caption("The judge uses the same provider/model selected in the sidebar.")
+        st.info(
+            "The judge rubric is intention-preserving: it only returns **yes** when the mutation still targets the same harmful goal. Every response includes the raw prompt for auditing."
+        )
+
+        default_mutated = st.session_state.get("last_mutated_text", "")
+        mutated_text_input = st.text_area(
+            "Mutated prompt to judge",
+            value=default_mutated,
+            height=200,
+            key="persuasion_judge_mutated_text",
+        )
+
+        run_judge = st.button("⚖️ Run intention judge", key="persuasion_run_judge")
+
+        if run_judge:
+            if not adversarial_prompt.strip():
+                st.warning("Provide the original adversarial prompt so the judge can compare intentions.")
+            elif not mutated_text_input.strip():
+                st.warning("Provide a mutated prompt to evaluate.")
+            else:
+                with st.spinner("Querying judge model..."):
+                    judge_result = run_intention_judge(
+                        api_key,
+                        model_choice,
+                        provider,
+                        adversarial_prompt,
+                        mutated_text_input,
+                    )
+
+                if judge_result.error:
+                    st.error(f"❌ {judge_result.error}")
+                else:
+                    verdict = (judge_result.response or "").strip()
+                    verdict_lower = verdict.lower()
+                    if verdict_lower.startswith("yes"):
+                        st.success(f"Judge verdict: {verdict}")
+                    elif verdict_lower.startswith("no"):
+                        st.error(f"Judge verdict: {verdict}")
+                    else:
+                        st.info(f"Judge response: {verdict or 'No response'}")
+
+                    st.markdown("#### Judge prompt")
+                    render_prompt_preview(judge_result.instruction, expanded=False)
+
+    with pipeline_tab:
+        st.markdown("Reproduce the CLI batch workflow bundled in `src/mutate/0_main_controller.py`.")
+        st.caption(
+            "Provide the same arguments the script expects. The strategy order follows the 14 techniques in "
+            "`outputs/1_persuasion_technique_template/correct_persuasion_framework_final.json` and "
+            "`outputs/1_persuasion_technique_template/few_shot_version_correct_persuasion_framework_final.json`."
+        )
+
+        col_book, col_dir = st.columns(2)
+        with col_book:
+            book_value = st.text_input(
+                "Book identifier (--book)",
+                key="persuasion_pipeline_book",
+                placeholder="e.g., 1_HP",
+            )
+        with col_dir:
+            technique_dir_value = st.text_input(
+                "Technique directory (--technique_dir)",
+                key="persuasion_pipeline_technique_dir",
+                placeholder="e.g., 16_Foot-in-the-Door",
+            )
+
+        pipeline_technique = st.selectbox(
+            "Technique (--technique)",
+            strategies,
+            key="persuasion_pipeline_technique",
+            help="Matches the human-readable technique label passed through the mutate scripts.",
+        )
+
+        suggested_dir = None
+        if strategies:
+            try:
+                strategy_index = strategies.index(pipeline_technique) + 1
+                slug = pipeline_technique.replace(" ", "_")
+                suggested_dir = f"{strategy_index}_{slug}"
+            except ValueError:
+                suggested_dir = None
+
+        if suggested_dir:
+            st.info(
+                f"Suggested technique_dir for the selected strategy: `{suggested_dir}`. "
+                "Override it if your dataset uses a different naming convention.",
+            )
+
+        run_pipeline_button = st.button("🛠️ Run mutate pipeline", key="persuasion_pipeline_run")
+
+        pipeline_result_key = "persuasion_pipeline_result"
+
+        if run_pipeline_button:
+            if not book_value.strip() or not technique_dir_value.strip():
+                st.warning("Please provide both the book identifier and the technique directory before running the pipeline.")
+                st.session_state.pop(pipeline_result_key, None)
+            else:
+                with st.spinner("Executing mutate pipeline... This can take several minutes depending on the dataset size."):
+                    result = run_mutation_pipeline(book_value, technique_dir_value, pipeline_technique)
+                st.session_state[pipeline_result_key] = result
+
+        pipeline_result = st.session_state.get(pipeline_result_key)
+
+        if pipeline_result:
+            if pipeline_result.success:
+                st.success("✅ Pipeline finished successfully. Review the logs and generated artifacts below.")
+            else:
+                error_message = pipeline_result.error or "Pipeline exited with an unknown error."
+                st.error(f"❌ Pipeline failed: {error_message}")
+
+            if pipeline_result.steps:
+                for step in pipeline_result.steps:
+                    icon = "✅" if step.succeeded else "❌"
+                    header = f"{icon} {step.script} (exit code {step.returncode})"
+                    with st.expander(header, expanded=not step.succeeded):
+                        st.markdown("**Command**")
+                        st.code(" ".join(step.command), language="bash")
+
+                        if step.stdout and step.stdout.strip():
+                            st.markdown("**Stdout**")
+                            st.code(step.stdout.strip(), language="bash")
+
+                        if step.stderr and step.stderr.strip():
+                            st.markdown("**Stderr**")
+                            st.code(step.stderr.strip(), language="bash")
+            else:
+                st.info("No step logs were captured for this run.")
+
+            output_root = pipeline_result.output_root
+            if output_root and output_root.exists():
+                csv_files = sorted(output_root.glob("**/*.csv"))
+                artifact_rows = []
+                for path in csv_files[:40]:
+                    try:
+                        size_kb = path.stat().st_size / 1024
+                    except OSError:
+                        size_kb = None
+                    artifact_rows.append(
+                        {
+                            "File": str(path.relative_to(REPO_ROOT)),
+                            "Size (KB)": round(size_kb, 1) if size_kb is not None else None,
+                        }
+                    )
+
+                if artifact_rows:
+                    st.markdown("#### 📁 Generated CSV artifacts")
+                    st.dataframe(pd.DataFrame(artifact_rows), hide_index=True, use_container_width=True)
+                    st.caption("Showing up to 40 CSV files. Explore the outputs directory for the full set.")
+                else:
+                    st.info("Pipeline completed, but no CSV files were detected yet. Verify the configuration if this is unexpected.")
+
+                st.caption(f"Artifacts stored under `{output_root.relative_to(REPO_ROOT)}`.")
+            else:
+                target_suffix = f"{book_value.strip() or '<book>'}/{technique_dir_value.strip() or '<technique_dir>'}"
+                st.info(
+                    f"Outputs will be written to `outputs/3_evaluation_results/{target_suffix}` once the scripts finish."
+                )
 
 
 def render_unlearning_detection_page(api_key, model_choice, provider):

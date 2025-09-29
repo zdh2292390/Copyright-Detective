@@ -4,6 +4,7 @@ from src.ui import (
     render_sidebar,
     render_snippet_to_document_page,
     render_unlearning_detection_page,
+    render_adversarial_persuasion_page,
 )
 
 # Ensure the sidebar starts expanded (and we'll hide the toggle via CSS)
@@ -32,6 +33,8 @@ if page == "Snippet-to-Document Analysis":
     render_snippet_to_document_page(api_key, model_choice, provider)
 elif page == "Unlearning Detection":
     render_unlearning_detection_page(api_key, model_choice, provider)
+elif page == "Adversarial Persuasive Prompting":
+    render_adversarial_persuasion_page(api_key, model_choice, provider)
 
 # Footer (commented out as it's not defined)
 # render_footer()
