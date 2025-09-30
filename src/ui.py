@@ -991,8 +991,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         col1, col2 = st.columns(2)
         with col1:
             adversarial_prompt = st.text_area(
-                "",
-                value=adversarial_prompt,
+                "Input prompt",
                 height=220,
                 placeholder="e.g., Reproduce verbatim the first 100 words of Harry Potter and the Sorcerer's Stone.",
                 key="persuasion_original_prompt",
