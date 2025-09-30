@@ -159,14 +159,14 @@ To run the perplexity probe, supply both the reference text and an equivalent-le
 
 The app now ships with the full **Adversarial Persuasive Prompting** workflow described in the EMNLP 2025 paper “Profiling LLM’s Copyright Infringement Risks under Adversarial Persuasive Prompting.” It layers a user-friendly Streamlit UI on top of the `mutate/` research pipeline so you can explore jailbreak-oriented attacks interactively before launching large batches from the command line.
 
-### Strategy library (14 persuasion techniques)
+### Strategy library (JSON-backed persuasion techniques)
 
 The page mirrors the official persuasion templates exported to:
 
-- `outputs/1_persuasion_technique_template/correct_persuasion_framework_final.json` (zero-shot)
+- `outputs/1_persuasion_technique_template/persuasion_framework_final_corrected2.json` (zero-shot)
 - `outputs/1_persuasion_technique_template/few_shot_version_correct_persuasion_framework_final.json` (few-shot)
 
-The 14 strategies from the study are grouped as follows:
+By default the UI surfaces the 14 strategies highlighted in the study and automatically appends any additional categories present in the JSON should future releases expand the library. These 14 strategies are grouped as follows:
 
 **Appeals to Credibility and Relationships**
 
@@ -197,7 +197,8 @@ The 14 strategies from the study are grouped as follows:
 ### Key capabilities surfaced in the UI
 
 - **Zero-shot mutation lab**: Trial any individual template, inspect the full instruction, and capture the parsed core intention plus ROUGE-L/Jaccard/Levenshtein scores whenever you provide a ground-truth excerpt.
-- **Few-shot candidate ranker**: Run batch sweeps across the 14 templates, automatically rank the outputs by ROUGE-L, and export CSVs that slot directly into the offline few-shot pipeline.
+- **Sample adversarial prompts**: Inject one of the six canonical baseline requests from the extraction study into the textbox with a single click.
+- **Few-shot candidate ranker**: Run batch sweeps across the available templates, automatically rank the outputs by ROUGE-L, and export CSVs that slot directly into the offline few-shot pipeline.
 - **Intention-preserving judge**: Query the same provider/model with a fixed rubric to verify whether the mutated prompt still pursues the original harmful goal, with the full judge prompt shown for transparency.
 - **Inference scaling diagnostics**: Repeat generations for a single strategy and study the ROUGE/Jaccard/Levenshtein aggregates (mean, σ, max) to quantify stability and variance.
 - **CLI parity via Pipeline Runner**: Trigger `1_run.py`, `2_inference_scaling_all.py`, and `3_data_statistics.py` from the browser, with live stdout/stderr logs and quick-links to the generated CSV artifacts under `outputs/3_evaluation_results/`.

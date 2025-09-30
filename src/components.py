@@ -8,19 +8,25 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 
-def render_prompt_preview(prompt_text: str, *, expanded: bool = False) -> None:
-    """Render the prompt preview inline so surrounding content flows naturally."""
+def render_prompt_preview(
+    prompt_text: str,
+    *,
+    expanded: bool = False,
+    title: str = "Prompt Preview",
+) -> None:
+    """Render a collapsible text preview with copy support."""
 
     raw_text = prompt_text or ""
     escaped_text = html.escape(raw_text)
     copy_payload = json.dumps(raw_text).replace("'", "&apos;")
     open_attr = "open" if expanded else ""
+    summary_label = html.escape(title or "Prompt Preview")
 
     st.markdown(
         f"""
         <div class="cd-prompt-preview">
             <details class="cd-prompt-preview__container" {open_attr}>
-                <summary class="cd-prompt-preview__summary">Prompt Preview</summary>
+                <summary class="cd-prompt-preview__summary">{summary_label}</summary>
                 <div class="cd-prompt-preview__content">
                     <button class="cd-prompt-preview__copy" onclick='navigator.clipboard.writeText({copy_payload}).then(() => {{
                         const btn = this;
