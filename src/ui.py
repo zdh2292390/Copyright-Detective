@@ -3,7 +3,7 @@ import math
 import textwrap
 from collections import Counter
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import streamlit as st
 import pandas as pd
@@ -981,12 +981,9 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     if not api_key or not model_choice:
         st.info("Enter an API key and choose a model in the sidebar to run live evaluations.")
 
-    generation_tab, evaluation_tab = st.tabs([
-        "Persuasion Prompting Generation",
-        "Evaluation Experiments",
-    ])
+    st.markdown("### Persuasion Prompting Generation")
 
-    with generation_tab:
+    with st.container():
         st.markdown("#### Original adversarial prompt")
         col1, col2 = st.columns(2)
         with col1:
@@ -1006,6 +1003,9 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     if selected_prompt and selected_prompt != no_preset_option:
                         st.session_state["persuasion_original_prompt"] = selected_prompt
                         st.session_state["adversarial_prompt"] = selected_prompt
+                    else:
+                        st.session_state["persuasion_original_prompt"] = ""
+                        st.session_state["adversarial_prompt"] = ""
 
                 st.selectbox(
                     "Or load a sample adversarial prompt",
@@ -1015,22 +1015,8 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     help="Selecting a preset replaces the text above with the chosen phrasing.",
                 )
                 st.caption("These presets mirror the six baseline requests used in the paper's extraction study.")
-        with col2:
-            reference_text = st.text_area(
-                "Reference copyrighted text (optional)",
-                value=reference_text,
-                height=220,
-                placeholder="Paste the ground-truth snippet to enable ROUGE-L, Jaccard, and Levenshtein scoring.",
-                key="persuasion_reference_text",
-            )
-            st.session_state["reference_text"] = reference_text
-
-        st.caption("Providing a reference excerpt enables similarity scoring and ranking across strategies.")
+        # Reference text is now configured in the evaluation section.
         reference_excerpt = reference_text.strip() if reference_text else ""
-        st.markdown("#### Choose your workflow")
-        st.caption(
-            "Generate persuasion prompts using a single strategy."
-        )
 
         st.subheader("Strategy Mutation")
         st.info(
@@ -1102,6 +1088,22 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     if parsed:
                         st.session_state["last_mutated_text"] = parsed.mutated_text
                         st.session_state["last_core_intention"] = parsed.core_intention
+                        mutated_text = parsed.mutated_text.strip() if parsed.mutated_text else ""
+                        if mutated_text:
+                            generated_entries = st.session_state.setdefault("generated_persuasion_prompts", [])
+                            for entry in generated_entries:
+                                if entry.get("text") == mutated_text:
+                                    strategies = entry.setdefault("strategies", [])
+                                    if evaluation.mutation.strategy not in strategies:
+                                        strategies.append(evaluation.mutation.strategy)
+                                    break
+                            else:
+                                generated_entries.append(
+                                    {
+                                        "text": mutated_text,
+                                        "strategies": [evaluation.mutation.strategy],
+                                    }
+                                )
                         st.markdown("#### Extracted core intention")
                         st.write(parsed.core_intention or "(Not detected)")
                         st.markdown("#### Instruction sent to the model")
@@ -1164,9 +1166,14 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 else:
                                     st.warning("⚠️ Unable to determine if the intention is preserved.")
 
+    st.divider()
+    st.markdown("### Evaluation Experiments")
 
-    with evaluation_tab:
-        st.markdown("#### Evaluation Experiments")
+    generated_entries = st.session_state.get("generated_persuasion_prompts", [])
+
+    if not generated_entries:
+        st.info("Generate a persuasion prompt above to enable evaluation experiments.")
+    else:
         st.caption(
             "Select among the eight mutate evaluation workflows, run targeted experiments, and inspect summary statistics inspired by the original inference scaling and data analytics scripts."
         )
@@ -1187,24 +1194,45 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         )
         selected_configs = [experiment_options[label] for label in selected_experiments]
 
-        default_prompt_selection = list(baseline_prompts)
-        suite_prompts = st.multiselect(
-            "Baseline prompts to evaluate",
-            options=baseline_prompts,
-            default=default_prompt_selection,
-            help="Choose the adversarial phrasings to include in this experiment batch.",
-            key="evaluation_suite_prompt_selector",
-        )
+        generated_prompt_texts: List[str] = []
+        generated_prompt_labels: List[str] = []
+        for entry in generated_entries:
+            text = (entry or {}).get("text", "").strip()
+            if not text:
+                continue
+            strategies = (entry or {}).get("strategies") or []
+            if isinstance(strategies, str):
+                strategies = [strategies]
+            strategy_label = ", ".join(dict.fromkeys(strategies)) if strategies else "Unknown strategy"
+            generated_prompt_texts.append(text)
+            generated_prompt_labels.append(
+                f"{textwrap.shorten(text, width=80, placeholder='…')} · Generated via {strategy_label}"
+            )
+
+        suite_prompts = list(dict.fromkeys(generated_prompt_texts))
+
+        if not suite_prompts:
+            st.warning("No valid mutated prompts were captured. Generate a new prompt to continue.")
+            return
+
+        st.markdown("#### Baseline prompt to evaluate")
+        preview_label = generated_prompt_labels[0] if generated_prompt_labels else "Generated prompt"
+        st.caption(preview_label)
+        render_prompt_preview(suite_prompts[0], expanded=False)
 
         max_strategy_default = min(len(strategies), 6) if strategies else 1
-        strategy_limit = st.slider(
-            "Maximum persuasion strategies per prompt",
-            min_value=1,
-            max_value=len(strategies) if strategies else 1,
-            value=max_strategy_default if max_strategy_default >= 1 else 1,
-            help="Cap the number of template strategies to balance coverage with runtime.",
-            key="evaluation_suite_strategy_limit",
-        )
+        if len(strategies) <= 1:
+            strategy_limit = 1
+            st.caption("Only one persuasion strategy is available; evaluations will use that strategy by default.")
+        else:
+            strategy_limit = st.slider(
+                "Maximum persuasion strategies per prompt",
+                min_value=1,
+                max_value=len(strategies),
+                value=max_strategy_default if max_strategy_default >= 1 else 1,
+                help="Cap the number of template strategies to balance coverage with runtime.",
+                key="evaluation_suite_strategy_limit",
+            )
 
         zero_active = any(shot == "zero" for shot, _ in (selected_configs or experiment_options.values()))
         few_active = any(shot == "few" for shot, _ in (selected_configs or experiment_options.values()))
@@ -1282,7 +1310,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             )
 
         reference_override = st.text_area(
-            "Reference excerpt (optional)",
+            "Reference excerpt",
             value=DEFAULT_HP_REFERENCE_EXCERPT,
             height=160,
             help="Defaults to the Harry Potter reference excerpt from the paper. Override to target a different ground-truth passage.",
