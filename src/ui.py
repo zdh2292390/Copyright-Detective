@@ -985,36 +985,34 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
 
     with st.container():
         st.markdown("#### Original adversarial prompt")
-        col1, col2 = st.columns(2)
-        with col1:
-            adversarial_prompt = st.text_area(
-                "Input prompt",
-                height=220,
-                placeholder="e.g., Reproduce verbatim the first 100 words of Harry Potter and the Sorcerer's Stone.",
-                key="persuasion_original_prompt",
+        adversarial_prompt = st.text_area(
+            "Input prompt",
+            height=220,
+            placeholder="e.g., Reproduce verbatim the first 100 words of Harry Potter and the Sorcerer's Stone.",
+            key="persuasion_original_prompt",
+        )
+        st.session_state["adversarial_prompt"] = adversarial_prompt
+
+        if baseline_prompts:
+            no_preset_option = "Keep current text"
+
+            def _apply_baseline_preset() -> None:
+                selected_prompt = st.session_state.get("persuasion_baseline_selector")
+                if selected_prompt and selected_prompt != no_preset_option:
+                    st.session_state["persuasion_original_prompt"] = selected_prompt
+                    st.session_state["adversarial_prompt"] = selected_prompt
+                else:
+                    st.session_state["persuasion_original_prompt"] = ""
+                    st.session_state["adversarial_prompt"] = ""
+
+            st.selectbox(
+                "Or load a sample adversarial prompt",
+                [no_preset_option, *baseline_prompts],
+                key="persuasion_baseline_selector",
+                on_change=_apply_baseline_preset,
+                help="Selecting a preset replaces the text above with the chosen phrasing.",
             )
-            st.session_state["adversarial_prompt"] = adversarial_prompt
-
-            if baseline_prompts:
-                no_preset_option = "Keep current text"
-
-                def _apply_baseline_preset() -> None:
-                    selected_prompt = st.session_state.get("persuasion_baseline_selector")
-                    if selected_prompt and selected_prompt != no_preset_option:
-                        st.session_state["persuasion_original_prompt"] = selected_prompt
-                        st.session_state["adversarial_prompt"] = selected_prompt
-                    else:
-                        st.session_state["persuasion_original_prompt"] = ""
-                        st.session_state["adversarial_prompt"] = ""
-
-                st.selectbox(
-                    "Or load a sample adversarial prompt",
-                    [no_preset_option, *baseline_prompts],
-                    key="persuasion_baseline_selector",
-                    on_change=_apply_baseline_preset,
-                    help="Selecting a preset replaces the text above with the chosen phrasing.",
-                )
-                st.caption("These presets mirror the six baseline requests used in the paper's extraction study.")
+            st.caption("These presets mirror the six baseline requests used in the paper's extraction study.")
         # Reference text is now configured in the evaluation section.
         reference_excerpt = reference_text.strip() if reference_text else ""
 
@@ -1023,79 +1021,87 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             "Prototype the persuasion prompt for a single strategy and inspect the parsed core intention before running larger evaluations."
         )
 
+        selected_strategies: List[str] = st.multiselect(
+            "Persuasion strategies",
+            strategies,
+            default=strategies[:1],
+            key="persuasion_zero_shot_strategies",
+            help="Choose one or more strategies to generate multiple mutated prompts in a single run.",
+        )
         enable_judging = st.checkbox(
             "Enable Intention Preservation Judging",
             value=False,
             help="After generating the mutation, run Primary intention assessment and Secondary validation to check if the mutated prompt preserves the original harmful intention.",
             key="enable_intention_judging",
+            disabled=len(selected_strategies or []) != 1,
         )
 
-        selected_strategy = st.selectbox(
-            "Persuasion strategy",
-            strategies,
-            key="persuasion_zero_shot_strategy",
-        )
-        z_temperature = st.slider(
-            "Temperature",
-            min_value=0.0,
-            max_value=2.0,
-            value=0.7,
-            step=0.05,
-            key="persuasion_zero_temperature",
-        )
-        z_top_p = st.slider(
-            "Top-p",
-            min_value=0.0,
-            max_value=1.0,
-            value=1.0,
-            step=0.05,
-            key="persuasion_zero_top_p",
-        )
+        selected_strategy = selected_strategies[0] if selected_strategies else None
+        z_temperature = 0.0
+        z_top_p = 0.8
+        st.caption("Generation parameters fixed at Temperature = 0.0 and Top-p = 0.8 for consistent prompting.")
 
-        preview_instruction = get_mutation_instruction(
-            selected_strategy,
-            adversarial_prompt.strip() if adversarial_prompt.strip() else "<<<adversarial prompt>>>",
-        )
-        st.markdown("#### Prompt preview")
-        render_prompt_preview(preview_instruction, expanded=False)
+        if selected_strategy:
+            preview_instruction = get_mutation_instruction(
+                selected_strategy,
+                adversarial_prompt.strip() if adversarial_prompt.strip() else "<<<adversarial prompt>>>",
+            )
+            st.markdown("#### Prompt preview")
+            render_prompt_preview(preview_instruction, expanded=False)
+        else:
+            st.warning("Select at least one persuasion strategy to preview and generate mutations.")
 
-        run_zero = st.button("🚀 Generate mutation", key="persuasion_run_zero")
+        if len(selected_strategies) != 1 and st.session_state.get("enable_intention_judging"):
+            st.session_state["enable_intention_judging"] = False
+
+        run_zero = st.button("🚀 Generate mutations", key="persuasion_run_zero")
 
         if run_zero:
             if not adversarial_prompt.strip():
                 st.warning("Please provide an adversarial prompt before running the mutation.")
+            elif not selected_strategies:
+                st.warning("Select at least one persuasion strategy before running the mutation.")
             else:
-                with st.spinner(f"Generating mutation with {selected_strategy}..."):
+                with st.spinner("Generating mutations..."):
                     evaluations = mutate_strategies(
                         api_key,
                         model_choice,
                         provider,
-                        [selected_strategy],
+                        selected_strategies,
                         adversarial_prompt,
                         reference_text=reference_excerpt or None,
                         attempts_per_strategy=1,
                         temperature=z_temperature,
                         top_p=z_top_p,
                     )
-
-                evaluation = evaluations[0] if evaluations else None
-                if evaluation is None:
+                if not evaluations:
                     st.error("No output was produced.")
-                elif evaluation.mutation.error:
-                    st.error(f"❌ {evaluation.mutation.error}")
-                else:
+                    return
+
+                parsed_results = []
+                raw_warnings = []
+                errors = []
+
+                for evaluation in evaluations:
+                    if evaluation is None:
+                        continue
+                    if evaluation.mutation.error:
+                        errors.append(f"{evaluation.mutation.strategy}: {evaluation.mutation.error}")
+                        continue
+
                     parsed = evaluation.parsed
-                    if parsed:
+                    if parsed and parsed.mutated_text:
+                        mutated_text = parsed.mutated_text.strip()
                         st.session_state["last_mutated_text"] = parsed.mutated_text
                         st.session_state["last_core_intention"] = parsed.core_intention
-                        mutated_text = parsed.mutated_text.strip() if parsed.mutated_text else ""
+
                         if mutated_text:
                             generated_entries = st.session_state.setdefault("generated_persuasion_prompts", [])
                             for entry in generated_entries:
                                 if entry.get("text") == mutated_text:
-                                    strategies = entry.setdefault("strategies", [])
-                                    if evaluation.mutation.strategy not in strategies:
-                                        strategies.append(evaluation.mutation.strategy)
+                                    strategies_list = entry.setdefault("strategies", [])
+                                    if evaluation.mutation.strategy not in strategies_list:
+                                        strategies_list.append(evaluation.mutation.strategy)
                                     break
                             else:
                                 generated_entries.append(
@@ -1104,67 +1110,104 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                         "strategies": [evaluation.mutation.strategy],
                                     }
                                 )
-                        st.markdown("#### Extracted core intention")
-                        st.write(parsed.core_intention or "(Not detected)")
-                        st.markdown("#### Instruction sent to the model")
-                        render_prompt_preview(evaluation.mutation.instruction, expanded=False)
-                        st.markdown("#### Mutated adversarial prompt")
-                        st.code(parsed.mutated_text, language="markdown")
+
+                        parsed_results.append(
+                            {
+                                "strategy": evaluation.mutation.strategy,
+                                "mutated_text": parsed.mutated_text,
+                                "core_intention": parsed.core_intention,
+                                "instruction": evaluation.mutation.instruction,
+                                "evaluation": evaluation,
+                            }
+                        )
                     else:
-                        st.warning("The response did not follow the expected template; showing raw output below.")
-                        st.code(evaluation.mutation.response or "", language="markdown")
-                        st.markdown("#### Instruction sent to the model")
-                        render_prompt_preview(evaluation.mutation.instruction, expanded=False)
+                        raw_warnings.append(
+                            {
+                                "strategy": evaluation.mutation.strategy,
+                                "response": evaluation.mutation.response or "",
+                                "instruction": evaluation.mutation.instruction,
+                            }
+                        )
 
-                    if evaluation.metrics and reference_excerpt:
-                        st.caption("Similarity scores are computed in the evaluation module and hidden here to keep the focus on prompt formation.")
+                if errors:
+                    st.error("\n".join(f"❌ {msg}" for msg in errors))
 
-                    # Intention Preservation Judging
-                    if enable_judging and parsed and parsed.mutated_text:
-                        st.markdown("---")
-                        st.markdown("#### Intention Preservation Judging")
+                if parsed_results:
+                    st.markdown("#### Generated mutated prompts")
+                    for idx, result in enumerate(parsed_results, start=1):
+                        st.markdown(f"**{idx}. Strategy: {result['strategy']}**")
+                        if result["core_intention"]:
+                            st.markdown("_Extracted core intention:_")
+                            st.write(result["core_intention"])
+                        st.markdown("_Instruction sent to the model:_")
+                        render_prompt_preview(result["instruction"], expanded=False)
+                        st.markdown("_Mutated adversarial prompt:_")
+                        st.code(result["mutated_text"], language="markdown")
 
-                        if not api_key or not model_choice:
-                            st.warning("Enter your API key and choose a model in the sidebar before running intention judging.")
+                        evaluation = result["evaluation"]
+                        if evaluation.metrics and reference_excerpt:
+                            st.caption("Similarity scores are computed in the evaluation module and hidden here to keep the focus on prompt formation.")
+
+                if raw_warnings:
+                    st.warning(
+                        "Some responses did not follow the expected template. Raw outputs are shown below for review."
+                    )
+                    for idx, warning in enumerate(raw_warnings, start=1):
+                        st.markdown(f"**Raw response {idx} · Strategy: {warning['strategy']}**")
+                        st.code(warning["response"], language="markdown")
+                        render_prompt_preview(warning["instruction"], expanded=False)
+
+                can_judge = enable_judging and len(parsed_results) == 1 and len(selected_strategies) == 1
+
+                if enable_judging and len(selected_strategies) != 1:
+                    st.info("Intention Preservation Judging is available when exactly one strategy is selected.")
+
+                if can_judge:
+                    result = parsed_results[0]
+                    st.markdown("---")
+                    st.markdown("#### Intention Preservation Judging")
+
+                    if not api_key or not model_choice:
+                        st.warning("Enter your API key and choose a model in the sidebar before running intention judging.")
+                    else:
+                        with st.spinner("Running Primary intention assessment and Secondary validation..."):
+                            assessment = assess_intention_preservation(
+                                api_key,
+                                model_choice,
+                                provider,
+                                adversarial_prompt,
+                                result["mutated_text"],
+                                temperature=z_temperature,
+                                top_p=z_top_p,
+                                dry_run=False,
+                            )
+
+                        primary_result = assessment.primary
+                        judge_result = assessment.secondary
+
+                        if primary_result.error:
+                            st.error(f"Primary assessment failed: {primary_result.error}")
                         else:
-                            with st.spinner("Running Primary intention assessment and Secondary validation..."):
-                                assessment = assess_intention_preservation(
-                                    api_key,
-                                    model_choice,
-                                    provider,
-                                    adversarial_prompt,
-                                    parsed.mutated_text,
-                                    temperature=z_temperature,
-                                    top_p=z_top_p,
-                                    dry_run=False,
-                                )
-
-                            primary_result = assessment.primary
-                            judge_result = assessment.secondary
-
-                            if primary_result.error:
-                                st.error(f"Primary assessment failed: {primary_result.error}")
+                            if assessment.core_intention:
+                                st.markdown("**Primary Assessment – Core Intention:**")
+                                st.write(assessment.core_intention)
                             else:
-                                if assessment.core_intention:
-                                    st.markdown("**Primary Assessment – Core Intention:**")
-                                    st.write(assessment.core_intention)
-                                else:
-                                    st.warning("Primary assessment did not return a core intention.")
+                                st.warning("Primary assessment did not return a core intention.")
 
-                                if assessment.restated_mutated_text:
-                                    st.markdown("**Primary Assessment – Restated Mutated Text:**")
-                                    st.write(assessment.restated_mutated_text)
+                            if assessment.restated_mutated_text:
+                                st.markdown("**Primary Assessment – Restated Mutated Text:**")
+                                st.write(assessment.restated_mutated_text)
 
-                            if judge_result.error:
-                                st.error(f"Secondary validation failed: {judge_result.error}")
+                        if judge_result.error:
+                            st.error(f"Secondary validation failed: {judge_result.error}")
+                        else:
+                            st.markdown("**Secondary Validation – Preserves Intention:**")
+                            if assessment.judge_passed is True:
+                                st.success("✅ Yes - The mutated prompt preserves the original intention.")
+                            elif assessment.judge_passed is False:
+                                st.error("❌ No - The mutated prompt does not preserve the original intention.")
                             else:
-                                st.markdown("**Secondary Validation – Preserves Intention:**")
-                                if assessment.judge_passed is True:
-                                    st.success("✅ Yes - The mutated prompt preserves the original intention.")
-                                elif assessment.judge_passed is False:
-                                    st.error("❌ No - The mutated prompt does not preserve the original intention.")
-                                else:
-                                    st.warning("⚠️ Unable to determine if the intention is preserved.")
+                                st.warning("⚠️ Unable to determine if the intention is preserved.")
 
     st.divider()
     st.markdown("### Evaluation Experiments")
