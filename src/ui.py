@@ -3,7 +3,7 @@ import math
 import textwrap
 from collections import Counter
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import streamlit as st
 import pandas as pd
@@ -35,6 +35,9 @@ from src.copyright_detective.adversarial_prompting import (
     ExperimentMode,
     DEFAULT_HP_REFERENCE_EXCERPT,
     _EXPERIMENT_MODE_MATRIX,
+    serialise_mutation_with_judge,
+    deserialise_mutation_with_judge,
+    MutationWithJudge,
 )
 from src.prompt_utils import get_full_prompt, get_persuasion_prompt, get_persuasion_template, get_prompt_template
 from src.components import render_collapsible_panel, render_prompt_preview, render_top_sample_distribution
@@ -1112,6 +1115,45 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                     }
                                 )
 
+                            mutation_store = st.session_state.setdefault("generated_persuasion_mutations", {})
+                            mutation_entry = MutationWithJudge(
+                                evaluation=evaluation,
+                                judge=None,
+                                judge_passed=None,
+                            )
+                            serialised_entry = serialise_mutation_with_judge(mutation_entry)
+                            record_entries = mutation_store.setdefault(mutated_text, [])
+
+                            entry_exists = False
+                            for stored in record_entries:
+                                stored_config = stored.get("config") or []
+                                if stored_config and stored_config[0] != "zero":
+                                    continue
+                                if stored_config and bool(stored_config[1]):
+                                    continue
+
+                                stored_data = stored.get("data") or {}
+                                stored_eval = stored_data.get("evaluation") or {}
+                                stored_mutation = stored_eval.get("mutation") or {}
+                                stored_parsed = stored_eval.get("parsed") or {}
+                                stored_mutated_text = (stored_parsed.get("mutated_text") or stored_mutation.get("response") or "").strip()
+
+                                if (
+                                    stored_mutation.get("strategy") == evaluation.mutation.strategy
+                                    and stored_eval.get("attempt") == evaluation.attempt
+                                    and stored_mutated_text == mutated_text
+                                ):
+                                    entry_exists = True
+                                    break
+
+                            if not entry_exists:
+                                record_entries.append(
+                                    {
+                                        "config": ["zero", False],
+                                        "data": serialised_entry,
+                                    }
+                                )
+
                         parsed_results.append(
                             {
                                 "strategy": evaluation.mutation.strategy,
@@ -1216,6 +1258,44 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 else:
                                     st.warning("⚠️ Unable to determine if the intention is preserved.")
 
+                                mutation_store = st.session_state.setdefault("generated_persuasion_mutations", {})
+                                record_entries = mutation_store.setdefault(mutated_text, [])
+                                judged_entry = MutationWithJudge(
+                                    evaluation=result["evaluation"],
+                                    judge=assessment.secondary,
+                                    judge_passed=assessment.judge_passed,
+                                )
+                                serialised_judged = serialise_mutation_with_judge(judged_entry)
+
+                                judged_exists = False
+                                for stored in record_entries:
+                                    stored_config = stored.get("config") or []
+                                    if not stored_config or stored_config[0] != "zero" or not bool(stored_config[1]):
+                                        continue
+
+                                    stored_data = stored.get("data") or {}
+                                    stored_eval = stored_data.get("evaluation") or {}
+                                    stored_mutation = stored_eval.get("mutation") or {}
+                                    stored_parsed = stored_eval.get("parsed") or {}
+                                    stored_mutated_text = (stored_parsed.get("mutated_text") or stored_mutation.get("response") or "").strip()
+
+                                    if (
+                                        stored_mutation.get("strategy") == result["strategy"]
+                                        and stored_eval.get("attempt") == result["evaluation"].attempt
+                                        and stored_mutated_text == mutated_text
+                                    ):
+                                        stored["data"] = serialised_judged
+                                        judged_exists = True
+                                        break
+
+                                if not judged_exists:
+                                    record_entries.append(
+                                        {
+                                            "config": ["zero", True],
+                                            "data": serialised_judged,
+                                        }
+                                    )
+
     st.divider()
     st.markdown("### Evaluation Experiments")
 
@@ -1244,22 +1324,39 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         )
         selected_configs = [experiment_options[label] for label in selected_experiments]
 
+        strategy_pool: Dict[str, None] = {}
         generated_prompt_texts: List[str] = []
         generated_prompt_labels: List[str] = []
         for entry in generated_entries:
             text = (entry or {}).get("text", "").strip()
             if not text:
                 continue
-            strategies = (entry or {}).get("strategies") or []
-            if isinstance(strategies, str):
-                strategies = [strategies]
-            strategy_label = ", ".join(dict.fromkeys(strategies)) if strategies else "Unknown strategy"
+            entry_strategies = (entry or {}).get("strategies") or []
+            if isinstance(entry_strategies, str):
+                entry_strategies = [entry_strategies]
+            for strat in entry_strategies:
+                if strat:
+                    strategy_pool.setdefault(strat, None)
+            strategy_label = ", ".join(dict.fromkeys(entry_strategies)) if entry_strategies else "Unknown strategy"
             generated_prompt_texts.append(text)
             generated_prompt_labels.append(
                 f"{textwrap.shorten(text, width=80, placeholder='…')} · Generated via {strategy_label}"
             )
 
         suite_prompts = list(dict.fromkeys(generated_prompt_texts))
+        mutation_store = st.session_state.get("generated_persuasion_mutations", {})
+
+        for prompt_records in mutation_store.values():
+            for record in prompt_records:
+                data = record.get("data") or {}
+                evaluation_data = data.get("evaluation") or {}
+                mutation_data = evaluation_data.get("mutation") or {}
+                strategy_name = mutation_data.get("strategy")
+                if strategy_name:
+                    strategy_pool.setdefault(strategy_name, None)
+
+        collected_strategies = sorted(strategy_pool.keys())
+        strategy_choices = collected_strategies if collected_strategies else list(strategies)
 
         if not suite_prompts:
             st.warning("No valid mutated prompts were captured. Generate a new prompt to continue.")
@@ -1270,15 +1367,15 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         st.caption(preview_label)
         render_prompt_preview(suite_prompts[0], expanded=False)
 
-        max_strategy_default = min(len(strategies), 6) if strategies else 1
-        if len(strategies) <= 1:
+        max_strategy_default = min(len(strategy_choices), 6) if strategy_choices else 1
+        if len(strategy_choices) <= 1:
             strategy_limit = 1
             st.caption("Only one persuasion strategy is available; evaluations will use that strategy by default.")
         else:
             strategy_limit = st.slider(
                 "Maximum persuasion strategies per prompt",
                 min_value=1,
-                max_value=len(strategies),
+                max_value=len(strategy_choices),
                 value=max_strategy_default if max_strategy_default >= 1 else 1,
                 help="Cap the number of template strategies to balance coverage with runtime.",
                 key="evaluation_suite_strategy_limit",
@@ -1375,6 +1472,43 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
 
         run_suite = st.button("🧪 Run selected experiments", key="evaluation_suite_run")
 
+        precomputed_mutations: Dict[str, Dict[Tuple[str, bool], Dict[Tuple[str, int, str], MutationWithJudge]]] = {}
+        for prompt_text, records in mutation_store.items():
+            if prompt_text not in suite_prompts:
+                continue
+            config_map = precomputed_mutations.setdefault(prompt_text, {})
+            for record in records:
+                raw_config = record.get("config") or []
+                shot_label = raw_config[0] if raw_config else "zero"
+                uses_judge = bool(raw_config[1]) if len(raw_config) > 1 else False
+                data = record.get("data")
+                if not data:
+                    continue
+                try:
+                    mutation_obj = deserialise_mutation_with_judge(data)
+                except Exception:
+                    continue
+
+                parsed = mutation_obj.evaluation.parsed
+                mutated_text_value = (
+                    parsed.mutated_text if parsed and parsed.mutated_text else (mutation_obj.evaluation.mutation.response or "")
+                ).strip()
+                dedup_key = (
+                    mutation_obj.evaluation.mutation.strategy,
+                    mutation_obj.evaluation.attempt,
+                    mutated_text_value,
+                )
+
+                config_bucket = config_map.setdefault((shot_label, uses_judge), {})
+                config_bucket.setdefault(dedup_key, mutation_obj)
+
+        # Collapse buckets to lists for downstream consumption
+        collapsed_precomputed: Dict[str, Dict[Tuple[str, bool], List[MutationWithJudge]]] = {}
+        for prompt_text, config_map in precomputed_mutations.items():
+            collapsed_precomputed[prompt_text] = {
+                config_key: list(bucket.values()) for config_key, bucket in config_map.items()
+            }
+
         if run_suite:
             if not selected_configs:
                 st.warning("Select at least one evaluation workflow to execute.")
@@ -1391,7 +1525,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                             model_choice if not dry_run_suite else None,
                             provider,
                             baseline_prompts=target_prompts,
-                            strategies=strategies,
+                            strategies=strategy_choices,
                             reference_text=reference_text,
                             max_strategies=strategy_limit,
                             experiment_configs=selected_configs,
@@ -1403,6 +1537,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                             evaluation_temperature=evaluation_temperature,
                             evaluation_top_p=evaluation_top_p,
                             dry_run=dry_run_suite,
+                            precomputed_mutations=collapsed_precomputed,
                         )
 
                 if not suite_results:

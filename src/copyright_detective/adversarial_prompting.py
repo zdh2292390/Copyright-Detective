@@ -6,11 +6,11 @@ import json
 import subprocess
 import warnings
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import Enum
 from statistics import mean, stdev
 from textwrap import dedent
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from Levenshtein import distance
 
@@ -91,6 +91,104 @@ class MutationWithJudge:
     evaluation: MutationEvaluation
     judge: Optional[MutationResult]
     judge_passed: Optional[bool]
+
+
+def serialise_mutation_with_judge(entry: MutationWithJudge) -> Dict[str, Any]:
+    """Convert a mutation-with-judge record into a JSON-serialisable dictionary."""
+
+    return asdict(entry)
+
+
+def _maybe_build_mutation_result(payload: Optional[Mapping[str, Any]]) -> Optional[MutationResult]:
+    if not payload:
+        return None
+    return MutationResult(
+        strategy=str(payload.get("strategy", "")),
+        instruction=str(payload.get("instruction", "")),
+        response=payload.get("response"),
+        error=payload.get("error"),
+    )
+
+
+def _maybe_build_parsed_mutation(payload: Optional[Mapping[str, Any]]) -> Optional[ParsedMutation]:
+    if not payload:
+        return None
+    return ParsedMutation(
+        raw_output=str(payload.get("raw_output", "")),
+        core_intention=str(payload.get("core_intention", "")),
+        mutated_text=str(payload.get("mutated_text", "")),
+    )
+
+
+def _maybe_build_metrics(payload: Optional[Mapping[str, Any]]) -> Optional[SimilarityMetrics]:
+    if not payload:
+        return None
+    rouge_value = payload.get("rouge_l")
+    jaccard_value = payload.get("jaccard")
+    levenshtein_value = payload.get("levenshtein")
+    try:
+        rouge_float = float(rouge_value) if rouge_value is not None else 0.0
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        rouge_float = 0.0
+    try:
+        jaccard_float = float(jaccard_value) if jaccard_value is not None else 0.0
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        jaccard_float = 0.0
+    try:
+        levenshtein_int = int(levenshtein_value) if levenshtein_value is not None else 0
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        levenshtein_int = 0
+    return SimilarityMetrics(
+        rouge_l=rouge_float,
+        jaccard=jaccard_float,
+        levenshtein=levenshtein_int,
+    )
+
+
+def deserialise_mutation_with_judge(data: Mapping[str, Any]) -> MutationWithJudge:
+    """Reconstruct a ``MutationWithJudge`` instance from a dictionary representation."""
+
+    evaluation_block = data.get("evaluation") or {}
+    mutation_block = evaluation_block.get("mutation") or {}
+    parsed_block = evaluation_block.get("parsed") or {}
+    metrics_block = evaluation_block.get("metrics") or {}
+
+    mutation = _maybe_build_mutation_result(mutation_block) or MutationResult(
+        strategy=str(mutation_block.get("strategy", "")),
+        instruction=str(mutation_block.get("instruction", "")),
+        response=mutation_block.get("response"),
+        error=mutation_block.get("error"),
+    )
+    parsed = _maybe_build_parsed_mutation(parsed_block)
+    metrics = _maybe_build_metrics(metrics_block)
+
+    attempt_value = evaluation_block.get("attempt")
+    try:
+        attempt = int(attempt_value) if attempt_value is not None else 1
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        attempt = 1
+
+    evaluation = MutationEvaluation(
+        mutation=mutation,
+        parsed=parsed,
+        metrics=metrics,
+        attempt=attempt,
+    )
+
+    judge = _maybe_build_mutation_result(data.get("judge"))
+    judge_passed = data.get("judge_passed")
+    if isinstance(judge_passed, str):
+        lowered = judge_passed.strip().lower()
+        if lowered in {"true", "yes"}:
+            judge_passed = True
+        elif lowered in {"false", "no"}:
+            judge_passed = False
+
+    return MutationWithJudge(
+        evaluation=evaluation,
+        judge=judge,
+        judge_passed=judge_passed if isinstance(judge_passed, (bool, type(None))) else None,
+    )
 
 
 @dataclass(frozen=True)
@@ -1094,13 +1192,16 @@ def run_baseline_prompt_suite(
     evaluation_temperature: float = 0.0,
     evaluation_top_p: float = 0.0,
     dry_run: bool = False,
+    precomputed_mutations: Optional[Dict[str, Dict[Tuple[str, bool], Sequence[MutationWithJudge]]]] = None,
 ) -> Dict[str, Dict[ExperimentMode, ModeResult]]:
     """Run mutate-inspired evaluation workflows across baseline prompts.
 
     The routine emulates the mutate benchmark structure by generating mutated prompts for
     each baseline phrasing and replaying them against an evaluation model. Outputs are
     organised by ``ExperimentMode`` so the Streamlit UI can render side-by-side
-    comparisons of generation and evaluation statistics.
+    comparisons of generation and evaluation statistics. Precomputed mutation outputs
+    collected elsewhere (for example, via the persuasion generation UI) can be supplied
+    to guarantee they are evaluated alongside freshly generated attempts.
     """
 
     if not baseline_prompts or not strategies:
@@ -1117,6 +1218,7 @@ def run_baseline_prompt_suite(
     evaluation_targets: Sequence[Tuple[str, Optional[str]]] = (
         list(evaluation_models) if evaluation_models else [(provider, model_name)]
     )
+    supplied_mutations = precomputed_mutations or {}
 
     suite_results: Dict[str, Dict[ExperimentMode, ModeResult]] = {}
 
@@ -1136,22 +1238,45 @@ def run_baseline_prompt_suite(
             attempts = zero_shot_attempts if shot_label == "zero" else few_shot_attempts
             attempts = max(1, attempts)
 
-            mutations = generate_mutations_for_prompt(
-                api_key,
-                model_name,
-                provider,
-                cleaned_prompt,
-                strategies=active_strategies,
-                reference_text=reference_text,
-                attempts_per_strategy=attempts,
-                use_judge=uses_judge,
-                judge_api_key=api_key,
-                judge_model_name=model_name,
-                judge_provider=provider,
-                temperature=temperature,
-                top_p=top_p,
-                dry_run=dry_run,
-            )
+            seen_mutations: Dict[Tuple[str, int, Optional[str]], MutationWithJudge] = {}
+
+            def _register_mutation(entry: MutationWithJudge) -> None:
+                mutated_value = _get_mutated_text(entry.evaluation)
+                key = (entry.evaluation.mutation.strategy, entry.evaluation.attempt, mutated_value)
+                if key not in seen_mutations:
+                    seen_mutations[key] = entry
+
+            preset_entries = supplied_mutations.get(cleaned_prompt, {}).get(config, [])
+            for preset in preset_entries:
+                _register_mutation(preset)
+
+            should_generate = True
+            if not dry_run and (not api_key or not model_name):
+                # Without live credentials we cannot create additional mutations; rely on supplied data.
+                should_generate = False
+
+            generated_mutations: Sequence[MutationWithJudge] = ()
+            if should_generate:
+                generated_mutations = generate_mutations_for_prompt(
+                    api_key,
+                    model_name,
+                    provider,
+                    cleaned_prompt,
+                    strategies=active_strategies,
+                    reference_text=reference_text,
+                    attempts_per_strategy=attempts,
+                    use_judge=uses_judge,
+                    judge_api_key=api_key,
+                    judge_model_name=model_name,
+                    judge_provider=provider,
+                    temperature=temperature,
+                    top_p=top_p,
+                    dry_run=dry_run,
+                )
+                for generated in generated_mutations:
+                    _register_mutation(generated)
+
+            mutations = list(seen_mutations.values())
 
             generation_summary = summarise_metrics([entry.evaluation for entry in mutations])
             judge_summary = _summarise_judge_outcomes(mutations)

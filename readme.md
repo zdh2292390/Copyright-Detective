@@ -196,12 +196,7 @@ By default the UI surfaces the 14 strategies highlighted in the study and automa
 
 ### Key capabilities surfaced in the UI
 
-- **Zero-shot mutation lab**: Trial any individual template, inspect the full instruction, and capture the parsed core intention plus ROUGE-L/Jaccard/Levenshtein scores whenever you provide a ground-truth excerpt.
-- **Sample adversarial prompts**: Inject one of the six canonical baseline requests from the extraction study into the textbox with a single click.
-- **Few-shot candidate ranker**: Run batch sweeps across the available templates, automatically rank the outputs by ROUGE-L, and export CSVs that slot directly into the offline few-shot pipeline.
-- **Intention-preserving judge**: Query the same provider/model with a fixed rubric to verify whether the mutated prompt still pursues the original harmful goal, with the full judge prompt shown for transparency.
-- **Inference scaling diagnostics**: Repeat generations for a single strategy and study the ROUGE/Jaccard/Levenshtein aggregates (mean, σ, max) to quantify stability and variance.
-- **CLI parity via Pipeline Runner**: Trigger `1_run.py`, `2_inference_scaling_all.py`, and `3_data_statistics.py` from the browser, with live stdout/stderr logs and quick-links to the generated CSV artifacts under `outputs/3_evaluation_results/`.
+- **Evaluation experiments reuse generated mutations** – the Evaluation Experiments pane automatically replays every mutated prompt you've produced (including judged variants) so you can inspect downstream evaluations without regenerating them.
 
 Every template keeps the original harmful intent intact and produces output in the canonical two-line format:
 
