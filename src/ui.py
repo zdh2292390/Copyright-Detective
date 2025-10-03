@@ -1066,6 +1066,9 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             elif not selected_strategies:
                 st.warning("Select at least one persuasion strategy before running the mutation.")
             else:
+                st.session_state["generated_persuasion_prompts"] = []
+                st.session_state["generated_persuasion_mutations"] = {}
+
                 with st.spinner("Generating mutations..."):
                     evaluations = mutate_strategies(
                         api_key,
@@ -1326,7 +1329,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
 
         strategy_pool: Dict[str, None] = {}
         generated_prompt_texts: List[str] = []
-        generated_prompt_labels: List[str] = []
+        prompt_label_map: Dict[str, str] = {}
         for entry in generated_entries:
             text = (entry or {}).get("text", "").strip()
             if not text:
@@ -1339,11 +1342,9 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     strategy_pool.setdefault(strat, None)
             strategy_label = ", ".join(dict.fromkeys(entry_strategies)) if entry_strategies else "Unknown strategy"
             generated_prompt_texts.append(text)
-            generated_prompt_labels.append(
-                f"{textwrap.shorten(text, width=80, placeholder='…')} · Generated via {strategy_label}"
-            )
+            prompt_label_map[text] = f"{textwrap.shorten(text, width=80, placeholder='…')} · Generated via {strategy_label}"
 
-        suite_prompts = list(dict.fromkeys(generated_prompt_texts))
+        all_mutated_prompts = list(dict.fromkeys(generated_prompt_texts))
         mutation_store = st.session_state.get("generated_persuasion_mutations", {})
 
         for prompt_records in mutation_store.values():
@@ -1358,14 +1359,17 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         collected_strategies = sorted(strategy_pool.keys())
         strategy_choices = collected_strategies if collected_strategies else list(strategies)
 
-        if not suite_prompts:
+        if not all_mutated_prompts:
             st.warning("No valid mutated prompts were captured. Generate a new prompt to continue.")
             return
 
-        st.markdown("#### Baseline prompt to evaluate")
-        preview_label = generated_prompt_labels[0] if generated_prompt_labels else "Generated prompt"
-        st.caption(preview_label)
-        render_prompt_preview(suite_prompts[0], expanded=False)
+        selected_prompts = all_mutated_prompts
+
+        st.markdown("#### Mutated prompts to evaluate")
+        st.caption("All mutated prompts generated above will be replayed in the evaluation workflows.")
+        for prompt_text in selected_prompts:
+            st.caption(prompt_label_map.get(prompt_text, textwrap.shorten(prompt_text, width=80, placeholder="…")))
+            render_prompt_preview(prompt_text, expanded=False)
 
         max_strategy_default = min(len(strategy_choices), 6) if strategy_choices else 1
         if len(strategy_choices) <= 1:
@@ -1474,7 +1478,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
 
         precomputed_mutations: Dict[str, Dict[Tuple[str, bool], Dict[Tuple[str, int, str], MutationWithJudge]]] = {}
         for prompt_text, records in mutation_store.items():
-            if prompt_text not in suite_prompts:
+            if prompt_text not in selected_prompts:
                 continue
             config_map = precomputed_mutations.setdefault(prompt_text, {})
             for record in records:
@@ -1513,7 +1517,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             if not selected_configs:
                 st.warning("Select at least one evaluation workflow to execute.")
             else:
-                target_prompts = suite_prompts or default_prompt_selection
+                target_prompts = selected_prompts
                 reference_text = reference_override.strip() if reference_override.strip() else DEFAULT_HP_REFERENCE_EXCERPT
 
                 if not dry_run_suite and (not api_key or not model_choice):
@@ -1591,7 +1595,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
 
                     for prompt_text, mode_outputs in suite_results.items():
                         st.markdown("---")
-                        st.markdown("##### Baseline prompt")
+                        st.markdown("##### Mutated prompt")
                         st.markdown(
                             f"<div class='baseline-prompt-display'>🪄 <em>{prompt_text}</em></div>",
                             unsafe_allow_html=True,
@@ -1625,7 +1629,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                             summary_rows.append(row)
 
                         if summary_rows:
-                            st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+                            st.dataframe(pd.DataFrame(summary_rows), width='stretch', hide_index=True)
 
                         for mode in ExperimentMode:
                             if mode not in selected_modes:
@@ -1643,20 +1647,20 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                     st.info("No records captured for this configuration.")
                                     continue
 
-                                st.dataframe(data_df, use_container_width=True, hide_index=True)
+                                st.dataframe(data_df, width='stretch', hide_index=True)
 
                                 metric_cols = [col for col in ["ROUGE-L", "Jaccard", "Levenshtein"] if col in data_df.columns]
                                 if metric_cols:
                                     stats_df = data_df[metric_cols].describe().transpose().reset_index().rename(columns={"index": "Metric"})
                                     st.markdown("**Summary statistics**")
-                                    st.dataframe(stats_df, use_container_width=True, hide_index=True)
+                                    st.dataframe(stats_df, width='stretch', hide_index=True)
 
                                 if "Judge Vote" in data_df.columns:
                                     judge_counts = data_df["Judge Vote"].value_counts(dropna=False)
                                     judge_df = judge_counts.rename_axis("Vote").reset_index(name="Count")
                                     judge_df["Share"] = judge_df["Count"] / judge_df["Count"].sum()
                                     st.markdown("**Judge outcomes**")
-                                    st.dataframe(judge_df, use_container_width=True, hide_index=True)
+                                    st.dataframe(judge_df, width='stretch', hide_index=True)
 
                                 csv_data = data_df.to_csv(index=False).encode("utf-8")
                                 st.download_button(
@@ -2187,7 +2191,7 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
 
                 submit_run = st.form_submit_button(
                     "🧬 Run Representational Analysis",
-                    use_container_width=True,
+                    width='stretch',
                     help="Submit the parameters above and execute the representational probe on the backend.",
                 )
 
