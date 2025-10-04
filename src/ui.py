@@ -1435,16 +1435,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 meta=f"{status_icon} ROUGE-L: {rouge_score:.4f}",
                                 expanded=False,
                             )
-                        
-                        # CSV Export
-                        csv_stage1 = df_stage1.to_csv(index=False)
-                        st.download_button(
-                            label="📥 Download Stage 1 Results (CSV)",
-                            data=csv_stage1,
-                            file_name="stage1_zero_shot_results.csv",
-                            mime="text/csv",
-                            width='stretch',
-                        )
     
     st.divider()
     
