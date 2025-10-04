@@ -1119,7 +1119,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         "🚀 Run Stage 1: Generate & Evaluate",
         key="run_stage1",
         type="primary",
-        use_container_width=True
+        width='stretch'
     )
     
     if run_stage1:
@@ -1144,20 +1144,28 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             stage1_results = []
             
             # ===== STEP 1: Generate Mutations =====
-            with st.spinner("🔄 Step 1/4: Generating zero-shot mutations..."):
-                evaluations = mutate_strategies(
-                    api_key,
-                    model_choice,
-                    provider,
-                    zero_shot_strategies,
-                    original_prompt,
-                    reference_text=None,  # Don't calculate ROUGE during generation
-                    few_shot_examples=None,  # Zero-shot: no examples
-                    attempts_per_strategy=zero_shot_attempts,
-                    temperature=1.0,  # Higher temperature for diverse mutation generation
-                    top_p=1.0,
-                    dry_run=False,
-                )
+            st.markdown("**🔄 Step 1/4: Generating zero-shot mutations**")
+            st.caption(f"Generating {len(zero_shot_strategies)} strategy(ies) × {zero_shot_attempts} attempt(s) = {len(zero_shot_strategies) * zero_shot_attempts} total mutations")
+            
+            generation_progress = st.progress(0.0)
+            total_to_generate = len(zero_shot_strategies) * zero_shot_attempts
+            
+            evaluations = mutate_strategies(
+                api_key,
+                model_choice,
+                provider,
+                zero_shot_strategies,
+                original_prompt,
+                reference_text=None,  # Don't calculate ROUGE during generation
+                few_shot_examples=None,  # Zero-shot: no examples
+                attempts_per_strategy=zero_shot_attempts,
+                temperature=1.0,  # Higher temperature for diverse mutation generation
+                top_p=1.0,
+                dry_run=False,
+            )
+            
+            generation_progress.progress(1.0)
+            generation_progress.empty()
             
             if not evaluations:
                 st.error("❌ No mutations produced. Check your API key and model settings.")
@@ -1286,7 +1294,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     
                     # ===== STEP 4: Intention Preservation Judging =====
                     st.markdown("---")
-                    st.markdown("**🔄 Step 3/3: Intention Preservation Judging**")
+                    st.markdown("**🔄 Step 4/4: Intention Preservation Judging**")
                     st.caption("Assessing whether mutated prompts preserve the original harmful intention...")
                     
                     judging_progress = st.progress(0.0)
@@ -1355,7 +1363,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         df_stage1 = pd.DataFrame(stage1_results)
                         st.dataframe(
                             df_stage1,
-                            use_container_width=True,
+                            width='stretch',
                             hide_index=True,
                             column_config={
                                 "rank": st.column_config.NumberColumn("Rank", width="small"),
@@ -1393,36 +1401,40 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 status_icon = "⚠️"
                                 status_text = "UNCLEAR - Unable to determine"
                             
-                            with st.expander(f"{status_icon} Mutation #{idx} - {strategy} (ROUGE-L: {rouge_score:.4f})", expanded=False):
-                                st.markdown("**Mutated Prompt:**")
-                                st.code(mutated_text, language="markdown")
-                                
-                                st.markdown("---")
-                                st.markdown("**Primary Intention Assessment:**")
-                                
-                                if assessment.primary.error:
-                                    st.error(f"Error: {assessment.primary.error}")
-                                else:
-                                    if assessment.core_intention:
-                                        st.markdown("*Core Intention Extracted:*")
-                                        st.info(assessment.core_intention)
-                                    
-                                    if assessment.restated_mutated_text:
-                                        st.markdown("*Restated Mutated Text:*")
-                                        st.write(assessment.restated_mutated_text)
-                                
-                                st.markdown("---")
-                                st.markdown("**Secondary Validation:**")
-                                
-                                if assessment.secondary.error:
-                                    st.error(f"Error: {assessment.secondary.error}")
-                                else:
-                                    if assessment.judge_passed is True:
-                                        st.success(f"{status_icon} {status_text}")
-                                    elif assessment.judge_passed is False:
-                                        st.error(f"{status_icon} {status_text}")
-                                    else:
-                                        st.warning(f"{status_icon} {status_text}")
+                            # Build sections for collapsible panel
+                            sections = []
+                            
+                            # Mutated Prompt section
+                            sections.append(("📝 Mutated Prompt", mutated_text, None))
+                            
+                            # Primary Intention Assessment section
+                            if assessment.primary.error:
+                                primary_content = f"Error: {assessment.primary.error}"
+                            else:
+                                primary_parts = []
+                                if assessment.core_intention:
+                                    primary_parts.append(f"Core Intention Extracted:\n{assessment.core_intention}")
+                                if assessment.restated_mutated_text:
+                                    primary_parts.append(f"Restated Mutated Text:\n{assessment.restated_mutated_text}")
+                                primary_content = "\n\n".join(primary_parts) if primary_parts else "No assessment data available"
+                            
+                            sections.append(("🧠 Primary Intention Assessment", primary_content, None))
+                            
+                            # Secondary Validation section
+                            if assessment.secondary.error:
+                                secondary_content = f"Error: {assessment.secondary.error}"
+                            else:
+                                secondary_content = f"{status_icon} {status_text}"
+                            
+                            sections.append(("⚖️ Secondary Validation", secondary_content, None))
+                            
+                            # Render using custom collapsible panel
+                            render_collapsible_panel(
+                                title=f"Mutation #{idx} - {strategy}",
+                                sections=sections,
+                                meta=f"{status_icon} ROUGE-L: {rouge_score:.4f}",
+                                expanded=False,
+                            )
                         
                         # CSV Export
                         csv_stage1 = df_stage1.to_csv(index=False)
@@ -1431,7 +1443,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                             data=csv_stage1,
                             file_name="stage1_zero_shot_results.csv",
                             mime="text/csv",
-                            use_container_width=True,
+                            width='stretch',
                         )
     
     st.divider()
@@ -1512,20 +1524,25 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         for ex_idx, example in enumerate(few_shot_examples, 1):
                             st.markdown(f"**{ex_idx}.** {textwrap.shorten(example, width=120, placeholder='…')}")
                     
-                    with st.spinner(f"Generating few-shot mutations for prompt {prompt_idx}..."):
-                        evaluations = mutate_strategies(
-                            api_key,
-                            model_choice,
-                            provider,
-                            few_shot_strategies,
-                            original_prompt,
-                            reference_text=zero_shot_reference.strip() or None,
-                            few_shot_examples=few_shot_examples,  # Pass top 5 examples
-                            attempts_per_strategy=few_shot_attempts,
-                            temperature=1.0,  # Higher temperature for diverse mutation generation
-                            top_p=1.0,
-                            dry_run=False,
-                        )
+                    st.markdown(f"**Generating {len(few_shot_strategies)} strategy(ies) × {few_shot_attempts} attempt(s)...**")
+                    stage2_progress = st.progress(0.0)
+                    
+                    evaluations = mutate_strategies(
+                        api_key,
+                        model_choice,
+                        provider,
+                        few_shot_strategies,
+                        original_prompt,
+                        reference_text=zero_shot_reference.strip() or None,
+                        few_shot_examples=few_shot_examples,  # Pass top 5 examples
+                        attempts_per_strategy=few_shot_attempts,
+                        temperature=1.0,  # Higher temperature for diverse mutation generation
+                        top_p=1.0,
+                        dry_run=False,
+                    )
+                    
+                    stage2_progress.progress(1.0)
+                    stage2_progress.empty()
                     
                     if not evaluations:
                         st.error(f"❌ No few-shot mutations for prompt {prompt_idx}.")
@@ -1572,7 +1589,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                 if stage2_results:
                     df_stage2 = pd.DataFrame(stage2_results)
                     st.markdown("**Stage 2 Summary**")
-                    st.dataframe(df_stage2, use_container_width=True)
+                    st.dataframe(df_stage2, width='stretch')
                     
                     # Download CSV
                     csv_stage2 = df_stage2.to_csv(index=False)
