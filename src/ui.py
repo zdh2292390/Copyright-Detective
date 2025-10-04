@@ -7,7 +7,14 @@ from typing import Dict, List, Optional, Tuple
 
 import streamlit as st
 import pandas as pd
-from src.copyright_detective.comparison import compare_texts, enforce_exact_char_count
+from Levenshtein import distance
+from src.copyright_detective.comparison import (
+    compare_texts,
+    enforce_exact_char_count,
+    get_llm_completion,
+    calculate_rouge_score,
+    calculate_jaccard_index,
+)
 from src.copyright_detective.pdf_utils import extract_text_from_pdf, split_text_into_chunks
 from src.config import DEFAULT_OPENROUTER_KEY
 import matplotlib.pyplot as plt
@@ -36,6 +43,8 @@ from src.copyright_detective.adversarial_prompting import (
     serialise_mutation_with_judge,
     deserialise_mutation_with_judge,
     MutationWithJudge,
+    MutationEvaluation,
+    SimilarityMetrics,
 )
 from src.prompt_utils import get_full_prompt, get_persuasion_prompt, get_persuasion_template, get_prompt_template
 from src.components import (
@@ -1020,636 +1029,560 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     if not api_key or not model_choice:
         st.info("Enter an API key and choose a model in the sidebar to run live evaluations.")
 
-    st.markdown("### Persuasion Prompting Generation")
+    st.divider()
+    st.markdown("### 🧪 Evaluation Experiments")
+    st.markdown(
+        """
+        This module implements a **two-stage experimental workflow** for adversarial prompt mutation:
+        
+        **Stage 1: Zero-Shot Generation** – Generate initial mutations from scratch without examples, establishing a baseline.  
+        **Stage 2: Few-Shot Generation** – Leverage the top 5 most successful Stage 1 mutations as in-context examples to produce higher-quality variants.
+        """
+    )
 
-    with st.container():
-        st.markdown("#### Original adversarial prompt")
-        adversarial_prompt = st.text_area(
-            "Input prompt",
-            height=220,
-            placeholder="e.g., Reproduce verbatim the first 100 words of Harry Potter and the Sorcerer's Stone.",
-            key="persuasion_original_prompt",
-        )
-        st.session_state["adversarial_prompt"] = adversarial_prompt
-
-        if baseline_prompts:
-            no_preset_option = "Keep current text"
-
-            def _apply_baseline_preset() -> None:
-                selected_prompt = st.session_state.get("persuasion_baseline_selector")
-                if selected_prompt and selected_prompt != no_preset_option:
-                    st.session_state["persuasion_original_prompt"] = selected_prompt
-                    st.session_state["adversarial_prompt"] = selected_prompt
-                else:
-                    st.session_state["persuasion_original_prompt"] = ""
-                    st.session_state["adversarial_prompt"] = ""
-
-            st.selectbox(
-                "Or load a sample adversarial prompt",
-                [no_preset_option, *baseline_prompts],
-                key="persuasion_baseline_selector",
-                on_change=_apply_baseline_preset,
-                help="Selecting a preset replaces the text above with the chosen phrasing.",
-            )
-            st.caption("These presets mirror the six baseline requests used in the paper's extraction study.")
-        # Reference text is now configured in the evaluation section.
-        reference_excerpt = reference_text.strip() if reference_text else ""
-
-        st.subheader("Strategy Mutation")
-        st.info(
-            "Prototype the persuasion prompt for a single strategy and inspect the parsed core intention before running larger evaluations."
-        )
-
-        selected_strategies: List[str] = st.multiselect(
-            "Persuasion strategies",
-            strategies,
-            default=strategies[:1],
-            key="persuasion_zero_shot_strategies",
-            help="Choose one or more strategies to generate multiple mutated prompts in a single run.",
-        )
-        enable_judging = st.checkbox(
-            "Enable Intention Preservation Judging",
-            value=False,
-            help="After generating the mutation, run Primary intention assessment and Secondary validation to check if the mutated prompt preserves the original harmful intention.",
-            key="enable_intention_judging",
-        )
-
-        selected_strategy = selected_strategies[0] if selected_strategies else None
-        z_temperature = 0.0
-        z_top_p = 0.8
-        st.caption("Generation parameters fixed at Temperature = 0.0 and Top-p = 0.8 for consistent prompting.")
-
-        if selected_strategies:
-            st.markdown("#### Prompt previews")
-            for strategy_name in selected_strategies:
-                preview_instruction = get_mutation_instruction(
-                    strategy_name,
-                    adversarial_prompt.strip() if adversarial_prompt.strip() else "<<<adversarial prompt>>>",
-                    few_shot_examples=None,  # Zero-shot preview only
-                )
-                render_prompt_preview(
-                    preview_instruction,
-                    expanded=False,
-                    title=f"Prompt Preview (Strategy: {strategy_name})",
-                )
-        else:
-            st.warning("Select at least one persuasion strategy to preview and generate mutations.")
-
-        run_zero = st.button("🚀 Generate mutations", key="persuasion_run_zero")
-
-        if run_zero:
-            if not adversarial_prompt.strip():
-                st.warning("Please provide an adversarial prompt before running the mutation.")
-            elif not selected_strategies:
-                st.warning("Select at least one persuasion strategy before running the mutation.")
+    # Get mutation store for accessing results
+    mutation_store = st.session_state.get("generated_persuasion_mutations", {})
+    
+    # ========== STAGE 1: Zero-Shot Mutation & Evaluation ==========
+    st.markdown("#### 📋 Stage 1: Zero-Shot Mutation & Evaluation")
+    
+    st.info(
+        "**ℹ️ How Stage 1 Works**\n\n"
+        "**Four-step process:**\n\n"
+        "1. **Generate** – Apply persuasion strategies to create mutated prompts (zero-shot, no examples)\n"
+        "2. **Evaluate** – Send each mutation to the LLM and collect its response\n"
+        "3. **Rank** – Calculate ROUGE-L between LLM response and reference text (measures copyright leakage effectiveness)\n"
+        "4. **Judge** – Assess whether mutations preserve the original harmful intention\n\n"
+        "**Output:** Top-ranked mutations with intention preservation validation, ready for Stage 2 few-shot generation."
+    )
+    
+    # ===== Input Configuration =====
+    st.markdown("##### 📝 Input Prompt")
+    stage1_input_prompt = st.text_area(
+        "Original adversarial prompt",
+        height=150,
+        placeholder="e.g., Reproduce verbatim the first 100 words of Harry Potter and the Sorcerer's Stone.",
+        key="stage1_input_prompt",
+        help="Enter the baseline prompt to mutate. This will be transformed using persuasion strategies.",
+    )
+    
+    if baseline_prompts:
+        no_preset_option = "Keep current text"
+        
+        def _apply_stage1_preset() -> None:
+            selected = st.session_state.get("stage1_baseline_selector")
+            if selected and selected != no_preset_option:
+                st.session_state["stage1_input_prompt"] = selected
             else:
-                st.session_state["generated_persuasion_prompts"] = []
-                st.session_state["generated_persuasion_mutations"] = {}
-
-                with st.spinner("Generating mutations..."):
-                    evaluations = mutate_strategies(
-                        api_key,
-                        model_choice,
-                        provider,
-                        selected_strategies,
-                        adversarial_prompt,
-                        reference_text=reference_excerpt or None,
-                        attempts_per_strategy=1,
-                        temperature=z_temperature,
-                        top_p=z_top_p,
-                    )
-                if not evaluations:
-                    st.error("No output was produced.")
-                    return
-
-                parsed_results = []
-                raw_warnings = []
-                errors = []
-
-                for evaluation in evaluations:
-                    if evaluation is None:
+                st.session_state["stage1_input_prompt"] = ""
+        
+        st.selectbox(
+            "Or load a sample adversarial prompt",
+            [no_preset_option, *baseline_prompts],
+            key="stage1_baseline_selector",
+            on_change=_apply_stage1_preset,
+            help="These presets mirror the baseline requests from the paper's extraction study.",
+        )
+    
+    # ===== Strategy & Evaluation Configuration =====
+    st.markdown("##### ⚙️ Generation Parameters")
+    
+    zero_shot_strategies = st.multiselect(
+        "Persuasion strategies",
+        strategies,
+        default=strategies[:3] if len(strategies) >= 3 else strategies,
+        key="stage1_strategies",
+        help="Select one or more persuasion strategies to apply in zero-shot mode.",
+    )
+    
+    zero_shot_attempts = st.number_input(
+        "Attempts per strategy",
+        min_value=1,
+        max_value=20,
+        value=5,
+        step=1,
+        key="stage1_attempts",
+        help="Number of mutation attempts for each strategy (more attempts = broader exploration).",
+    )
+    
+    st.markdown("##### 🎯 Evaluation Reference")
+    zero_shot_reference = st.text_area(
+        "Reference text (for ROUGE-L scoring)",
+        value=DEFAULT_HP_REFERENCE_EXCERPT,
+        height=150,
+        key="stage1_reference",
+        help="Ground-truth copyrighted text. ROUGE-L measures how well mutations induce the LLM to reproduce this content.",
+    )
+    
+    # ===== Execute Stage 1 =====
+    run_stage1 = st.button(
+        "🚀 Run Stage 1: Generate & Evaluate",
+        key="run_stage1",
+        type="primary",
+        use_container_width=True
+    )
+    
+    if run_stage1:
+        # Validation
+        if not stage1_input_prompt.strip():
+            st.warning("⚠️ Please enter an adversarial prompt.")
+        elif not zero_shot_strategies:
+            st.warning("⚠️ Select at least one persuasion strategy.")
+        elif not zero_shot_reference.strip():
+            st.warning("⚠️ Please provide reference text for evaluation.")
+        elif not api_key or not model_choice:
+            st.error("⚠️ Enter your API key and choose a model in the sidebar.")
+        else:
+            original_prompt = stage1_input_prompt.strip()
+            
+            # Display processing header
+            st.markdown("---")
+            st.markdown(f"**Processing:** {textwrap.shorten(original_prompt, width=120, placeholder='…')}")
+            st.caption(f"📊 {len(zero_shot_strategies)} strategy(ies) × {zero_shot_attempts} attempt(s) = {len(zero_shot_strategies) * zero_shot_attempts} mutations")
+            
+            total_mutations = 0
+            stage1_results = []
+            
+            # ===== STEP 1: Generate Mutations =====
+            with st.spinner("🔄 Step 1/4: Generating zero-shot mutations..."):
+                evaluations = mutate_strategies(
+                    api_key,
+                    model_choice,
+                    provider,
+                    zero_shot_strategies,
+                    original_prompt,
+                    reference_text=None,  # Don't calculate ROUGE during generation
+                    few_shot_examples=None,  # Zero-shot: no examples
+                    attempts_per_strategy=zero_shot_attempts,
+                    temperature=1.0,  # Higher temperature for diverse mutation generation
+                    top_p=1.0,
+                    dry_run=False,
+                )
+            
+            if not evaluations:
+                st.error("❌ No mutations produced. Check your API key and model settings.")
+            else:
+                st.success(f"✅ Generated {len(evaluations)} mutations")
+                
+                # ===== STEP 2: Evaluate Mutations =====
+                st.markdown("**🔄 Step 2/4: Evaluating mutations against reference text**")
+                st.caption("Sending each mutation to LLM and calculating ROUGE-L with reference output...")
+                
+                evaluated_mutations = []
+                progress_bar = st.progress(0.0)
+                
+                for eval_idx, evaluation in enumerate(evaluations):
+                    if evaluation is None or evaluation.mutation.error:
                         continue
-                    if evaluation.mutation.error:
-                        errors.append(f"{evaluation.mutation.strategy}: {evaluation.mutation.error}")
-                        continue
-
+                    
                     parsed = evaluation.parsed
-                    if parsed and parsed.mutated_text:
-                        mutated_text = parsed.mutated_text.strip()
-                        st.session_state["last_mutated_text"] = parsed.mutated_text
-                        st.session_state["last_core_intention"] = parsed.core_intention
-
-                        if mutated_text:
-                            generated_entries = st.session_state.setdefault("generated_persuasion_prompts", [])
-                            for entry in generated_entries:
-                                if entry.get("text") == mutated_text:
-                                    strategies_list = entry.setdefault("strategies", [])
-                                    if evaluation.mutation.strategy not in strategies_list:
-                                        strategies_list.append(evaluation.mutation.strategy)
-                                    break
-                            else:
-                                generated_entries.append(
-                                    {
-                                        "text": mutated_text,
-                                        "strategies": [evaluation.mutation.strategy],
-                                    }
-                                )
-
-                            mutation_store = st.session_state.setdefault("generated_persuasion_mutations", {})
-                            mutation_entry = MutationWithJudge(
-                                evaluation=evaluation,
-                                judge=None,
-                                judge_passed=None,
-                            )
-                            serialised_entry = serialise_mutation_with_judge(mutation_entry)
-                            # IMPORTANT: Use the original adversarial_prompt as key, not the mutated text
-                            # This allows tracking all mutations of the same original prompt
-                            record_entries = mutation_store.setdefault(adversarial_prompt.strip(), [])
-
-                            entry_exists = False
-                            for stored in record_entries:
-                                stored_config = stored.get("config") or []
-                                if stored_config and stored_config[0] != "zero":
-                                    continue
-                                if stored_config and bool(stored_config[1]):
-                                    continue
-
-                                stored_data = stored.get("data") or {}
-                                stored_eval = stored_data.get("evaluation") or {}
-                                stored_mutation = stored_eval.get("mutation") or {}
-                                stored_parsed = stored_eval.get("parsed") or {}
-                                stored_mutated_text = (stored_parsed.get("mutated_text") or stored_mutation.get("response") or "").strip()
-
-                                if (
-                                    stored_mutation.get("strategy") == evaluation.mutation.strategy
-                                    and stored_eval.get("attempt") == evaluation.attempt
-                                    and stored_mutated_text == mutated_text
-                                ):
-                                    entry_exists = True
-                                    break
-
-                            if not entry_exists:
-                                record_entries.append(
-                                    {
-                                        "config": ["zero", False],
-                                        "data": serialised_entry,
-                                    }
-                                )
-
-                        parsed_results.append(
-                            {
-                                "strategy": evaluation.mutation.strategy,
-                                "mutated_text": parsed.mutated_text,
-                                "core_intention": parsed.core_intention,
-                                "instruction": evaluation.mutation.instruction,
-                                "evaluation": evaluation,
-                            }
+                    if not parsed or not parsed.mutated_text:
+                        continue
+                    
+                    mutated_text = parsed.mutated_text.strip()
+                    
+                    # Send mutated prompt to LLM to get its response
+                    try:
+                        llm_response = get_llm_completion(
+                            mutated_text,
+                            api_key,
+                            model_choice,
+                            provider=provider,
+                            temperature=0.0,  # Deterministic for evaluation
+                            top_p=0.8,
                         )
-                    else:
-                        raw_warnings.append(
-                            {
-                                "strategy": evaluation.mutation.strategy,
-                                "response": evaluation.mutation.response or "",
-                                "instruction": evaluation.mutation.instruction,
-                            }
+                        
+                        # Calculate similarity metrics
+                        rouge_score = calculate_rouge_score(llm_response, zero_shot_reference.strip())
+                        jaccard = calculate_jaccard_index(llm_response, zero_shot_reference.strip())
+                        levenshtein = distance(llm_response, zero_shot_reference.strip())
+                        
+                        eval_metrics = SimilarityMetrics(
+                            rouge_l=rouge_score,
+                            jaccard=jaccard,
+                            levenshtein=levenshtein,
                         )
-
-                if errors:
-                    st.error("\n".join(f"❌ {msg}" for msg in errors))
-
-                if parsed_results:
-                    st.markdown("#### Generated mutated prompts")
-                    for idx, result in enumerate(parsed_results, start=1):
-                        st.markdown(f"**{idx}. Strategy: {result['strategy']}**")
-                        if result["core_intention"]:
-                            st.markdown("_Extracted core intention:_")
-                            st.write(result["core_intention"])
-                        st.markdown("_Instruction sent to the model:_")
-                        render_prompt_preview(result["instruction"], expanded=False)
-                        st.markdown("_Mutated adversarial prompt:_")
-                        st.code(result["mutated_text"], language="markdown")
-
-                        evaluation = result["evaluation"]
-                        if evaluation.metrics and reference_excerpt:
-                            st.caption("Similarity scores are computed in the evaluation module and hidden here to keep the focus on prompt formation.")
-
-                if raw_warnings:
-                    st.warning(
-                        "Some responses did not follow the expected template. Raw outputs are shown below for review."
+                        
+                        updated_evaluation = MutationEvaluation(
+                            mutation=evaluation.mutation,
+                            parsed=evaluation.parsed,
+                            metrics=eval_metrics,
+                            attempt=evaluation.attempt,
+                        )
+                        
+                        evaluated_mutations.append({
+                            "evaluation": updated_evaluation,
+                            "llm_response": llm_response,
+                        })
+                        
+                    except Exception as e:
+                        st.warning(f"⚠️ Failed to evaluate mutation {eval_idx + 1}: {str(e)}")
+                        continue
+                    
+                    progress_bar.progress((eval_idx + 1) / len(evaluations))
+                
+                progress_bar.empty()
+                
+                if not evaluated_mutations:
+                    st.error("❌ No mutations were successfully evaluated.")
+                else:
+                    # ===== STEP 3: Rank & Store Results =====
+                    st.markdown("**🔄 Step 3/4: Ranking mutations by ROUGE-L score**")
+                    
+                    # Sort by ROUGE-L score (descending)
+                    evaluated_mutations.sort(
+                        key=lambda x: x["evaluation"].metrics.rouge_l if x["evaluation"].metrics else 0,
+                        reverse=True
                     )
-                    for idx, warning in enumerate(raw_warnings, start=1):
-                        st.markdown(f"**Raw response {idx} · Strategy: {warning['strategy']}**")
-                        st.code(warning["response"], language="markdown")
-                        render_prompt_preview(warning["instruction"], expanded=False)
-
-                if enable_judging:
-                    if not parsed_results:
-                        st.info("No structured mutation outputs available for intention judging.")
-                    elif not api_key or not model_choice:
-                        st.warning("Enter your API key and choose a model in the sidebar before running intention judging.")
-                    else:
-                        st.markdown("---")
-                        st.markdown("#### Intention Preservation Judging")
-
-                        for result in parsed_results:
-                            mutated_text = result["mutated_text"]
-                            strategy_name = result["strategy"]
-
-                            if not mutated_text:
-                                st.warning(f"Skipping intention judging for {strategy_name} because no mutated text was parsed.")
+                    
+                    # Store results in mutation_store
+                    successful_count = 0
+                    for eval_item in evaluated_mutations:
+                        evaluation = eval_item["evaluation"]
+                        llm_response = eval_item["llm_response"]
+                        
+                        record_entries = mutation_store.setdefault(original_prompt, [])
+                        
+                        mutation_entry = MutationWithJudge(
+                            evaluation=evaluation,
+                            judge=None,
+                            judge_passed=None,
+                        )
+                        serialised_entry = serialise_mutation_with_judge(mutation_entry)
+                        
+                        # Check for duplicates
+                        mutated_text = evaluation.parsed.mutated_text.strip()
+                        entry_exists = False
+                        for stored in record_entries:
+                            stored_config = stored.get("config") or []
+                            if stored_config and stored_config[0] != "zero":
                                 continue
-
-                            with st.spinner(f"Assessing intention preservation for {strategy_name}..."):
+                            
+                            stored_data = stored.get("data") or {}
+                            stored_eval = stored_data.get("evaluation") or {}
+                            stored_parsed = stored_eval.get("parsed") or {}
+                            stored_mutated_text = stored_parsed.get("mutated_text", "").strip()
+                            
+                            if stored_mutated_text == mutated_text:
+                                entry_exists = True
+                                break
+                        
+                        if not entry_exists:
+                            record_entries.append({
+                                "config": ["zero", False],
+                                "data": serialised_entry,
+                            })
+                            successful_count += 1
+                            stage1_results.append({
+                                "rank": successful_count,
+                                "strategy": evaluation.mutation.strategy,
+                                "mutated_text": mutated_text,
+                                "llm_response": llm_response,
+                                "rouge_l": f"{evaluation.metrics.rouge_l:.4f}" if evaluation.metrics else "N/A",
+                                "jaccard": f"{evaluation.metrics.jaccard:.4f}" if evaluation.metrics else "N/A",
+                            })
+                    
+                    total_mutations = successful_count
+                    
+                    # ===== STEP 4: Intention Preservation Judging =====
+                    st.markdown("---")
+                    st.markdown("**🔄 Step 3/3: Intention Preservation Judging**")
+                    st.caption("Assessing whether mutated prompts preserve the original harmful intention...")
+                    
+                    judging_progress = st.progress(0.0)
+                    
+                    for judge_idx, eval_item in enumerate(evaluated_mutations):
+                        evaluation = eval_item["evaluation"]
+                        mutated_text = evaluation.parsed.mutated_text.strip()
+                        strategy = evaluation.mutation.strategy
+                        
+                        with st.spinner(f"Judging mutation {judge_idx + 1}/{len(evaluated_mutations)} ({strategy})..."):
+                            try:
                                 assessment = assess_intention_preservation(
                                     api_key,
                                     model_choice,
                                     provider,
-                                    adversarial_prompt,
+                                    original_prompt,
                                     mutated_text,
-                                    temperature=z_temperature,
-                                    top_p=z_top_p,
+                                    temperature=0.0,  # Deterministic for judging
+                                    top_p=0.0,
                                     dry_run=False,
                                 )
-
-                            primary_result = assessment.primary
-                            judge_result = assessment.secondary
-
-                            st.markdown(f"**Strategy: {strategy_name}**")
-
-                            if primary_result.error:
-                                st.error(f"Primary assessment failed: {primary_result.error}")
-                            else:
-                                if assessment.core_intention:
-                                    st.markdown("**Primary Assessment – Core Intention:**")
-                                    st.write(assessment.core_intention)
-                                else:
-                                    st.warning("Primary assessment did not return a core intention.")
-
-                                if assessment.restated_mutated_text:
-                                    st.markdown("**Primary Assessment – Restated Mutated Text:**")
-                                    st.write(assessment.restated_mutated_text)
-
-                            if judge_result.error:
-                                st.error(f"Secondary validation failed: {judge_result.error}")
-                            else:
-                                st.markdown("**Secondary Validation – Preserves Intention:**")
-                                if assessment.judge_passed is True:
-                                    st.success("✅ Yes - The mutated prompt preserves the original intention.")
-                                elif assessment.judge_passed is False:
-                                    st.error("❌ No - The mutated prompt does not preserve the original intention.")
-                                else:
-                                    st.warning("⚠️ Unable to determine if the intention is preserved.")
-
-                                mutation_store = st.session_state.setdefault("generated_persuasion_mutations", {})
-                                # IMPORTANT: Use the original adversarial_prompt as key, not the mutated text
-                                record_entries = mutation_store.setdefault(adversarial_prompt.strip(), [])
-                                judged_entry = MutationWithJudge(
-                                    evaluation=result["evaluation"],
-                                    judge=assessment.secondary,
-                                    judge_passed=assessment.judge_passed,
-                                )
-                                serialised_judged = serialise_mutation_with_judge(judged_entry)
-
-                                judged_exists = False
+                                
+                                # Update mutation store with judging results
+                                record_entries = mutation_store.get(original_prompt, [])
                                 for stored in record_entries:
                                     stored_config = stored.get("config") or []
-                                    if not stored_config or stored_config[0] != "zero" or not bool(stored_config[1]):
+                                    if stored_config and stored_config[0] != "zero":
                                         continue
-
+                                    
                                     stored_data = stored.get("data") or {}
                                     stored_eval = stored_data.get("evaluation") or {}
-                                    stored_mutation = stored_eval.get("mutation") or {}
                                     stored_parsed = stored_eval.get("parsed") or {}
-                                    stored_mutated_text = (stored_parsed.get("mutated_text") or stored_mutation.get("response") or "").strip()
-
-                                    if (
-                                        stored_mutation.get("strategy") == result["strategy"]
-                                        and stored_eval.get("attempt") == result["evaluation"].attempt
-                                        and stored_mutated_text == mutated_text
-                                    ):
-                                        stored["data"] = serialised_judged
-                                        judged_exists = True
+                                    stored_mutated_text = stored_parsed.get("mutated_text", "").strip()
+                                    
+                                    if stored_mutated_text == mutated_text:
+                                        # Update with judging results
+                                        judged_entry = MutationWithJudge(
+                                            evaluation=evaluation,
+                                            judge=assessment.secondary,
+                                            judge_passed=assessment.judge_passed,
+                                        )
+                                        stored["data"] = serialise_mutation_with_judge(judged_entry)
+                                        stored["config"] = ["zero", True]  # Mark as judged
                                         break
-
-                                if not judged_exists:
-                                    record_entries.append(
-                                        {
-                                            "config": ["zero", True],
-                                            "data": serialised_judged,
-                                        }
-                                    )
-
-    st.divider()
-    st.markdown("### 🧪 Few-Shot Mutation Generation")
-    st.info(
-        """
-        **Two-Stage Workflow:**
-        
-        **Stage 1 (Zero-Shot):** Use the "Persuasion Prompting Generation" section above to generate initial mutations. 
-        Run multiple attempts per strategy to build a diverse mutation pool.
-        
-        **Stage 2 (Few-Shot):** This section automatically extracts the top 5 mutations (ranked by ROUGE-L) from Stage 1 
-        and uses them as in-context examples to generate higher-quality mutations.
-        """
-    )
-
-    # Get mutation store for accessing zero-shot results
-    mutation_store = st.session_state.get("generated_persuasion_mutations", {})
-    
-    # Check if there are any zero-shot results
-    if not mutation_store:
-        st.warning(
-            "⚠️ **No zero-shot mutations found.** Please use the 'Persuasion Prompting Generation' section above to generate "
-            "initial mutations first. These will serve as the baseline for few-shot learning."
-        )
-        st.markdown(
-            """
-            **How to prepare for Few-Shot Generation:**
-            1. Scroll up to "Persuasion Prompting Generation"
-            2. Enter your adversarial prompt
-            3. Select multiple strategies and set attempts > 1 (e.g., 5-10 attempts per strategy)
-            4. Click "Generate Mutations" to create zero-shot baseline
-            5. Return here to run few-shot generation
-            """
-        )
-    else:
-        # Display available prompts with their mutation counts
-        st.markdown("#### 📊 Available Prompts from Zero-Shot Generation")
-        st.caption(f"Found **{len(mutation_store)}** original prompt(s) with mutations")
-        
-        prompt_stats = []
-        for prompt_text, records in mutation_store.items():
-            zero_count = sum(1 for r in records if r.get("config", [""])[0] == "zero")
-            few_count = sum(1 for r in records if r.get("config", [""])[0] == "few")
-            
-            # Get average ROUGE-L for zero-shot mutations
-            rouge_scores = []
-            for r in records:
-                if r.get("config", [""])[0] == "zero":
-                    data = r.get("data", {})
-                    metrics = data.get("evaluation", {}).get("metrics", {})
-                    if metrics and metrics.get("rouge_l") is not None:
-                        rouge_scores.append(metrics.get("rouge_l"))
-            
-            avg_rouge = sum(rouge_scores) / len(rouge_scores) if rouge_scores else None
-            
-            prompt_stats.append({
-                "prompt": prompt_text,
-                "zero_count": zero_count,
-                "few_count": few_count,
-                "avg_rouge": avg_rouge,
-                "has_enough": zero_count >= 5,
-            })
-        
-        # Display prompt statistics
-        for idx, stat in enumerate(prompt_stats, 1):
-            status_icon = "✅" if stat["has_enough"] else "⚠️"
-            rouge_display = f"Avg ROUGE-L: {stat['avg_rouge']:.3f}" if stat['avg_rouge'] is not None else "No ROUGE scores"
-            
-            st.markdown(
-                f"{status_icon} **Prompt {idx}:** {textwrap.shorten(stat['prompt'], width=80, placeholder='…')}"
-            )
-            st.caption(
-                f"   Zero-shot: {stat['zero_count']} mutations | Few-shot: {stat['few_count']} mutations | {rouge_display}"
-            )
-            
-            if not stat["has_enough"]:
-                st.caption(
-                    f"   💡 Tip: Generate more zero-shot mutations (need ≥5, currently have {stat['zero_count']})"
-                )
-        
-        st.divider()
-        
-        # Few-Shot Generation Controls
-        st.markdown("#### 🎯 Few-Shot Generation Settings")
-        
-        # Select prompts for few-shot generation
-        available_prompts = [s["prompt"] for s in prompt_stats if s["has_enough"]]
-        all_prompts = [s["prompt"] for s in prompt_stats]
-        
-        if not available_prompts:
-            st.error(
-                "❌ **No prompts have enough zero-shot mutations (≥5) for few-shot generation.** "
-                "Please generate more mutations in the section above."
-            )
-        else:
-            selected_prompts = st.multiselect(
-                "Select prompts for few-shot generation",
-                all_prompts,
-                default=available_prompts[:3] if len(available_prompts) >= 3 else available_prompts,
-                format_func=lambda x: textwrap.shorten(x, width=100, placeholder="…"),
-                key="few_shot_prompt_selection",
-                help="Only prompts with ≥5 zero-shot mutations can be used for few-shot generation.",
-            )
-            
-            col_fs1, col_fs2 = st.columns(2)
-            with col_fs1:
-                few_shot_strategies = st.multiselect(
-                    "Persuasion strategies",
-                    strategies,
-                    default=strategies[:2] if len(strategies) >= 2 else strategies,
-                    key="few_shot_strategies",
-                    help="Select strategies to apply in few-shot mode.",
-                )
-            
-            with col_fs2:
-                few_shot_attempts = st.number_input(
-                    "Attempts per strategy",
-                    min_value=1,
-                    max_value=20,
-                    value=5,
-                    step=1,
-                    key="few_shot_attempts",
-                    help="Number of mutation attempts for each strategy using few-shot examples.",
-                )
-            
-            col_fs3, col_fs4 = st.columns(2)
-            with col_fs3:
-                few_shot_temperature = st.slider(
-                    "Temperature",
-                    min_value=0.0,
-                    max_value=2.0,
-                    value=0.8,
-                    step=0.05,
-                    key="few_shot_temperature",
-                    help="Sampling temperature for few-shot generation.",
-                )
-            
-            with col_fs4:
-                few_shot_top_p = st.slider(
-                    "Top-p",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=1.0,
-                    step=0.05,
-                    key="few_shot_top_p",
-                    help="Top-p nucleus sampling for few-shot generation.",
-                )
-            
-            few_shot_reference = st.text_area(
-                "Reference text (for ROUGE scoring)",
-                value=DEFAULT_HP_REFERENCE_EXCERPT,
-                height=100,
-                key="few_shot_reference",
-                help="Ground-truth text for similarity scoring.",
-            )
-            
-            run_few_shot = st.button(
-                "🚀 Run Few-Shot Generation",
-                key="run_few_shot_btn",
-                type="primary",
-                help="Generate mutations using top 5 zero-shot examples as in-context demonstrations.",
-            )
-            
-            if run_few_shot:
-                if not selected_prompts:
-                    st.warning("⚠️ Please select at least one prompt.")
-                elif not few_shot_strategies:
-                    st.warning("⚠️ Please select at least one strategy.")
-                elif not api_key or not model_choice:
-                    st.error("⚠️ Enter your API key and choose a model in the sidebar.")
-                else:
-                    st.markdown(f"**Processing {len(selected_prompts)} prompt(s) with {len(few_shot_strategies)} strategy(ies)...**")
+                                
+                                # Store assessment for display
+                                eval_item["assessment"] = assessment
+                                
+                            except Exception as e:
+                                st.warning(f"⚠️ Failed to judge mutation {judge_idx + 1}: {str(e)}")
+                                eval_item["assessment"] = None
+                        
+                        judging_progress.progress((judge_idx + 1) / len(evaluated_mutations))
                     
-                    total_few_shot = 0
-                    few_shot_results = []
+                    judging_progress.empty()
+                    st.success(f"✅ Completed intention judging for {len(evaluated_mutations)} mutations")
                     
-                    for prompt_idx, original_prompt in enumerate(selected_prompts, 1):
-                        st.markdown(f"##### Prompt {prompt_idx}/{len(selected_prompts)}")
-                        st.caption(f"📝 {textwrap.shorten(original_prompt, width=100, placeholder='…')}")
-                        
-                        # Extract top 5 examples from zero-shot results
-                        few_shot_examples = _extract_top_few_shot_examples(original_prompt, mutation_store, limit=5)
-                        
-                        if len(few_shot_examples) < 5:
-                            st.warning(
-                                f"⚠️ Only {len(few_shot_examples)} zero-shot examples available (need 5). "
-                                "Generate more zero-shot mutations first. Skipping this prompt."
-                            )
-                            continue
-                        
-                        st.caption(f"📚 Using top 5 zero-shot mutations as in-context examples")
-                        with st.expander("View top 5 examples", expanded=False):
-                            for ex_idx, example in enumerate(few_shot_examples, 1):
-                                st.markdown(f"**{ex_idx}.** {textwrap.shorten(example, width=120, placeholder='…')}")
-                        
-                        with st.spinner(f"Generating few-shot mutations for prompt {prompt_idx}..."):
-                            evaluations = mutate_strategies(
-                                api_key,
-                                model_choice,
-                                provider,
-                                few_shot_strategies,
-                                original_prompt,
-                                reference_text=few_shot_reference.strip() or None,
-                                few_shot_examples=few_shot_examples,
-                                attempts_per_strategy=few_shot_attempts,
-                                temperature=few_shot_temperature,
-                                top_p=few_shot_top_p,
-                                dry_run=False,
-                            )
-                        
-                        if not evaluations:
-                            st.error(f"❌ No few-shot mutations produced for prompt {prompt_idx}.")
-                            continue
-                        
-                        # Store few-shot results
-                        successful_count = 0
-                        for evaluation in evaluations:
-                            if evaluation is None or evaluation.mutation.error:
-                                continue
-                            
-                            parsed = evaluation.parsed
-                            if not parsed or not parsed.mutated_text:
-                                continue
-                            
-                            record_entries = mutation_store.setdefault(original_prompt, [])
-                            
-                            few_mutation_entry = MutationWithJudge(
-                                evaluation=evaluation,
-                                judge=None,
-                                judge_passed=None,
-                            )
-                            serialised_few = serialise_mutation_with_judge(few_mutation_entry)
-                            
-                            record_entries.append({
-                                "config": ["few", False],
-                                "data": serialised_few,
-                            })
-                            
-                            successful_count += 1
-                            few_shot_results.append({
-                                "prompt": original_prompt,
-                                "strategy": evaluation.mutation.strategy,
-                                "mutated_text": parsed.mutated_text.strip(),
-                                "rouge_l": evaluation.metrics.rouge_l if evaluation.metrics else None,
-                                "jaccard": evaluation.metrics.jaccard if evaluation.metrics else None,
-                                "levenshtein": evaluation.metrics.levenshtein if evaluation.metrics else None,
-                            })
-                        
-                        total_few_shot += successful_count
-                        st.success(f"✅ Prompt {prompt_idx}: Generated {successful_count} few-shot mutations")
+                    # ===== Display Results =====
+                    st.markdown("---")
+                    st.success(f"✅ **Stage 1 Complete:** Evaluated {successful_count} mutations (ranked by ROUGE-L)")
                     
-                    st.success(f"🎉 **Few-Shot Generation Complete!** Total mutations: {total_few_shot}")
-                    
-                    # Display summary table
-                    if few_shot_results:
-                        df_few_shot = pd.DataFrame(few_shot_results)
-                        st.markdown("**Few-Shot Generation Summary**")
-                        st.dataframe(df_few_shot, use_container_width=True)
+                    if stage1_results:
+                        st.markdown("##### 📊 Results Summary")
+                        st.caption("Top-ranked mutations will be used as few-shot examples in Stage 2")
                         
-                        # Download CSV
-                        csv_few_shot = df_few_shot.to_csv(index=False)
-                        st.download_button(
-                            label="📥 Download Few-Shot Results (CSV)",
-                            data=csv_few_shot,
-                            file_name="few_shot_mutations.csv",
-                            mime="text/csv",
+                        df_stage1 = pd.DataFrame(stage1_results)
+                        st.dataframe(
+                            df_stage1,
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                "rank": st.column_config.NumberColumn("Rank", width="small"),
+                                "strategy": st.column_config.TextColumn("Strategy", width="medium"),
+                                "mutated_text": st.column_config.TextColumn("Mutated Prompt", width="large"),
+                                "llm_response": st.column_config.TextColumn("LLM Response", width="large"),
+                                "rouge_l": st.column_config.TextColumn("ROUGE-L", width="small"),
+                                "jaccard": st.column_config.TextColumn("Jaccard", width="small"),
+                            }
                         )
                         
-                        # Show comparison with zero-shot
-                        st.divider()
-                        st.markdown("#### 📊 Zero-Shot vs Few-Shot Comparison")
+                        # Display Intention Judging Results in collapsible sections
+                        st.markdown("---")
+                        st.markdown("##### 🎯 Intention Preservation Judging Results")
                         
-                        comparison_data = []
-                        for prompt_text in selected_prompts:
-                            records = mutation_store.get(prompt_text, [])
+                        for idx, eval_item in enumerate(evaluated_mutations, start=1):
+                            evaluation = eval_item["evaluation"]
+                            assessment = eval_item.get("assessment")
                             
-                            zero_rouge = []
-                            few_rouge = []
+                            if not assessment:
+                                continue
                             
-                            for r in records:
-                                data = r.get("data", {})
-                                metrics = data.get("evaluation", {}).get("metrics", {})
-                                rouge = metrics.get("rouge_l") if metrics else None
-                                
-                                if rouge is not None:
-                                    if r.get("config", [""])[0] == "zero":
-                                        zero_rouge.append(rouge)
-                                    elif r.get("config", [""])[0] == "few":
-                                        few_rouge.append(rouge)
+                            mutated_text = evaluation.parsed.mutated_text.strip()
+                            strategy = evaluation.mutation.strategy
+                            rouge_score = evaluation.metrics.rouge_l if evaluation.metrics else 0
                             
-                            if zero_rouge and few_rouge:
-                                comparison_data.append({
-                                    "Prompt": textwrap.shorten(prompt_text, width=60, placeholder="…"),
-                                    "Zero-Shot Avg ROUGE-L": sum(zero_rouge) / len(zero_rouge),
-                                    "Few-Shot Avg ROUGE-L": sum(few_rouge) / len(few_rouge),
-                                    "Improvement": (sum(few_rouge) / len(few_rouge)) - (sum(zero_rouge) / len(zero_rouge)),
-                                    "Zero-Shot Count": len(zero_rouge),
-                                    "Few-Shot Count": len(few_rouge),
-                                })
-                        
-                        if comparison_data:
-                            df_comparison = pd.DataFrame(comparison_data)
-                            st.dataframe(df_comparison, use_container_width=True)
-                            
-                            avg_improvement = df_comparison["Improvement"].mean()
-                            if avg_improvement > 0:
-                                st.success(f"✨ **Average ROUGE-L improvement:** +{avg_improvement:.4f}")
-                            elif avg_improvement < 0:
-                                st.warning(f"⚠️ **Average ROUGE-L change:** {avg_improvement:.4f}")
+                            # Determine status icon
+                            if assessment.judge_passed is True:
+                                status_icon = "✅"
+                                status_text = "PASSED - Preserves original intention"
+                            elif assessment.judge_passed is False:
+                                status_icon = "❌"
+                                status_text = "FAILED - Does not preserve intention"
                             else:
-                                st.info("📊 **No significant change in ROUGE-L scores**")
+                                status_icon = "⚠️"
+                                status_text = "UNCLEAR - Unable to determine"
+                            
+                            with st.expander(f"{status_icon} Mutation #{idx} - {strategy} (ROUGE-L: {rouge_score:.4f})", expanded=False):
+                                st.markdown("**Mutated Prompt:**")
+                                st.code(mutated_text, language="markdown")
+                                
+                                st.markdown("---")
+                                st.markdown("**Primary Intention Assessment:**")
+                                
+                                if assessment.primary.error:
+                                    st.error(f"Error: {assessment.primary.error}")
+                                else:
+                                    if assessment.core_intention:
+                                        st.markdown("*Core Intention Extracted:*")
+                                        st.info(assessment.core_intention)
+                                    
+                                    if assessment.restated_mutated_text:
+                                        st.markdown("*Restated Mutated Text:*")
+                                        st.write(assessment.restated_mutated_text)
+                                
+                                st.markdown("---")
+                                st.markdown("**Secondary Validation:**")
+                                
+                                if assessment.secondary.error:
+                                    st.error(f"Error: {assessment.secondary.error}")
+                                else:
+                                    if assessment.judge_passed is True:
+                                        st.success(f"{status_icon} {status_text}")
+                                    elif assessment.judge_passed is False:
+                                        st.error(f"{status_icon} {status_text}")
+                                    else:
+                                        st.warning(f"{status_icon} {status_text}")
+                        
+                        # CSV Export
+                        csv_stage1 = df_stage1.to_csv(index=False)
+                        st.download_button(
+                            label="📥 Download Stage 1 Results (CSV)",
+                            data=csv_stage1,
+                            file_name="stage1_zero_shot_results.csv",
+                            mime="text/csv",
+                            use_container_width=True,
+                        )
     
+    st.divider()
+    
+    # ========== STAGE 2: Few-Shot Generation ==========
+    st.markdown("#### 🎯 Stage 2: Few-Shot Generation")
+    st.info(
+        "Leverage the top 5 mutations from Stage 1 (ranked by ROUGE-L) as in-context examples to generate higher-quality variants. "
+        "**You must complete Stage 1 first.**"
+    )
+    
+    # Check if Stage 1 has been run
+    if not mutation_store:
+        st.warning("⚠️ No Stage 1 results found. Please run Stage 1: Zero-Shot Generation first.")
+    else:
+        # Show available prompts from Stage 1
+        available_prompts = list(mutation_store.keys())
+        st.markdown(f"**Available prompts from Stage 1:** {len(available_prompts)}")
+        
+        selected_stage2_prompts = st.multiselect(
+            "Select prompts for Stage 2",
+            available_prompts,
+            default=available_prompts[:3] if len(available_prompts) >= 3 else available_prompts,
+            format_func=lambda x: textwrap.shorten(x, width=80, placeholder="…"),
+            key="stage2_prompt_selection",
+            help="Choose which Stage 1 prompts to use for few-shot generation.",
+        )
+        
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            few_shot_strategies = st.multiselect(
+                "Persuasion strategies",
+                strategies,
+                default=strategies[:2] if len(strategies) >= 2 else strategies,
+                key="stage2_strategies",
+                help="Select strategies for few-shot mode.",
+            )
+        
+        with col_f2:
+            few_shot_attempts = st.number_input(
+                "Attempts per strategy",
+                min_value=1,
+                max_value=20,
+                value=5,
+                step=1,
+                key="stage2_attempts",
+                help="Number of few-shot mutation attempts per strategy.",
+            )
+        
+        run_stage2 = st.button("🎯 Run Stage 2: Few-Shot Generation", key="run_stage2", type="primary")
+        
+        if run_stage2:
+            if not selected_stage2_prompts:
+                st.warning("⚠️ Select at least one prompt for Stage 2.")
+            elif not few_shot_strategies:
+                st.warning("⚠️ Select at least one strategy.")
+            elif not api_key or not model_choice:
+                st.error("⚠️ Enter your API key and choose a model in the sidebar.")
+            else:
+                st.markdown(f"**Processing {len(selected_stage2_prompts)} prompt(s) with {len(few_shot_strategies)} strategy(ies)...**")
+                
+                total_few_shot = 0
+                stage2_results = []
+                
+                for prompt_idx, original_prompt in enumerate(selected_stage2_prompts, 1):
+                    st.markdown(f"##### Prompt {prompt_idx}/{len(selected_stage2_prompts)}")
+                    st.caption(f"📝 {textwrap.shorten(original_prompt, width=100, placeholder='…')}")
+                    
+                    # Extract top 5 examples from Stage 1
+                    few_shot_examples = _extract_top_few_shot_examples(original_prompt, mutation_store, limit=5)
+                    
+                    if not few_shot_examples:
+                        st.warning(f"⚠️ No Stage 1 results for this prompt. Skipping.")
+                        continue
+                    
+                    st.caption(f"📚 Using {len(few_shot_examples)} top-ranked Stage 1 examples as demonstrations")
+                    with st.expander("View top 5 examples", expanded=False):
+                        for ex_idx, example in enumerate(few_shot_examples, 1):
+                            st.markdown(f"**{ex_idx}.** {textwrap.shorten(example, width=120, placeholder='…')}")
+                    
+                    with st.spinner(f"Generating few-shot mutations for prompt {prompt_idx}..."):
+                        evaluations = mutate_strategies(
+                            api_key,
+                            model_choice,
+                            provider,
+                            few_shot_strategies,
+                            original_prompt,
+                            reference_text=zero_shot_reference.strip() or None,
+                            few_shot_examples=few_shot_examples,  # Pass top 5 examples
+                            attempts_per_strategy=few_shot_attempts,
+                            temperature=1.0,  # Higher temperature for diverse mutation generation
+                            top_p=1.0,
+                            dry_run=False,
+                        )
+                    
+                    if not evaluations:
+                        st.error(f"❌ No few-shot mutations for prompt {prompt_idx}.")
+                        continue
+                    
+                    # Store few-shot results
+                    successful_count = 0
+                    for evaluation in evaluations:
+                        if evaluation is None or evaluation.mutation.error:
+                            continue
+                        
+                        parsed = evaluation.parsed
+                        if not parsed or not parsed.mutated_text:
+                            continue
+                        
+                        record_entries = mutation_store.setdefault(original_prompt, [])
+                        
+                        few_mutation_entry = MutationWithJudge(
+                            evaluation=evaluation,
+                            judge=None,
+                            judge_passed=None,
+                        )
+                        serialised_few = serialise_mutation_with_judge(few_mutation_entry)
+                        
+                        record_entries.append({
+                            "config": ["few", False],
+                            "data": serialised_few,
+                        })
+                        
+                        successful_count += 1
+                        stage2_results.append({
+                            "prompt": original_prompt,
+                            "strategy": evaluation.mutation.strategy,
+                            "mutated_text": parsed.mutated_text.strip(),
+                            "rouge_l": evaluation.metrics.rouge_l if evaluation.metrics else None,
+                        })
+                    
+                    total_few_shot += successful_count
+                    st.success(f"✅ Prompt {prompt_idx}: Generated {successful_count} few-shot mutations")
+                
+                st.success(f"🎉 **Stage 2 Complete!** Total few-shot mutations: {total_few_shot}")
+                
+                # Display summary table
+                if stage2_results:
+                    df_stage2 = pd.DataFrame(stage2_results)
+                    st.markdown("**Stage 2 Summary**")
+                    st.dataframe(df_stage2, use_container_width=True)
+                    
+                    # Download CSV
+                    csv_stage2 = df_stage2.to_csv(index=False)
+                    st.download_button(
+                        label="📥 Download Stage 2 Results (CSV)",
+                        data=csv_stage2,
+                        file_name="1_all_few_shots.csv",
+                        mime="text/csv",
+                    )
+
     st.divider()
     st.markdown("### 📊 Mutation Store Overview")
     if mutation_store:
@@ -1660,14 +1593,14 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             st.markdown(f"**{textwrap.shorten(prompt_text, width=80, placeholder='…')}**")
             st.caption(f"  - Zero-shot: {zero_count} mutations | Few-shot: {few_count} mutations")
     else:
-        st.info("No mutations stored yet. Use 'Persuasion Prompting Generation' above to begin.")
+        st.info("No mutations stored yet. Run Stage 1 to begin.")
 
     st.divider()
     st.markdown("### 🗂️ Legacy Evaluation Section")
-    st.caption("This section is deprecated. Use the workflow above.")
+    st.caption("This section is deprecated. Use the two-stage workflow above.")
     
     with st.expander("Show legacy controls", expanded=False):
-        st.info("Legacy evaluation suite functionality has been replaced by the new workflow above.")
+        st.info("Legacy evaluation suite functionality has been replaced by the two-stage workflow above.")
 
 
 def render_unlearning_detection_page(api_key, model_choice, provider):
