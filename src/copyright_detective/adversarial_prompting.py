@@ -712,6 +712,28 @@ _DEFAULT_TEMPLATE_LIBRARY: Dict[str, str] = {
 }
 
 
+def _load_few_shot_template(strategy: str) -> Optional[str]:
+    """Load the few-shot persuasion template for a given strategy."""
+    few_shot_path = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "outputs"
+        / "1_persuasion_technique_template"
+        / "few_shot_version_correct_persuasion_framework_final.json"
+    )
+
+    if not few_shot_path.exists():
+        return None
+
+    try:
+        with few_shot_path.open("r", encoding="utf-8") as fp:
+            few_shot_templates = json.load(fp)
+    except Exception:  # pragma: no cover - defensive branch
+        return None
+
+    return few_shot_templates.get(strategy)
+
+
 def _load_external_template_library() -> Dict[str, str]:
     """Load persuasion templates from the JSON export if available."""
 
@@ -849,14 +871,56 @@ def list_persuasion_strategies() -> List[str]:
     return list(PRIMARY_PERSUASION_STRATEGIES)
 
 
-def get_mutation_instruction(strategy: str, adversarial_prompt: str) -> str:
-    """Return the formatted instruction prompt for the selected strategy."""
+def get_mutation_instruction(
+    strategy: str,
+    adversarial_prompt: str,
+    *,
+    few_shot_examples: Optional[Sequence[str]] = None,
+) -> str:
+    """Return the formatted instruction prompt for the selected strategy.
+    
+    Args:
+        strategy: The persuasion strategy name
+        adversarial_prompt: The original adversarial prompt text
+        few_shot_examples: Optional list of 5 example mutated prompts for few-shot learning.
+                          These should be successful mutations of the SAME adversarial_prompt.
+    
+    Returns:
+        The fully formatted instruction prompt
+    """
     try:
         template = PERSUASIVE_MUTATION_TEMPLATES[strategy]
     except KeyError as exc:  # pragma: no cover - defensive branch
         raise ValueError(f"Unknown adversarial persuasion strategy: {strategy}") from exc
 
-    return template.format(adversarial_prompt=adversarial_prompt.strip())
+    # Zero-shot: template uses {adversarial_prompt}
+    if few_shot_examples is None or len(few_shot_examples) == 0:
+        return template.format(adversarial_prompt=adversarial_prompt.strip())
+    
+    # Few-shot: load the few-shot template and format with examples
+    few_shot_template = _load_few_shot_template(strategy)
+    if few_shot_template is None:
+        # Fallback to zero-shot if few-shot template unavailable
+        return template.format(adversarial_prompt=adversarial_prompt.strip())
+    
+    # Pad or truncate to exactly 5 examples
+    examples = list(few_shot_examples)[:5]
+    while len(examples) < 5:
+        # If we don't have 5 examples, repeat the last one
+        examples.append(examples[-1] if examples else adversarial_prompt.strip())
+    
+    # Few-shot template expects 11 %s placeholders:
+    # (original, mutation1, original, mutation2, original, mutation3, original, mutation4, original, mutation5, original)
+    # The pattern is: original prompt alternates with each mutation example, ending with original prompt
+    prompt_stripped = adversarial_prompt.strip()
+    return few_shot_template % (
+        prompt_stripped, examples[0],
+        prompt_stripped, examples[1],
+        prompt_stripped, examples[2],
+        prompt_stripped, examples[3],
+        prompt_stripped, examples[4],
+        prompt_stripped,
+    )
 
 
 def run_adversarial_persuasion(
@@ -866,12 +930,28 @@ def run_adversarial_persuasion(
     strategy: str,
     adversarial_prompt: str,
     *,
+    few_shot_examples: Optional[Sequence[str]] = None,
     temperature: float = 0.7,
     top_p: float = 1.0,
     dry_run: bool = False,
 ) -> MutationResult:
-    """Execute a single adversarial persuasion prompt mutation."""
-    instruction = get_mutation_instruction(strategy, adversarial_prompt)
+    """Execute a single adversarial persuasion prompt mutation.
+    
+    Args:
+        api_key: API key for the LLM provider
+        model_name: Name of the model to use
+        provider: Provider name (OpenAI, Anthropic, etc.)
+        strategy: Persuasion strategy name
+        adversarial_prompt: Original adversarial prompt
+        few_shot_examples: Optional list of example mutations for few-shot learning
+        temperature: Sampling temperature
+        top_p: Top-p nucleus sampling parameter
+        dry_run: If True, return placeholder without calling API
+    
+    Returns:
+        MutationResult containing the response or error
+    """
+    instruction = get_mutation_instruction(strategy, adversarial_prompt, few_shot_examples=few_shot_examples)
 
     if dry_run:
         return MutationResult(strategy=strategy, instruction=instruction, response="[DRY RUN]", error=None)
@@ -971,12 +1051,30 @@ def mutate_strategies(
     adversarial_prompt: str,
     *,
     reference_text: Optional[str] = None,
+    few_shot_examples: Optional[Sequence[str]] = None,
     attempts_per_strategy: int = 1,
     temperature: float = 0.7,
     top_p: float = 1.0,
     dry_run: bool = False,
 ) -> List[MutationEvaluation]:
-    """Run adversarial mutations across multiple strategies with optional repeat attempts."""
+    """Run adversarial mutations across multiple strategies with optional repeat attempts.
+    
+    Args:
+        api_key: API key for the LLM provider
+        model_name: Name of the model to use
+        provider: Provider name (OpenAI, Anthropic, etc.)
+        strategies: List of persuasion strategy names to apply
+        adversarial_prompt: Original adversarial prompt
+        reference_text: Optional reference text for similarity scoring
+        few_shot_examples: Optional list of example mutations for few-shot learning
+        attempts_per_strategy: Number of mutation attempts per strategy
+        temperature: Sampling temperature
+        top_p: Top-p nucleus sampling parameter
+        dry_run: If True, return placeholders without calling API
+    
+    Returns:
+        List of MutationEvaluation objects
+    """
 
     evaluations: List[MutationEvaluation] = []
     for attempt in range(1, attempts_per_strategy + 1):
@@ -987,6 +1085,7 @@ def mutate_strategies(
                 provider,
                 strategy,
                 adversarial_prompt,
+                few_shot_examples=few_shot_examples,
                 temperature=temperature,
                 top_p=top_p,
                 dry_run=dry_run,

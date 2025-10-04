@@ -31,16 +31,20 @@ from src.copyright_detective.adversarial_prompting import (
     mutate_strategies,
     rank_by_rouge,
     list_baseline_prompts,
-    run_baseline_prompt_suite,
     ExperimentMode,
     DEFAULT_HP_REFERENCE_EXCERPT,
-    _EXPERIMENT_MODE_MATRIX,
     serialise_mutation_with_judge,
     deserialise_mutation_with_judge,
     MutationWithJudge,
 )
 from src.prompt_utils import get_full_prompt, get_persuasion_prompt, get_persuasion_template, get_prompt_template
-from src.components import render_collapsible_panel, render_prompt_preview, render_top_sample_distribution
+from src.components import (
+    render_collapsible_panel,
+    render_prompt_preview,
+    render_table_card,
+    render_collapsible_table_card,
+    render_top_sample_distribution,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -940,6 +944,38 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     baseline_prompts = list_baseline_prompts()
     strategy_count = len(strategies)
 
+    def _slugify_filename(value: str) -> str:
+        safe = "".join(ch.lower() if ch.isalnum() else "_" for ch in value)
+        safe = "_".join(filter(None, safe.split("_")))
+        return safe[:80] or "records"
+
+    def _extract_top_few_shot_examples(
+        prompt_text: str,
+        mutation_store: Dict[str, List[Dict]],
+        limit: int = 5,
+    ) -> List[str]:
+        """Extract top 5 mutated prompts by ROUGE-L score for few-shot examples."""
+        records = mutation_store.get(prompt_text, [])
+        if not records:
+            return []
+        
+        scored = []
+        for record in records:
+            data = record.get("data") or {}
+            evaluation_data = data.get("evaluation") or {}
+            parsed_data = evaluation_data.get("parsed") or {}
+            metrics_data = evaluation_data.get("metrics") or {}
+            
+            mutated_text = parsed_data.get("mutated_text", "").strip()
+            rouge_l = metrics_data.get("rouge_l")
+            
+            if mutated_text and rouge_l is not None:
+                scored.append((rouge_l, mutated_text))
+        
+        # Sort by ROUGE-L descending
+        scored.sort(reverse=True, key=lambda x: x[0])
+        return [text for _, text in scored[:limit]]
+
     if strategy_count:
         st.markdown(
             f"Profile LLM copyright leakage using the {strategy_count} persuasion strategies introduced in the EMNLP 2025 paper _Profiling LLM's Copyright Infringement Risks under Adversarial Persuasive Prompting_ and released evaluation templates."
@@ -1049,6 +1085,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                 preview_instruction = get_mutation_instruction(
                     strategy_name,
                     adversarial_prompt.strip() if adversarial_prompt.strip() else "<<<adversarial prompt>>>",
+                    few_shot_examples=None,  # Zero-shot preview only
                 )
                 render_prompt_preview(
                     preview_instruction,
@@ -1125,7 +1162,9 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 judge_passed=None,
                             )
                             serialised_entry = serialise_mutation_with_judge(mutation_entry)
-                            record_entries = mutation_store.setdefault(mutated_text, [])
+                            # IMPORTANT: Use the original adversarial_prompt as key, not the mutated text
+                            # This allows tracking all mutations of the same original prompt
+                            record_entries = mutation_store.setdefault(adversarial_prompt.strip(), [])
 
                             entry_exists = False
                             for stored in record_entries:
@@ -1262,7 +1301,8 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                     st.warning("⚠️ Unable to determine if the intention is preserved.")
 
                                 mutation_store = st.session_state.setdefault("generated_persuasion_mutations", {})
-                                record_entries = mutation_store.setdefault(mutated_text, [])
+                                # IMPORTANT: Use the original adversarial_prompt as key, not the mutated text
+                                record_entries = mutation_store.setdefault(adversarial_prompt.strip(), [])
                                 judged_entry = MutationWithJudge(
                                     evaluation=result["evaluation"],
                                     judge=assessment.secondary,
@@ -1300,376 +1340,335 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                     )
 
     st.divider()
-    st.markdown("### Evaluation Experiments")
+    st.markdown("### 🧪 Few-Shot Mutation Generation")
+    st.info(
+        """
+        **Two-Stage Workflow:**
+        
+        **Stage 1 (Zero-Shot):** Use the "Persuasion Prompting Generation" section above to generate initial mutations. 
+        Run multiple attempts per strategy to build a diverse mutation pool.
+        
+        **Stage 2 (Few-Shot):** This section automatically extracts the top 5 mutations (ranked by ROUGE-L) from Stage 1 
+        and uses them as in-context examples to generate higher-quality mutations.
+        """
+    )
 
-    generated_entries = st.session_state.get("generated_persuasion_prompts", [])
-
-    if not generated_entries:
-        st.info("Generate a persuasion prompt above to enable evaluation experiments.")
+    # Get mutation store for accessing zero-shot results
+    mutation_store = st.session_state.get("generated_persuasion_mutations", {})
+    
+    # Check if there are any zero-shot results
+    if not mutation_store:
+        st.warning(
+            "⚠️ **No zero-shot mutations found.** Please use the 'Persuasion Prompting Generation' section above to generate "
+            "initial mutations first. These will serve as the baseline for few-shot learning."
+        )
+        st.markdown(
+            """
+            **How to prepare for Few-Shot Generation:**
+            1. Scroll up to "Persuasion Prompting Generation"
+            2. Enter your adversarial prompt
+            3. Select multiple strategies and set attempts > 1 (e.g., 5-10 attempts per strategy)
+            4. Click "Generate Mutations" to create zero-shot baseline
+            5. Return here to run few-shot generation
+            """
+        )
     else:
-        st.caption(
-            "Select among the eight mutate evaluation workflows, run targeted experiments, and inspect summary statistics inspired by the original inference scaling and data analytics scripts."
-        )
-
-        experiment_options = {
-            "Zero-shot · Judge": ("zero", True),
-            "Zero-shot · No Judge": ("zero", False),
-            "Few-shot · Judge": ("few", True),
-            "Few-shot · No Judge": ("few", False),
-        }
-        experiment_labels = list(experiment_options.keys())
-        selected_experiments = st.multiselect(
-            "Evaluation workflows",
-            options=experiment_labels,
-            default=experiment_labels,
-            help="Pick which combinations of shots and judge settings to execute. Results cover both mutation and evaluation stages for each selection.",
-            key="evaluation_suite_experiments",
-        )
-        selected_configs = [experiment_options[label] for label in selected_experiments]
-
-        strategy_pool: Dict[str, None] = {}
-        generated_prompt_texts: List[str] = []
-        prompt_label_map: Dict[str, str] = {}
-        for entry in generated_entries:
-            text = (entry or {}).get("text", "").strip()
-            if not text:
-                continue
-            entry_strategies = (entry or {}).get("strategies") or []
-            if isinstance(entry_strategies, str):
-                entry_strategies = [entry_strategies]
-            for strat in entry_strategies:
-                if strat:
-                    strategy_pool.setdefault(strat, None)
-            strategy_label = ", ".join(dict.fromkeys(entry_strategies)) if entry_strategies else "Unknown strategy"
-            generated_prompt_texts.append(text)
-            prompt_label_map[text] = f"{textwrap.shorten(text, width=80, placeholder='…')} · Generated via {strategy_label}"
-
-        all_mutated_prompts = list(dict.fromkeys(generated_prompt_texts))
-        mutation_store = st.session_state.get("generated_persuasion_mutations", {})
-
-        for prompt_records in mutation_store.values():
-            for record in prompt_records:
-                data = record.get("data") or {}
-                evaluation_data = data.get("evaluation") or {}
-                mutation_data = evaluation_data.get("mutation") or {}
-                strategy_name = mutation_data.get("strategy")
-                if strategy_name:
-                    strategy_pool.setdefault(strategy_name, None)
-
-        collected_strategies = sorted(strategy_pool.keys())
-        strategy_choices = collected_strategies if collected_strategies else list(strategies)
-
-        if not all_mutated_prompts:
-            st.warning("No valid mutated prompts were captured. Generate a new prompt to continue.")
-            return
-
-        selected_prompts = all_mutated_prompts
-
-        st.markdown("#### Mutated prompts to evaluate")
-        st.caption("All mutated prompts generated above will be replayed in the evaluation workflows.")
-        for prompt_text in selected_prompts:
-            st.caption(prompt_label_map.get(prompt_text, textwrap.shorten(prompt_text, width=80, placeholder="…")))
-            render_prompt_preview(prompt_text, expanded=False)
-
-        max_strategy_default = min(len(strategy_choices), 6) if strategy_choices else 1
-        if len(strategy_choices) <= 1:
-            strategy_limit = 1
-            st.caption("Only one persuasion strategy is available; evaluations will use that strategy by default.")
-        else:
-            strategy_limit = st.slider(
-                "Maximum persuasion strategies per prompt",
-                min_value=1,
-                max_value=len(strategy_choices),
-                value=max_strategy_default if max_strategy_default >= 1 else 1,
-                help="Cap the number of template strategies to balance coverage with runtime.",
-                key="evaluation_suite_strategy_limit",
-            )
-
-        zero_active = any(shot == "zero" for shot, _ in (selected_configs or experiment_options.values()))
-        few_active = any(shot == "few" for shot, _ in (selected_configs or experiment_options.values()))
-
-        col_zero, col_few = st.columns(2)
-        with col_zero:
-            zero_attempts = int(
-                st.number_input(
-                    "Zero-shot attempts per strategy",
-                    min_value=1,
-                    max_value=20,
-                    value=3 if zero_active else 1,
-                    step=1,
-                    help="Repeats per strategy when running zero-shot workflows (mirrors inference scaling samples).",
-                    key="evaluation_suite_zero_attempts",
-                    disabled=not zero_active,
-                )
-            )
-        with col_few:
-            few_attempts = int(
-                st.number_input(
-                    "Few-shot attempts per strategy",
-                    min_value=1,
-                    max_value=20,
-                    value=5 if few_active else 1,
-                    step=1,
-                    help="Repeats per strategy when running few-shot workflows.",
-                    key="evaluation_suite_few_attempts",
-                    disabled=not few_active,
-                )
-            )
-
-        col_temp, col_top_p = st.columns(2)
-        with col_temp:
-            suite_temperature = st.slider(
-                "Generation temperature",
-                min_value=0.0,
-                max_value=2.0,
-                value=0.8,
-                step=0.05,
-                help="Sampling temperature for mutation generation runs.",
-                key="evaluation_suite_temperature",
-            )
-        with col_top_p:
-            suite_top_p = st.slider(
-                "Generation top-p",
-                min_value=0.0,
-                max_value=1.0,
-                value=1.0,
-                step=0.05,
-                help="Top-p nucleus sampling for mutation generation runs.",
-                key="evaluation_suite_top_p",
-            )
-
-        col_eval_temp, col_eval_top_p = st.columns(2)
-        with col_eval_temp:
-            evaluation_temperature = st.slider(
-                "Evaluation temperature",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.0,
-                step=0.01,
-                help="Temperature used when replaying mutated prompts against the evaluation model.",
-                key="evaluation_suite_eval_temperature",
-            )
-        with col_eval_top_p:
-            evaluation_top_p = st.slider(
-                "Evaluation top-p",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.0,
-                step=0.01,
-                help="Top-p used for evaluation calls.",
-                key="evaluation_suite_eval_top_p",
-            )
-
-        reference_override = st.text_area(
-            "Reference excerpt",
-            value=DEFAULT_HP_REFERENCE_EXCERPT,
-            height=160,
-            help="Defaults to the Harry Potter reference excerpt from the paper. Override to target a different ground-truth passage.",
-            key="evaluation_suite_reference_text",
-        )
-
-        dry_run_suite = st.checkbox(
-            "Dry run (synthesise placeholder outputs only)",
-            value=False,
-            key="evaluation_suite_dry_run",
-        )
-
-        run_suite = st.button("🧪 Run selected experiments", key="evaluation_suite_run")
-
-        precomputed_mutations: Dict[str, Dict[Tuple[str, bool], Dict[Tuple[str, int, str], MutationWithJudge]]] = {}
+        # Display available prompts with their mutation counts
+        st.markdown("#### 📊 Available Prompts from Zero-Shot Generation")
+        st.caption(f"Found **{len(mutation_store)}** original prompt(s) with mutations")
+        
+        prompt_stats = []
         for prompt_text, records in mutation_store.items():
-            if prompt_text not in selected_prompts:
-                continue
-            config_map = precomputed_mutations.setdefault(prompt_text, {})
-            for record in records:
-                raw_config = record.get("config") or []
-                shot_label = raw_config[0] if raw_config else "zero"
-                uses_judge = bool(raw_config[1]) if len(raw_config) > 1 else False
-                data = record.get("data")
-                if not data:
-                    continue
-                try:
-                    mutation_obj = deserialise_mutation_with_judge(data)
-                except Exception:
-                    continue
-
-                parsed = mutation_obj.evaluation.parsed
-                mutated_text_value = (
-                    parsed.mutated_text if parsed and parsed.mutated_text else (mutation_obj.evaluation.mutation.response or "")
-                ).strip()
-                dedup_key = (
-                    mutation_obj.evaluation.mutation.strategy,
-                    mutation_obj.evaluation.attempt,
-                    mutated_text_value,
+            zero_count = sum(1 for r in records if r.get("config", [""])[0] == "zero")
+            few_count = sum(1 for r in records if r.get("config", [""])[0] == "few")
+            
+            # Get average ROUGE-L for zero-shot mutations
+            rouge_scores = []
+            for r in records:
+                if r.get("config", [""])[0] == "zero":
+                    data = r.get("data", {})
+                    metrics = data.get("evaluation", {}).get("metrics", {})
+                    if metrics and metrics.get("rouge_l") is not None:
+                        rouge_scores.append(metrics.get("rouge_l"))
+            
+            avg_rouge = sum(rouge_scores) / len(rouge_scores) if rouge_scores else None
+            
+            prompt_stats.append({
+                "prompt": prompt_text,
+                "zero_count": zero_count,
+                "few_count": few_count,
+                "avg_rouge": avg_rouge,
+                "has_enough": zero_count >= 5,
+            })
+        
+        # Display prompt statistics
+        for idx, stat in enumerate(prompt_stats, 1):
+            status_icon = "✅" if stat["has_enough"] else "⚠️"
+            rouge_display = f"Avg ROUGE-L: {stat['avg_rouge']:.3f}" if stat['avg_rouge'] is not None else "No ROUGE scores"
+            
+            st.markdown(
+                f"{status_icon} **Prompt {idx}:** {textwrap.shorten(stat['prompt'], width=80, placeholder='…')}"
+            )
+            st.caption(
+                f"   Zero-shot: {stat['zero_count']} mutations | Few-shot: {stat['few_count']} mutations | {rouge_display}"
+            )
+            
+            if not stat["has_enough"]:
+                st.caption(
+                    f"   💡 Tip: Generate more zero-shot mutations (need ≥5, currently have {stat['zero_count']})"
                 )
-
-                config_bucket = config_map.setdefault((shot_label, uses_judge), {})
-                config_bucket.setdefault(dedup_key, mutation_obj)
-
-        # Collapse buckets to lists for downstream consumption
-        collapsed_precomputed: Dict[str, Dict[Tuple[str, bool], List[MutationWithJudge]]] = {}
-        for prompt_text, config_map in precomputed_mutations.items():
-            collapsed_precomputed[prompt_text] = {
-                config_key: list(bucket.values()) for config_key, bucket in config_map.items()
-            }
-
-        if run_suite:
-            if not selected_configs:
-                st.warning("Select at least one evaluation workflow to execute.")
-            else:
-                target_prompts = selected_prompts
-                reference_text = reference_override.strip() if reference_override.strip() else DEFAULT_HP_REFERENCE_EXCERPT
-
-                if not dry_run_suite and (not api_key or not model_choice):
-                    st.error("⚠️ Enter your API key and choose a model in the sidebar before running live experiments.")
+        
+        st.divider()
+        
+        # Few-Shot Generation Controls
+        st.markdown("#### 🎯 Few-Shot Generation Settings")
+        
+        # Select prompts for few-shot generation
+        available_prompts = [s["prompt"] for s in prompt_stats if s["has_enough"]]
+        all_prompts = [s["prompt"] for s in prompt_stats]
+        
+        if not available_prompts:
+            st.error(
+                "❌ **No prompts have enough zero-shot mutations (≥5) for few-shot generation.** "
+                "Please generate more mutations in the section above."
+            )
+        else:
+            selected_prompts = st.multiselect(
+                "Select prompts for few-shot generation",
+                all_prompts,
+                default=available_prompts[:3] if len(available_prompts) >= 3 else available_prompts,
+                format_func=lambda x: textwrap.shorten(x, width=100, placeholder="…"),
+                key="few_shot_prompt_selection",
+                help="Only prompts with ≥5 zero-shot mutations can be used for few-shot generation.",
+            )
+            
+            col_fs1, col_fs2 = st.columns(2)
+            with col_fs1:
+                few_shot_strategies = st.multiselect(
+                    "Persuasion strategies",
+                    strategies,
+                    default=strategies[:2] if len(strategies) >= 2 else strategies,
+                    key="few_shot_strategies",
+                    help="Select strategies to apply in few-shot mode.",
+                )
+            
+            with col_fs2:
+                few_shot_attempts = st.number_input(
+                    "Attempts per strategy",
+                    min_value=1,
+                    max_value=20,
+                    value=5,
+                    step=1,
+                    key="few_shot_attempts",
+                    help="Number of mutation attempts for each strategy using few-shot examples.",
+                )
+            
+            col_fs3, col_fs4 = st.columns(2)
+            with col_fs3:
+                few_shot_temperature = st.slider(
+                    "Temperature",
+                    min_value=0.0,
+                    max_value=2.0,
+                    value=0.8,
+                    step=0.05,
+                    key="few_shot_temperature",
+                    help="Sampling temperature for few-shot generation.",
+                )
+            
+            with col_fs4:
+                few_shot_top_p = st.slider(
+                    "Top-p",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=1.0,
+                    step=0.05,
+                    key="few_shot_top_p",
+                    help="Top-p nucleus sampling for few-shot generation.",
+                )
+            
+            few_shot_reference = st.text_area(
+                "Reference text (for ROUGE scoring)",
+                value=DEFAULT_HP_REFERENCE_EXCERPT,
+                height=100,
+                key="few_shot_reference",
+                help="Ground-truth text for similarity scoring.",
+            )
+            
+            run_few_shot = st.button(
+                "🚀 Run Few-Shot Generation",
+                key="run_few_shot_btn",
+                type="primary",
+                help="Generate mutations using top 5 zero-shot examples as in-context demonstrations.",
+            )
+            
+            if run_few_shot:
+                if not selected_prompts:
+                    st.warning("⚠️ Please select at least one prompt.")
+                elif not few_shot_strategies:
+                    st.warning("⚠️ Please select at least one strategy.")
+                elif not api_key or not model_choice:
+                    st.error("⚠️ Enter your API key and choose a model in the sidebar.")
                 else:
-                    with st.spinner("Running evaluation workflows and computing statistics..."):
-                        suite_results = run_baseline_prompt_suite(
-                            api_key if not dry_run_suite else None,
-                            model_choice if not dry_run_suite else None,
-                            provider,
-                            baseline_prompts=target_prompts,
-                            strategies=strategy_choices,
-                            reference_text=reference_text,
-                            max_strategies=strategy_limit,
-                            experiment_configs=selected_configs,
-                            zero_shot_attempts=zero_attempts if zero_active else 1,
-                            few_shot_attempts=few_attempts if few_active else 1,
-                            evaluation_models=[(provider, model_choice if not dry_run_suite else None)],
-                            temperature=suite_temperature,
-                            top_p=suite_top_p,
-                            evaluation_temperature=evaluation_temperature,
-                            evaluation_top_p=evaluation_top_p,
-                            dry_run=dry_run_suite,
-                            precomputed_mutations=collapsed_precomputed,
-                        )
-
-                if not suite_results:
-                    st.info("No results were produced. Adjust configuration or disable dry run to collect data.")
-                else:
-                    selected_modes = {mode for config in selected_configs for mode in _EXPERIMENT_MODE_MATRIX[config]}
-
-                    def _safe_round(value: Optional[float], digits: int = 3) -> Optional[float]:
-                        return round(value, digits) if value is not None else None
-
-                    def _mode_to_dataframe(mode_result):
-                        if mode_result.mode.is_generation:
-                            rows = []
-                            for entry in mode_result.mutations:
-                                metrics = entry.evaluation.metrics
-                                parsed = entry.evaluation.parsed
-                                rows.append(
-                                    {
-                                        "Strategy": entry.evaluation.mutation.strategy,
-                                        "Attempt": entry.evaluation.attempt,
-                                        "Judge Vote": "Yes" if entry.judge_passed is True else "No" if entry.judge_passed is False else "—",
-                                        "ROUGE-L": metrics.rouge_l if metrics else None,
-                                        "Jaccard": metrics.jaccard if metrics else None,
-                                        "Levenshtein": metrics.levenshtein if metrics else None,
-                                        "Mutated Prompt": textwrap.shorten(
-                                            (parsed.mutated_text if parsed and parsed.mutated_text else (entry.evaluation.mutation.response or "")),
-                                            width=220,
-                                            placeholder="…",
-                                        ),
-                                        "Error": entry.evaluation.mutation.error,
-                                    }
-                                )
-                            return pd.DataFrame(rows)
-                        rows = []
-                        for ev in mode_result.evaluations:
-                            metrics = ev.metrics
-                            rows.append(
-                                {
-                                    "Model": ev.model,
-                                    "Provider": ev.provider,
-                                    "Strategy": ev.strategy,
-                                    "Attempt": ev.attempt,
-                                    "ROUGE-L": metrics.rouge_l if metrics else None,
-                                    "Jaccard": metrics.jaccard if metrics else None,
-                                    "Levenshtein": metrics.levenshtein if metrics else None,
-                                    "Error": ev.error,
-                                    "Response Preview": textwrap.shorten(ev.response, width=220, placeholder="…") if ev.response else None,
-                                }
+                    st.markdown(f"**Processing {len(selected_prompts)} prompt(s) with {len(few_shot_strategies)} strategy(ies)...**")
+                    
+                    total_few_shot = 0
+                    few_shot_results = []
+                    
+                    for prompt_idx, original_prompt in enumerate(selected_prompts, 1):
+                        st.markdown(f"##### Prompt {prompt_idx}/{len(selected_prompts)}")
+                        st.caption(f"📝 {textwrap.shorten(original_prompt, width=100, placeholder='…')}")
+                        
+                        # Extract top 5 examples from zero-shot results
+                        few_shot_examples = _extract_top_few_shot_examples(original_prompt, mutation_store, limit=5)
+                        
+                        if len(few_shot_examples) < 5:
+                            st.warning(
+                                f"⚠️ Only {len(few_shot_examples)} zero-shot examples available (need 5). "
+                                "Generate more zero-shot mutations first. Skipping this prompt."
                             )
-                        return pd.DataFrame(rows)
-
-                    for prompt_text, mode_outputs in suite_results.items():
-                        st.markdown("---")
-                        st.markdown("##### Mutated prompt")
-                        st.markdown(
-                            f"<div class='baseline-prompt-display'>🪄 <em>{prompt_text}</em></div>",
-                            unsafe_allow_html=True,
+                            continue
+                        
+                        st.caption(f"📚 Using top 5 zero-shot mutations as in-context examples")
+                        with st.expander("View top 5 examples", expanded=False):
+                            for ex_idx, example in enumerate(few_shot_examples, 1):
+                                st.markdown(f"**{ex_idx}.** {textwrap.shorten(example, width=120, placeholder='…')}")
+                        
+                        with st.spinner(f"Generating few-shot mutations for prompt {prompt_idx}..."):
+                            evaluations = mutate_strategies(
+                                api_key,
+                                model_choice,
+                                provider,
+                                few_shot_strategies,
+                                original_prompt,
+                                reference_text=few_shot_reference.strip() or None,
+                                few_shot_examples=few_shot_examples,
+                                attempts_per_strategy=few_shot_attempts,
+                                temperature=few_shot_temperature,
+                                top_p=few_shot_top_p,
+                                dry_run=False,
+                            )
+                        
+                        if not evaluations:
+                            st.error(f"❌ No few-shot mutations produced for prompt {prompt_idx}.")
+                            continue
+                        
+                        # Store few-shot results
+                        successful_count = 0
+                        for evaluation in evaluations:
+                            if evaluation is None or evaluation.mutation.error:
+                                continue
+                            
+                            parsed = evaluation.parsed
+                            if not parsed or not parsed.mutated_text:
+                                continue
+                            
+                            record_entries = mutation_store.setdefault(original_prompt, [])
+                            
+                            few_mutation_entry = MutationWithJudge(
+                                evaluation=evaluation,
+                                judge=None,
+                                judge_passed=None,
+                            )
+                            serialised_few = serialise_mutation_with_judge(few_mutation_entry)
+                            
+                            record_entries.append({
+                                "config": ["few", False],
+                                "data": serialised_few,
+                            })
+                            
+                            successful_count += 1
+                            few_shot_results.append({
+                                "prompt": original_prompt,
+                                "strategy": evaluation.mutation.strategy,
+                                "mutated_text": parsed.mutated_text.strip(),
+                                "rouge_l": evaluation.metrics.rouge_l if evaluation.metrics else None,
+                                "jaccard": evaluation.metrics.jaccard if evaluation.metrics else None,
+                                "levenshtein": evaluation.metrics.levenshtein if evaluation.metrics else None,
+                            })
+                        
+                        total_few_shot += successful_count
+                        st.success(f"✅ Prompt {prompt_idx}: Generated {successful_count} few-shot mutations")
+                    
+                    st.success(f"🎉 **Few-Shot Generation Complete!** Total mutations: {total_few_shot}")
+                    
+                    # Display summary table
+                    if few_shot_results:
+                        df_few_shot = pd.DataFrame(few_shot_results)
+                        st.markdown("**Few-Shot Generation Summary**")
+                        st.dataframe(df_few_shot, use_container_width=True)
+                        
+                        # Download CSV
+                        csv_few_shot = df_few_shot.to_csv(index=False)
+                        st.download_button(
+                            label="📥 Download Few-Shot Results (CSV)",
+                            data=csv_few_shot,
+                            file_name="few_shot_mutations.csv",
+                            mime="text/csv",
                         )
+                        
+                        # Show comparison with zero-shot
+                        st.divider()
+                        st.markdown("#### 📊 Zero-Shot vs Few-Shot Comparison")
+                        
+                        comparison_data = []
+                        for prompt_text in selected_prompts:
+                            records = mutation_store.get(prompt_text, [])
+                            
+                            zero_rouge = []
+                            few_rouge = []
+                            
+                            for r in records:
+                                data = r.get("data", {})
+                                metrics = data.get("evaluation", {}).get("metrics", {})
+                                rouge = metrics.get("rouge_l") if metrics else None
+                                
+                                if rouge is not None:
+                                    if r.get("config", [""])[0] == "zero":
+                                        zero_rouge.append(rouge)
+                                    elif r.get("config", [""])[0] == "few":
+                                        few_rouge.append(rouge)
+                            
+                            if zero_rouge and few_rouge:
+                                comparison_data.append({
+                                    "Prompt": textwrap.shorten(prompt_text, width=60, placeholder="…"),
+                                    "Zero-Shot Avg ROUGE-L": sum(zero_rouge) / len(zero_rouge),
+                                    "Few-Shot Avg ROUGE-L": sum(few_rouge) / len(few_rouge),
+                                    "Improvement": (sum(few_rouge) / len(few_rouge)) - (sum(zero_rouge) / len(zero_rouge)),
+                                    "Zero-Shot Count": len(zero_rouge),
+                                    "Few-Shot Count": len(few_rouge),
+                                })
+                        
+                        if comparison_data:
+                            df_comparison = pd.DataFrame(comparison_data)
+                            st.dataframe(df_comparison, use_container_width=True)
+                            
+                            avg_improvement = df_comparison["Improvement"].mean()
+                            if avg_improvement > 0:
+                                st.success(f"✨ **Average ROUGE-L improvement:** +{avg_improvement:.4f}")
+                            elif avg_improvement < 0:
+                                st.warning(f"⚠️ **Average ROUGE-L change:** {avg_improvement:.4f}")
+                            else:
+                                st.info("📊 **No significant change in ROUGE-L scores**")
+    
+    st.divider()
+    st.markdown("### 📊 Mutation Store Overview")
+    if mutation_store:
+        st.caption(f"Total prompts tracked: {len(mutation_store)}")
+        for prompt_text, records in mutation_store.items():
+            zero_count = sum(1 for r in records if r.get("config", [""])[0] == "zero")
+            few_count = sum(1 for r in records if r.get("config", [""])[0] == "few")
+            st.markdown(f"**{textwrap.shorten(prompt_text, width=80, placeholder='…')}**")
+            st.caption(f"  - Zero-shot: {zero_count} mutations | Few-shot: {few_count} mutations")
+    else:
+        st.info("No mutations stored yet. Use 'Persuasion Prompting Generation' above to begin.")
 
-                        summary_rows = []
-                        for mode in ExperimentMode:
-                            if mode not in selected_modes:
-                                continue
-                            mode_result = mode_outputs.get(mode)
-                            if not mode_result:
-                                continue
+    st.divider()
+    st.markdown("### 🗂️ Legacy Evaluation Section")
+    st.caption("This section is deprecated. Use the workflow above.")
+    
+    with st.expander("Show legacy controls", expanded=False):
+        st.info("Legacy evaluation suite functionality has been replaced by the new workflow above.")
 
-                            summary = mode_result.summary or {}
-                            judge_summary = mode_result.judge_summary or {}
-
-                            row = {
-                                "Mode": mode.value,
-                                "Stage": "Generation" if mode.is_generation else "Evaluation",
-                                "Shots": mode.shots.title(),
-                                "Uses Judge": "Yes" if mode.uses_judge else "No",
-                                "Records": len(mode_result.mutations) if mode.is_generation else len(mode_result.evaluations),
-                                "ROUGE μ": _safe_round(summary.get("rouge_mean")),
-                                "ROUGE σ": _safe_round(summary.get("rouge_std")),
-                                "Jaccard μ": _safe_round(summary.get("jaccard_mean")),
-                                "Levenshtein μ": _safe_round(summary.get("levenshtein_mean"), 2),
-                                "Judge Accept Rate": _safe_round(judge_summary.get("accept_rate")) if judge_summary else None,
-                            }
-                            if not mode.is_generation and summary:
-                                row["Scored"] = int(summary.get("scored_evaluations", 0))
-                            summary_rows.append(row)
-
-                        if summary_rows:
-                            st.dataframe(pd.DataFrame(summary_rows), width='stretch', hide_index=True)
-
-                        for mode in ExperimentMode:
-                            if mode not in selected_modes:
-                                continue
-                            mode_result = mode_outputs.get(mode)
-                            if not mode_result:
-                                continue
-
-                            stage_label = "Generation" if mode.is_generation else "Evaluation"
-                            expander_label = f"{mode.value} · {stage_label}"
-
-                            with st.expander(expander_label, expanded=False):
-                                data_df = _mode_to_dataframe(mode_result)
-                                if data_df.empty:
-                                    st.info("No records captured for this configuration.")
-                                    continue
-
-                                st.dataframe(data_df, width='stretch', hide_index=True)
-
-                                metric_cols = [col for col in ["ROUGE-L", "Jaccard", "Levenshtein"] if col in data_df.columns]
-                                if metric_cols:
-                                    stats_df = data_df[metric_cols].describe().transpose().reset_index().rename(columns={"index": "Metric"})
-                                    st.markdown("**Summary statistics**")
-                                    st.dataframe(stats_df, width='stretch', hide_index=True)
-
-                                if "Judge Vote" in data_df.columns:
-                                    judge_counts = data_df["Judge Vote"].value_counts(dropna=False)
-                                    judge_df = judge_counts.rename_axis("Vote").reset_index(name="Count")
-                                    judge_df["Share"] = judge_df["Count"] / judge_df["Count"].sum()
-                                    st.markdown("**Judge outcomes**")
-                                    st.dataframe(judge_df, width='stretch', hide_index=True)
-
-                                csv_data = data_df.to_csv(index=False).encode("utf-8")
-                                st.download_button(
-                                    label="⬇️ Download records (CSV)",
-                                    data=csv_data,
-                                    file_name=f"{mode.value.replace(' ', '_')}_records.csv",
-                                    mime="text/csv",
-                                    key=f"download_{prompt_text}_{mode.value}",
-                                )
 
 def render_unlearning_detection_page(api_key, model_choice, provider):
     """Render the unlearning detection page with membership inference."""
