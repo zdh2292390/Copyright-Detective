@@ -319,7 +319,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
 
     # Prompt Preview - This is now handled within each prompt_type section
     # if text1:
-    #     # Define continuation_method for the preview logic even if it's not selected
+    #     # Define continuation_method for the preview logic even if it's not set
     #     continuation_method = "Normal Continuation"
     #     chunk_size = len(text2.split()) if text2 else None
     #     if prompt_type == "Sequential Continuation Evaluation":
@@ -1520,62 +1520,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     judge_result = panel_payload.get("judge")
                     llm_response = panel_payload.get("llm_response") or ""
 
-                    summary_lines = [
-                        f"- Strategy: {evaluation.mutation.strategy}",
-                        f"- Attempt #: {evaluation.attempt}",
-                        f"- Judge Status: {status_icon} {status_text}",
-                    ]
-
-                    sections = []
-                    sections.append(("📄 Mutation Summary", "\n".join(summary_lines), None))
-                    sections.append(("📝 Mutated Prompt", mutated_text, None))
-
-                    if metrics:
-                        metrics_lines = [
-                            f"- ROUGE-L: {metrics.rouge_l:.4f}",
-                            f"- Jaccard: {metrics.jaccard:.4f}",
-                            f"- Levenshtein: {metrics.levenshtein}",
-                        ]
-                        sections.append(("📊 Similarity Metrics", "\n".join(metrics_lines), None))
-
-                    if llm_response:
-                        sections.append(("🧪 Evaluation Model Response", llm_response, None))
-
-                    mutation_response = evaluation.mutation.response or ""
-                    if mutation_response:
-                        sections.append(("🧰 Mutation Template Output", mutation_response, None))
-
-                    if judged_flag:
-                        primary_error = judge_meta.get("primary_error")
-                        if primary_error:
-                            primary_content = f"Error: {primary_error}"
-                        else:
-                            primary_parts = []
-                            core_intention = judge_meta.get("core_intention")
-                            restated_mutated_text = judge_meta.get("restated_mutated_text")
-                            if core_intention:
-                                primary_parts.append(f"Core Intention Extracted:\n{core_intention}")
-                            if restated_mutated_text:
-                                primary_parts.append(f"Restated Mutated Text:\n{restated_mutated_text}")
-                            primary_content = "\n\n".join(primary_parts) if primary_parts else "No assessment data available"
-
-                        sections.append(("🧠 Primary Intention Assessment", primary_content, None))
-
-                        secondary_error = judge_meta.get("secondary_error")
-                        if secondary_error:
-                            secondary_content = f"Error: {secondary_error}"
-                        else:
-                            secondary_content = f"{status_icon} {status_text}"
-
-                        sections.append(("⚖️ Secondary Validation", secondary_content, None))
-
-                        judge_response = judge_result.response if judge_result else ""
-                        if judge_response:
-                            sections.append(("🗳️ Judge Raw Response", judge_response, None))
-                    else:
-                        sections.append(("🧠 Primary Intention Assessment", "⏳ Pending — judge not run yet.", None))
-                        sections.append(("⚖️ Secondary Validation", "⏳ Pending — judge not run yet.", None))
-
                     meta_parts = [status_icon.strip()]
                     score_bits = []
                     if metrics:
@@ -1586,12 +1530,75 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         meta_parts.append(" | ".join(score_bits))
                     meta_text = " ".join(meta_parts)
 
-                    render_collapsible_panel(
-                        title=f"Mutation #{idx} - {evaluation.mutation.strategy}",
-                        sections=sections,
-                        meta=meta_text,
-                        expanded=False,
-                    )
+                    with st.expander(f"Mutation #{idx} - {evaluation.mutation.strategy} | {meta_text}"):
+                        summary_lines = [
+                            f"- Strategy: {evaluation.mutation.strategy}",
+                            f"- Attempt #: {evaluation.attempt}",
+                            f"- Judge Status: {status_icon} {status_text}",
+                        ]
+
+                        sections = []
+                        sections.append(("📄 Mutation Summary", "\n".join(summary_lines), None))
+                        sections.append(("📝 Mutated Prompt", mutated_text, None))
+
+                        if metrics:
+                            metrics_lines = [
+                                f"- ROUGE-L: {metrics.rouge_l:.4f}",
+                                f"- Jaccard: {metrics.jaccard:.4f}",
+                                f"- Levenshtein: {metrics.levenshtein}",
+                            ]
+                            sections.append(("📊 Similarity Metrics", "\n".join(metrics_lines), None))
+
+                        if llm_response:
+                            sections.append(("🧪 Evaluation Model Response", llm_response, None))
+
+                        mutation_response = evaluation.mutation.response or ""
+                        if mutation_response:
+                            sections.append(("🧰 Mutation Template Output", mutation_response, None))
+
+                        if judged_flag:
+                            primary_error = judge_meta.get("primary_error")
+                            if primary_error:
+                                primary_content = f"Error: {primary_error}"
+                            else:
+                                primary_parts = []
+                                core_intention = judge_meta.get("core_intention")
+                                restated_mutated_text = judge_meta.get("restated_mutated_text")
+                                if core_intention:
+                                    primary_parts.append(f"Core Intention Extracted:\n{core_intention}")
+                                if restated_mutated_text:
+                                    primary_parts.append(f"Restated Mutated Text:\n{restated_mutated_text}")
+                                primary_content = "\n\n".join(primary_parts) if primary_parts else "No assessment data available"
+
+                            sections.append(("🧠 Primary Intention Assessment", primary_content, None))
+
+                            secondary_error = judge_meta.get("secondary_error")
+                            if secondary_error:
+                                secondary_content = f"Error: {secondary_error}"
+                            else:
+                                secondary_content = f"{status_icon} {status_text}"
+
+                            sections.append(("⚖️ Secondary Validation", secondary_content, None))
+
+                            judge_response = judge_result.response if judge_result else ""
+                            if judge_response:
+                                sections.append(("🗳️ Judge Raw Response", judge_response, None))
+                        else:
+                            sections.append(("🧠 Primary Intention Assessment", "⏳ Pending — judge not run yet.", None))
+                            sections.append(("⚖️ Secondary Validation", "⏳ Pending — judge not run yet.", None))
+                        
+                        for title, content, style in sections:
+                            st.markdown(f"**{title}**")
+                            if style == "generated":
+                                st.markdown(
+                                    f'<div class="generated-text">{content}</div>',
+                                    unsafe_allow_html=True,
+                                )
+                            else:
+                                st.markdown(
+                                    f'<div class="text-block">{content}</div>',
+                                    unsafe_allow_html=True,
+                                )
 
     st.divider()
     
