@@ -6,11 +6,6 @@ import google.generativeai as genai
 from typing import Optional
 
 from src.prompt_utils import get_full_prompt
-from src.copyright_detective.progress import (
-    start_llm_progress,
-    update_llm_progress,
-    complete_llm_progress,
-)
 
 
 def _normalize_spaces(s: str) -> str:
@@ -31,24 +26,10 @@ def enforce_exact_char_count(text: str, target: Optional[int]) -> str:
 # Backward-compatible alias (internal use in legacy imports)
 _enforce_exact_char_count = enforce_exact_char_count
 
-def get_llm_completion(
-    prompt,
-    api_key,
-    model_name,
-    provider="OpenAI",
-    temperature=0.7,
-    top_p=1.0,
-    *,
-    progress_message: Optional[str] = None,
-):
+def get_llm_completion(prompt, api_key, model_name, provider="OpenAI", temperature=0.7, top_p=1.0):
     """
     Gets a completion from the specified LLM.
     """
-    label_placeholder, bar_placeholder, progress_bar = start_llm_progress(
-        progress_message or f"Calling {provider} · {model_name}"
-    )
-    update_llm_progress(progress_bar, value=15)
-
     try:
         if provider == "OpenAI":
             client = openai.OpenAI(api_key=api_key)
@@ -62,7 +43,7 @@ def get_llm_completion(
                 temperature=temperature,
                 top_p=top_p,
             )
-            result_text = response.choices[0].message.content.strip()
+            return response.choices[0].message.content.strip()
         
         elif provider == "OpenRouter":
             client = openai.OpenAI(
@@ -83,7 +64,7 @@ def get_llm_completion(
                     "X-Title": "Copyright Detective"
                 }
             )
-            result_text = response.choices[0].message.content.strip()
+            return response.choices[0].message.content.strip()
         
         elif provider == "Anthropic":
             client = anthropic.Anthropic(api_key=api_key)
@@ -96,7 +77,7 @@ def get_llm_completion(
                 temperature=temperature,
                 top_p=top_p,
             )
-            result_text = response.content[0].text.strip()
+            return response.content[0].text.strip()
         
         elif provider == "Google Gemini":
             genai.configure(api_key=api_key)
@@ -106,40 +87,13 @@ def get_llm_completion(
                 top_p=top_p,
             )
             response = model.generate_content(prompt, generation_config=generation_config)
-            result_text = response.text.strip()
+            return response.text.strip()
         
         else:
-            error_message = f"Error: Unsupported provider {provider}"
-            complete_llm_progress(
-                label_placeholder,
-                bar_placeholder,
-                progress_bar,
-                final_message=error_message,
-                success=False,
-                linger=0.5,
-            )
-            return error_message
+            return f"Error: Unsupported provider {provider}"
     
     except Exception as e:
-        complete_llm_progress(
-            label_placeholder,
-            bar_placeholder,
-            progress_bar,
-            final_message="LLM request failed",
-            success=False,
-            linger=0.6,
-        )
         return f"Error calling API: {e}"
-
-    update_llm_progress(progress_bar, value=80)
-    complete_llm_progress(
-        label_placeholder,
-        bar_placeholder,
-        progress_bar,
-        final_message=f"LLM request completed ({provider} · {model_name})",
-        success=True,
-    )
-    return result_text
 
 def calculate_rouge_score(text1, text2):
     """

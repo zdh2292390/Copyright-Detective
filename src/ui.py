@@ -3,7 +3,7 @@ import math
 import textwrap
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import streamlit as st
 import pandas as pd
@@ -17,7 +17,6 @@ from src.copyright_detective.comparison import (
 )
 from src.copyright_detective.pdf_utils import extract_text_from_pdf, split_text_into_chunks
 from src.config import DEFAULT_OPENROUTER_KEY
-
 import matplotlib.pyplot as plt
 from src.copyright_detective.jailbreak_probe import (
     run_persuasion_probe,
@@ -1042,8 +1041,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     )
 
     # Get mutation store for accessing results
-    mutation_store = st.session_state.setdefault("generated_persuasion_mutations", {})
-    stage1_reference_map = st.session_state.setdefault("stage1_reference_texts", {})
+    mutation_store = st.session_state.get("generated_persuasion_mutations", {})
     
     # ========== STAGE 1: Zero-Shot Mutation & Evaluation ==========
     st.markdown("#### 📋 Stage 1: Zero-Shot Mutation & Evaluation")
@@ -1136,17 +1134,14 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             st.error("⚠️ Enter your API key and choose a model in the sidebar.")
         else:
             original_prompt = stage1_input_prompt.strip()
-            prompt_reference_text = zero_shot_reference.strip()
-
-            if prompt_reference_text:
-                stage1_reference_map[original_prompt] = prompt_reference_text
             
             # Display processing header
             st.markdown("---")
             st.markdown(f"**Processing:** {textwrap.shorten(original_prompt, width=120, placeholder='…')}")
             st.caption(f"📊 {len(zero_shot_strategies)} strategy(ies) × {zero_shot_attempts} attempt(s) = {len(zero_shot_strategies) * zero_shot_attempts} mutations")
             
-            successful_count = 0
+            total_mutations = 0
+            stage1_results = []
             
             # ===== STEP 1: Generate Mutations =====
             st.markdown("**🔄 Step 1/4: Generating zero-shot mutations**")
@@ -1249,6 +1244,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     )
                     
                     # Store results in mutation_store
+                    successful_count = 0
                     for eval_item in evaluated_mutations:
                         evaluation = eval_item["evaluation"]
                         llm_response = eval_item["llm_response"]
@@ -1283,9 +1279,18 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                             record_entries.append({
                                 "config": ["zero", False],
                                 "data": serialised_entry,
-                                "llm_response": llm_response,
                             })
                             successful_count += 1
+                            stage1_results.append({
+                                "rank": successful_count,
+                                "strategy": evaluation.mutation.strategy,
+                                "mutated_text": mutated_text,
+                                "llm_response": llm_response,
+                                "rouge_l": f"{evaluation.metrics.rouge_l:.4f}" if evaluation.metrics else "N/A",
+                                "jaccard": f"{evaluation.metrics.jaccard:.4f}" if evaluation.metrics else "N/A",
+                            })
+                    
+                    total_mutations = successful_count
                     
                     # ===== STEP 4: Intention Preservation Judging =====
                     st.markdown("---")
@@ -1333,12 +1338,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                         )
                                         stored["data"] = serialise_mutation_with_judge(judged_entry)
                                         stored["config"] = ["zero", True]  # Mark as judged
-                                        stored["judge_meta"] = {
-                                            "core_intention": assessment.core_intention,
-                                            "restated_mutated_text": assessment.restated_mutated_text,
-                                            "primary_error": assessment.primary.error,
-                                            "secondary_error": assessment.secondary.error,
-                                        }
                                         break
                                 
                                 # Store assessment for display
@@ -1353,246 +1352,90 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     judging_progress.empty()
                     st.success(f"✅ Completed intention judging for {len(evaluated_mutations)} mutations")
                     
-                    st.session_state["last_stage1_prompt"] = original_prompt
-                    st.session_state["stage1_results_prompt_selector"] = original_prompt
+                    # ===== Display Results =====
                     st.markdown("---")
                     st.success(f"✅ **Stage 1 Complete:** Evaluated {successful_count} mutations (ranked by ROUGE-L)")
+                    
+                    if stage1_results:
+                        st.markdown("##### 📊 Results Summary")
+                        st.caption("Top-ranked mutations will be used as few-shot examples in Stage 2")
+                        
+                        df_stage1 = pd.DataFrame(stage1_results)
+                        st.dataframe(
+                            df_stage1,
+                            width='stretch',
+                            hide_index=True,
+                            column_config={
+                                "rank": st.column_config.NumberColumn("Rank", width="small"),
+                                "strategy": st.column_config.TextColumn("Strategy", width="medium"),
+                                "mutated_text": st.column_config.TextColumn("Mutated Prompt", width="large"),
+                                "llm_response": st.column_config.TextColumn("LLM Response", width="large"),
+                                "rouge_l": st.column_config.TextColumn("ROUGE-L", width="small"),
+                                "jaccard": st.column_config.TextColumn("Jaccard", width="small"),
+                            }
+                        )
+                        
+                        # Display Intention Judging Results in collapsible sections
+                        st.markdown("---")
+                        st.markdown("##### 🎯 Intention Preservation Judging Results")
+                        
+                        for idx, eval_item in enumerate(evaluated_mutations, start=1):
+                            evaluation = eval_item["evaluation"]
+                            assessment = eval_item.get("assessment")
+                            
+                            if not assessment:
+                                continue
+                            
+                            mutated_text = evaluation.parsed.mutated_text.strip()
+                            strategy = evaluation.mutation.strategy
+                            rouge_score = evaluation.metrics.rouge_l if evaluation.metrics else 0
+                            
+                            # Determine status icon
+                            if assessment.judge_passed is True:
+                                status_icon = "✅"
+                                status_text = "PASSED - Preserves original intention"
+                            elif assessment.judge_passed is False:
+                                status_icon = "❌"
+                                status_text = "FAILED - Does not preserve intention"
+                            else:
+                                status_icon = "⚠️"
+                                status_text = "UNCLEAR - Unable to determine"
+                            
+                            # Build sections for collapsible panel
+                            sections = []
+                            
+                            # Mutated Prompt section
+                            sections.append(("📝 Mutated Prompt", mutated_text, None))
+                            
+                            # Primary Intention Assessment section
+                            if assessment.primary.error:
+                                primary_content = f"Error: {assessment.primary.error}"
+                            else:
+                                primary_parts = []
+                                if assessment.core_intention:
+                                    primary_parts.append(f"Core Intention Extracted:\n{assessment.core_intention}")
+                                if assessment.restated_mutated_text:
+                                    primary_parts.append(f"Restated Mutated Text:\n{assessment.restated_mutated_text}")
+                                primary_content = "\n\n".join(primary_parts) if primary_parts else "No assessment data available"
+                            
+                            sections.append(("🧠 Primary Intention Assessment", primary_content, None))
+                            
+                            # Secondary Validation section
+                            if assessment.secondary.error:
+                                secondary_content = f"Error: {assessment.secondary.error}"
+                            else:
+                                secondary_content = f"{status_icon} {status_text}"
+                            
+                            sections.append(("⚖️ Secondary Validation", secondary_content, None))
+                            
+                            # Render using custom collapsible panel
+                            render_collapsible_panel(
+                                title=f"Mutation #{idx} - {strategy}",
+                                sections=sections,
+                                meta=f"{status_icon} ROUGE-L: {rouge_score:.4f}",
+                                expanded=False,
+                            )
     
-    st.divider()
-
-    # ===== Persistent Stage 1 Results =====
-    stage1_prompts = [
-        prompt_text
-        for prompt_text, records in mutation_store.items()
-        if any((entry.get("config") or [None])[0] == "zero" for entry in records)
-    ]
-
-    if stage1_prompts:
-        st.markdown("#### 📚 Stage 1 Results Library")
-        st.caption("Stage 1 results are cached in session state so you can revisit them while configuring Stage 2.")
-
-        col_results_header, col_clear_button = st.columns([3, 1])
-        with col_results_header:
-            st.write("")  # spacer for alignment
-        with col_clear_button:
-            if st.button("🗑️ Clear Stage 1 Cache", key="clear_stage1_cache", help="Remove cached Stage 1 results and reference excerpts"):
-                st.session_state.pop("generated_persuasion_mutations", None)
-                st.session_state.pop("stage1_reference_texts", None)
-                st.session_state.pop("stage1_results_prompt_selector", None)
-                st.session_state.pop("last_stage1_prompt", None)
-                rerun_fn = getattr(st, "rerun", None)
-                if callable(rerun_fn):
-                    rerun_fn()
-                else:
-                    experimental_rerun = getattr(st, "experimental_rerun", None)
-                    if callable(experimental_rerun):
-                        experimental_rerun()
-
-        default_prompt = st.session_state.get("stage1_results_prompt_selector")
-        if default_prompt not in stage1_prompts:
-            default_prompt = stage1_prompts[0]
-
-        selected_prompt = st.selectbox(
-            "Select a Stage 1 prompt to inspect",
-            options=stage1_prompts,
-            format_func=lambda x: textwrap.shorten(x, width=100, placeholder="…"),
-            index=stage1_prompts.index(default_prompt) if default_prompt in stage1_prompts else 0,
-            key="stage1_results_prompt_selector",
-        )
-
-        stage1_records = [
-            entry for entry in mutation_store.get(selected_prompt, [])
-            if (entry.get("config") or [None])[0] == "zero"
-        ]
-
-        if stage1_records:
-            ranked_rows: List[Dict[str, Any]] = []
-            stored_panels: List[Dict[str, Any]] = []
-
-            for entry in stage1_records:
-                serialised = entry.get("data") or {}
-                llm_response = entry.get("llm_response", "")
-                judge_meta = entry.get("judge_meta") or {}
-                config = entry.get("config") or []
-                judged_flag = bool(config[1]) if len(config) > 1 else False
-
-                deserialised = deserialise_mutation_with_judge(serialised)
-                evaluation = deserialised.evaluation
-                parsed = evaluation.parsed
-                metrics = evaluation.metrics
-
-                mutated_text = parsed.mutated_text.strip() if parsed and parsed.mutated_text else ""
-                rouge_l = metrics.rouge_l if metrics else 0.0
-                jaccard = metrics.jaccard if metrics else 0.0
-                levenshtein = metrics.levenshtein if metrics else None
-
-                judge_passed = deserialised.judge_passed if judged_flag else None
-                if not judged_flag:
-                    status_icon = "⏳"
-                    status_text = "Pending — Not yet judged"
-                elif judge_passed is True:
-                    status_icon = "✅"
-                    status_text = "PASSED — Preserves original intention"
-                elif judge_passed is False:
-                    status_icon = "❌"
-                    status_text = "FAILED — Does not preserve intention"
-                else:
-                    status_icon = "⚠️"
-                    status_text = "UNCLEAR — Unable to determine"
-
-                ranked_rows.append({
-                    "score": rouge_l,
-                    "strategy": evaluation.mutation.strategy,
-                    "attempt": evaluation.attempt,
-                    "mutated_text": mutated_text,
-                    "mutated_display": textwrap.shorten(mutated_text, width=120, placeholder="…") if mutated_text else "",
-                    "llm_response": llm_response or "",
-                    "llm_display": textwrap.shorten(llm_response, width=120, placeholder="…") if llm_response else "",
-                    "rouge_l": f"{rouge_l:.4f}" if metrics else "N/A",
-                    "jaccard": f"{jaccard:.4f}" if metrics else "N/A",
-                    "levenshtein": str(levenshtein) if levenshtein is not None else "N/A",
-                    "judge_status": f"{status_icon} {status_text}",
-                })
-
-                stored_panels.append({
-                    "score": rouge_l,
-                    "evaluation": evaluation,
-                    "metrics": metrics,
-                    "judge_passed": judge_passed,
-                    "judge": deserialised.judge,
-                    "judge_meta": judge_meta,
-                    "llm_response": llm_response,
-                    "status_icon": status_icon,
-                    "status_text": status_text,
-                    "judged": judged_flag,
-                })
-
-            ranked_rows.sort(key=lambda item: item["score"], reverse=True)
-            stored_panels.sort(key=lambda item: item["score"], reverse=True)
-
-            if ranked_rows:
-                df_data = []
-                for idx, row in enumerate(ranked_rows, start=1):
-                    df_data.append({
-                        "rank": idx,
-                        "strategy": row["strategy"],
-                        "attempt": row["attempt"],
-                        "mutated_text": row["mutated_display"],
-                        "llm_response": row["llm_display"],
-                        "rouge_l": row["rouge_l"],
-                        "jaccard": row["jaccard"],
-                        "levenshtein": row["levenshtein"],
-                        "judge_status": row["judge_status"],
-                    })
-
-                df_stage1 = pd.DataFrame(df_data)
-                st.dataframe(
-                    df_stage1,
-                    width='stretch',
-                    hide_index=True,
-                    column_config={
-                        "rank": st.column_config.NumberColumn("Rank", width="small"),
-                        "strategy": st.column_config.TextColumn("Strategy", width="medium"),
-                        "attempt": st.column_config.NumberColumn("Attempt", width="small"),
-                        "mutated_text": st.column_config.TextColumn("Mutated Prompt", width="large"),
-                        "llm_response": st.column_config.TextColumn("LLM Response", width="large"),
-                        "rouge_l": st.column_config.TextColumn("ROUGE-L", width="small"),
-                        "jaccard": st.column_config.TextColumn("Jaccard", width="small"),
-                        "levenshtein": st.column_config.TextColumn("Levenshtein", width="small"),
-                        "judge_status": st.column_config.TextColumn("Judge Status", width="medium"),
-                    },
-                )
-
-                st.markdown("##### 🎯 Intention Preservation Judging Results")
-
-                for idx, panel_payload in enumerate(stored_panels, start=1):
-                    evaluation = panel_payload["evaluation"]
-                    metrics = panel_payload.get("metrics")
-                    parsed = evaluation.parsed
-                    mutated_text = parsed.mutated_text.strip() if parsed and parsed.mutated_text else ""
-                    rouge_score = metrics.rouge_l if metrics else 0.0
-                    jaccard_value = metrics.jaccard if metrics else 0.0
-                    levenshtein_value = metrics.levenshtein if metrics else None
-                    status_icon = panel_payload["status_icon"]
-                    status_text = panel_payload["status_text"]
-                    judged_flag = panel_payload["judged"]
-                    judge_meta = panel_payload.get("judge_meta") or {}
-                    judge_result = panel_payload.get("judge")
-                    llm_response = panel_payload.get("llm_response") or ""
-
-                    summary_lines = [
-                        f"- Strategy: {evaluation.mutation.strategy}",
-                        f"- Attempt #: {evaluation.attempt}",
-                        f"- Judge Status: {status_icon} {status_text}",
-                    ]
-
-                    sections = []
-                    sections.append(("📄 Mutation Summary", "\n".join(summary_lines), None))
-                    sections.append(("📝 Mutated Prompt", mutated_text, None))
-
-                    if metrics:
-                        metrics_lines = [
-                            f"- ROUGE-L: {metrics.rouge_l:.4f}",
-                            f"- Jaccard: {metrics.jaccard:.4f}",
-                            f"- Levenshtein: {metrics.levenshtein}",
-                        ]
-                        sections.append(("📊 Similarity Metrics", "\n".join(metrics_lines), None))
-
-                    if llm_response:
-                        sections.append(("🧪 Evaluation Model Response", llm_response, None))
-
-                    mutation_response = evaluation.mutation.response or ""
-                    if mutation_response:
-                        sections.append(("🧰 Mutation Template Output", mutation_response, None))
-
-                    if judged_flag:
-                        primary_error = judge_meta.get("primary_error")
-                        if primary_error:
-                            primary_content = f"Error: {primary_error}"
-                        else:
-                            primary_parts = []
-                            core_intention = judge_meta.get("core_intention")
-                            restated_mutated_text = judge_meta.get("restated_mutated_text")
-                            if core_intention:
-                                primary_parts.append(f"Core Intention Extracted:\n{core_intention}")
-                            if restated_mutated_text:
-                                primary_parts.append(f"Restated Mutated Text:\n{restated_mutated_text}")
-                            primary_content = "\n\n".join(primary_parts) if primary_parts else "No assessment data available"
-
-                        sections.append(("🧠 Primary Intention Assessment", primary_content, None))
-
-                        secondary_error = judge_meta.get("secondary_error")
-                        if secondary_error:
-                            secondary_content = f"Error: {secondary_error}"
-                        else:
-                            secondary_content = f"{status_icon} {status_text}"
-
-                        sections.append(("⚖️ Secondary Validation", secondary_content, None))
-
-                        judge_response = judge_result.response if judge_result else ""
-                        if judge_response:
-                            sections.append(("🗳️ Judge Raw Response", judge_response, None))
-                    else:
-                        sections.append(("🧠 Primary Intention Assessment", "⏳ Pending — judge not run yet.", None))
-                        sections.append(("⚖️ Secondary Validation", "⏳ Pending — judge not run yet.", None))
-
-                    meta_parts = [status_icon.strip()]
-                    score_bits = []
-                    if metrics:
-                        score_bits.append(f"ROUGE-L: {rouge_score:.4f}")
-                        score_bits.append(f"Jaccard: {jaccard_value:.4f}")
-                        score_bits.append(f"Levenshtein: {levenshtein_value}")
-                    if score_bits:
-                        meta_parts.append(" | ".join(score_bits))
-                    meta_text = " ".join(meta_parts)
-
-                    render_collapsible_panel(
-                        title=f"Mutation #{idx} - {evaluation.mutation.strategy}",
-                        sections=sections,
-                        meta=meta_text,
-                        expanded=False,
-                    )
-
     st.divider()
     
     # ========== STAGE 2: Few-Shot Generation ==========
@@ -1640,12 +1483,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                 help="Number of few-shot mutation attempts per strategy.",
             )
         
-        run_stage2 = st.button(
-            "🎯 Run Stage 2: Few-Shot Generation",
-            key="run_stage2",
-            type="primary",
-            width='stretch'
-        )
+        run_stage2 = st.button("🎯 Run Stage 2: Few-Shot Generation", key="run_stage2", type="primary")
         
         if run_stage2:
             if not selected_stage2_prompts:
@@ -1672,48 +1510,12 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         continue
                     
                     st.caption(f"📚 Using {len(few_shot_examples)} top-ranked Stage 1 examples as demonstrations")
-                    prompt_reference_text = stage1_reference_map.get(original_prompt)
-                    if prompt_reference_text:
-                        reference_sections = [
-                            (
-                                "Reference Excerpt",
-                                prompt_reference_text,
-                                "generated",
-                            )
-                        ]
-                        render_collapsible_panel(
-                            title="📄 Stage 1 Reference Text",
-                            sections=reference_sections,
-                            expanded=False,
-                        )
-                    else:
-                        st.caption("⚠️ No Stage 1 reference text found—falling back to the current reference input field.")
-
-                    example_sections = []
-                    for ex_idx, example in enumerate(few_shot_examples, 1):
-                        example_sections.append(
-                            (
-                                f"Example #{ex_idx}",
-                                example,
-                                "generated",
-                            )
-                        )
-
-                    render_collapsible_panel(
-                        title="🧾 Stage 1 Top Examples",
-                        sections=example_sections,
-                        expanded=False,
-                    )
+                    with st.expander("View top 5 examples", expanded=False):
+                        for ex_idx, example in enumerate(few_shot_examples, 1):
+                            st.markdown(f"**{ex_idx}.** {textwrap.shorten(example, width=120, placeholder='…')}")
                     
                     st.markdown(f"**Generating {len(few_shot_strategies)} strategy(ies) × {few_shot_attempts} attempt(s)...**")
                     stage2_progress = st.progress(0.0)
-
-                    if prompt_reference_text:
-                        st.caption("📏 Stage 2 ROUGE reference inherited from Stage 1 run")
-                    else:
-                        prompt_reference_text = zero_shot_reference.strip() or None
-                        if prompt_reference_text:
-                            st.caption("📏 Stage 2 fallback reference: current Stage 1 reference field")
                     
                     evaluations = mutate_strategies(
                         api_key,
@@ -1721,7 +1523,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         provider,
                         few_shot_strategies,
                         original_prompt,
-                        reference_text=prompt_reference_text,
+                        reference_text=zero_shot_reference.strip() or None,
                         few_shot_examples=few_shot_examples,  # Pass top 5 examples
                         attempts_per_strategy=few_shot_attempts,
                         temperature=1.0,  # Higher temperature for diverse mutation generation
@@ -1746,51 +1548,10 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         if not parsed or not parsed.mutated_text:
                             continue
                         
-                        mutated_text = parsed.mutated_text.strip()
-                        reference_for_metrics = (prompt_reference_text or "").strip()
-
-                        llm_response: Optional[str] = None
-                        eval_metrics: Optional[SimilarityMetrics] = None
-
-                        if reference_for_metrics:
-                            try:
-                                llm_response = get_llm_completion(
-                                    mutated_text,
-                                    api_key,
-                                    model_choice,
-                                    provider=provider,
-                                    temperature=0.0,
-                                    top_p=0.8,
-                                )
-
-                                rouge_score = calculate_rouge_score(llm_response, reference_for_metrics)
-                                jaccard = calculate_jaccard_index(llm_response, reference_for_metrics)
-                                levenshtein = distance(llm_response, reference_for_metrics)
-
-                                eval_metrics = SimilarityMetrics(
-                                    rouge_l=rouge_score,
-                                    jaccard=jaccard,
-                                    levenshtein=levenshtein,
-                                )
-                            except Exception as exc:
-                                st.warning(
-                                    f"⚠️ Failed to score few-shot mutation (strategy: {evaluation.mutation.strategy}): {exc}"
-                                )
-                                eval_metrics = evaluation.metrics
-                        else:
-                            eval_metrics = evaluation.metrics
-
-                        evaluation_to_store = MutationEvaluation(
-                            mutation=evaluation.mutation,
-                            parsed=evaluation.parsed,
-                            metrics=eval_metrics,
-                            attempt=evaluation.attempt,
-                        )
-
                         record_entries = mutation_store.setdefault(original_prompt, [])
                         
                         few_mutation_entry = MutationWithJudge(
-                            evaluation=evaluation_to_store,
+                            evaluation=evaluation,
                             judge=None,
                             judge_passed=None,
                         )
@@ -1799,18 +1560,14 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         record_entries.append({
                             "config": ["few", False],
                             "data": serialised_few,
-                            "llm_response": llm_response,
                         })
                         
                         successful_count += 1
                         stage2_results.append({
                             "prompt": original_prompt,
                             "strategy": evaluation.mutation.strategy,
-                            "mutated_text": mutated_text,
-                            "llm_response": llm_response or "",
-                            "rouge_l": eval_metrics.rouge_l if eval_metrics else None,
-                            "jaccard": eval_metrics.jaccard if eval_metrics else None,
-                            "levenshtein": eval_metrics.levenshtein if eval_metrics else None,
+                            "mutated_text": parsed.mutated_text.strip(),
+                            "rouge_l": evaluation.metrics.rouge_l if evaluation.metrics else None,
                         })
                     
                     total_few_shot += successful_count

@@ -15,7 +15,6 @@ except ImportError:  # pragma: no cover - backwards compatibility
     BadRequestError = None  # type: ignore[assignment]
 
 from .comparison import get_llm_completion
-from .progress import start_llm_progress, update_llm_progress, complete_llm_progress
 
 try:  # pragma: no cover - optional dependency
     from representational_toolkit.analysis import run_feature_analysis as _run_feature_analysis
@@ -381,11 +380,6 @@ def _fetch_logprobs_for_text(
     if provider != "OpenAI":
         return [], f"Logprob extraction is currently supported for OpenAI models only (got {provider})."
 
-    label_placeholder, bar_placeholder, progress_bar = start_llm_progress(
-        f"Fetching logprobs ({model_name})"
-    )
-    update_llm_progress(progress_bar, value=20)
-
     client = openai.OpenAI(api_key=api_key)
     try:
         response = client.completions.create(
@@ -396,42 +390,17 @@ def _fetch_logprobs_for_text(
             logprobs=1,
             echo=True,
         )
-        update_llm_progress(progress_bar, value=55)
     except Exception as exc:  # pragma: no cover - network/SDK errors
         fallback_reason = str(exc)
         is_bad_request = BadRequestError is not None and isinstance(exc, BadRequestError)
         invalid_combo = "invalid_parameter_combination" in fallback_reason or "Setting 'echo' and 'logprobs'" in fallback_reason
 
         if is_bad_request and not invalid_combo:
-            complete_llm_progress(
-                label_placeholder,
-                bar_placeholder,
-                progress_bar,
-                final_message=f"Logprob fetch failed ({model_name})",
-                success=False,
-                linger=0.5,
-            )
             return [], f"Failed to retrieve logprobs: {exc}"
 
         values, error = _fetch_logprobs_via_responses(client, model_name, text)
         if error:
-            complete_llm_progress(
-                label_placeholder,
-                bar_placeholder,
-                progress_bar,
-                final_message=f"Logprob fetch failed ({model_name})",
-                success=False,
-                linger=0.5,
-            )
             return [], f"Failed to retrieve logprobs: {fallback_reason}; {error}"
-        update_llm_progress(progress_bar, value=85)
-        complete_llm_progress(
-            label_placeholder,
-            bar_placeholder,
-            progress_bar,
-            final_message=f"Logprobs retrieved ({model_name})",
-            success=True,
-        )
         return values, None
 
     choice = response.choices[0]
@@ -440,45 +409,13 @@ def _fetch_logprobs_for_text(
         # Attempt to fall back to the Responses API when prompt logprobs aren't returned.
         values, error = _fetch_logprobs_via_responses(client, model_name, text)
         if error:
-            complete_llm_progress(
-                label_placeholder,
-                bar_placeholder,
-                progress_bar,
-                final_message=f"Logprob fetch failed ({model_name})",
-                success=False,
-                linger=0.5,
-            )
             return [], error
-        update_llm_progress(progress_bar, value=85)
-        complete_llm_progress(
-            label_placeholder,
-            bar_placeholder,
-            progress_bar,
-            final_message=f"Logprobs retrieved ({model_name})",
-            success=True,
-        )
         return values, None
 
     values = [lp for lp in logprobs.token_logprobs if lp is not None]
     if not values:
-        complete_llm_progress(
-            label_placeholder,
-            bar_placeholder,
-            progress_bar,
-            final_message=f"Logprob fetch failed ({model_name})",
-            success=False,
-            linger=0.5,
-        )
         return [], "Token log probabilities were empty."
 
-    update_llm_progress(progress_bar, value=90)
-    complete_llm_progress(
-        label_placeholder,
-        bar_placeholder,
-        progress_bar,
-        final_message=f"Logprobs retrieved ({model_name})",
-        success=True,
-    )
     return values, None
 
 

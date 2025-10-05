@@ -3,129 +3,11 @@ from __future__ import annotations
 import base64
 import html
 import json
-import math
 from typing import Iterable, Optional, Sequence, Tuple
 
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-
-
-_COLLAPSIBLE_COMPONENT_STYLE = """
-<style>
-    :root {
-        color-scheme: light;
-        --primary: #2563eb;
-        --primary-800: #1e40af;
-        --muted: #64748b;
-    }
-    * {
-        box-sizing: border-box;
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    }
-    body {
-        margin: 0;
-        padding: 0.15rem 0.2rem 0.4rem;
-        background: transparent;
-        color: #0f172a;
-    }
-    .cd-accordion-shell {
-        width: 100%;
-    }
-    .cd-accordion {
-        border: 1px solid rgba(209, 213, 225, 0.65);
-        border-radius: 14px;
-        margin: 0.4rem 0;
-        background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(241, 246, 255, 0.82));
-        box-shadow: 0 16px 36px rgba(15, 23, 42, 0.08);
-        overflow: hidden;
-        transition: box-shadow 0.2s ease;
-    }
-    .cd-accordion[open] {
-        box-shadow: 0 20px 48px rgba(15, 23, 42, 0.12);
-    }
-    .cd-accordion__summary {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 1rem;
-        padding: 0.95rem 1.25rem;
-        cursor: pointer;
-        list-style: none;
-        font-weight: 700;
-        color: #0f172a;
-        position: relative;
-    }
-    .cd-accordion__summary::-webkit-details-marker { display: none; }
-    .cd-accordion__summary::before {
-        content: '\u25B6';
-        margin-right: 0.65rem;
-        transition: transform 0.2s ease;
-        color: var(--primary-800);
-    }
-    .cd-accordion[open] > .cd-accordion__summary::before {
-        transform: rotate(90deg);
-    }
-    .cd-accordion__title {
-        font-size: 0.98rem;
-        letter-spacing: 0.4px;
-    }
-    .cd-accordion__meta {
-        font-size: 0.85rem;
-        font-weight: 600;
-        color: var(--muted);
-    }
-    .cd-accordion__content {
-        padding: 0.85rem 1.25rem 1.2rem;
-        border-top: 1px solid rgba(209, 213, 225, 0.45);
-        background: rgba(248, 250, 252, 0.85);
-    }
-    .cd-accordion__block + .cd-accordion__block {
-        margin-top: 0.85rem;
-        padding-top: 0.85rem;
-        border-top: 1px dashed rgba(148, 163, 184, 0.4);
-    }
-    .cd-accordion__block-title {
-        font-weight: 700;
-        font-size: 0.9rem;
-        color: #1e293b;
-        margin-bottom: 0.35rem;
-    }
-    .cd-accordion__block-text {
-        font-size: 0.9rem;
-        line-height: 1.6;
-        color: #334155;
-        white-space: pre-wrap;
-    }
-    .cd-accordion__empty {
-        font-size: 0.9rem;
-        font-style: italic;
-        color: rgba(71, 85, 105, 0.9);
-    }
-    .generated-text {
-        padding: 1rem 1.25rem;
-        background: linear-gradient(135deg, rgba(239, 246, 255, 0.95), rgba(222, 235, 255, 0.8));
-        border: 1px solid rgba(191, 219, 254, 0.85);
-        border-left: 5px solid var(--primary);
-        font-family: Georgia, serif;
-        line-height: 1.75;
-        color: #1d4ed8;
-        margin: 0.75rem 0;
-        border-radius: 0 16px 16px 0;
-        font-size: 0.95rem;
-        white-space: pre-wrap;
-        word-wrap: break-word;
-        box-shadow: 0 14px 28px rgba(30, 64, 175, 0.12);
-    }
-    .generated-text.sm {
-        font-size: 0.85rem;
-        line-height: 1.6;
-        padding: 0.65rem 0.9rem;
-        border-radius: 0 12px 12px 0;
-        box-shadow: 0 10px 20px rgba(30, 64, 175, 0.08);
-    }
-</style>
-"""
 
 
 def render_prompt_preview(
@@ -173,82 +55,48 @@ def render_collapsible_panel(
     meta: Optional[str] = None,
     expanded: bool = False,
 ) -> None:
-    """Render a custom collapsible panel via an isolated HTML component."""
+    """Render a custom collapsible panel using native HTML details/summary."""
 
     open_attr = "open" if expanded else ""
     escaped_title = html.escape(title)
     meta_html = f'<span class="cd-accordion__meta">{html.escape(meta)}</span>' if meta else ""
 
     content_html_parts = []
-    total_lines = 0
-
     for heading, body, variant in sections:
-        safe_heading = html.escape(heading)
-        body_text = body or ""
-        safe_body = html.escape(body_text)
-        if body_text:
-            line_breaks = body_text.count("\n") + 1
-            soft_wrap_estimate = math.ceil(len(body_text) / 90)
-            approx_lines = max(line_breaks, soft_wrap_estimate)
-        else:
-            approx_lines = 1
-        total_lines += approx_lines
+        escaped_heading = html.escape(heading)
+        escaped_body = html.escape(body or "").replace("\n", "<br/>")
 
         if variant == "generated":
             block_html = (
                 f'<div class="cd-accordion__block">'
-                f'<div class="cd-accordion__block-title">{safe_heading}</div>'
-                f'<div class="generated-text">{safe_body}</div>'
+                f'<div class="cd-accordion__block-title">{escaped_heading}</div>'
+                f'<div class="generated-text">{escaped_body}</div>'
                 f"</div>"
             )
         else:
             block_html = (
                 f'<div class="cd-accordion__block">'
-                f'<div class="cd-accordion__block-title">{safe_heading}</div>'
-                f'<div class="cd-accordion__block-text">{safe_body}</div>'
+                f'<div class="cd-accordion__block-title">{escaped_heading}</div>'
+                f'<div class="cd-accordion__block-text">{escaped_body}</div>'
                 f"</div>"
             )
         content_html_parts.append(block_html)
 
-    if not content_html_parts:
-        content_html_parts.append('<div class="cd-accordion__empty">No content available.</div>')
-
-    body_html = "".join(content_html_parts)
+    content_html = "".join(content_html_parts)
 
     panel_html = f"""
-        <div class="cd-accordion-shell">
-            <details class="cd-accordion" {open_attr}>
-                <summary class="cd-accordion__summary">
-                    <span class="cd-accordion__title">{escaped_title}</span>
-                    {meta_html}
-                </summary>
-                <div class="cd-accordion__content">
-                    {body_html}
-                </div>
-            </details>
+    <details class="cd-accordion" {open_attr}>
+        <summary class="cd-accordion__summary">
+            <span class="cd-accordion__title">{escaped_title}</span>
+            {meta_html}
+        </summary>
+        <div class="cd-accordion__content">
+            {content_html}
         </div>
+    </details>
     """
 
-    section_count = max(len(content_html_parts), 1)
-    estimated_height = 160 + total_lines * 22 + section_count * 18
-    max_height = 780
-    height = min(max_height, max(220, estimated_height))
-    scrolling = height >= max_height
-
-    components.html(
-        f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset=\"utf-8\" />
-            {_COLLAPSIBLE_COMPONENT_STYLE}
-        </head>
-        <body>{panel_html}</body>
-        </html>
-        """,
-        height=height,
-        scrolling=scrolling,
-    )
+    st.markdown(panel_html, unsafe_allow_html=True)
 
 
 def render_top_sample_distribution(records: Sequence[dict]) -> None:
