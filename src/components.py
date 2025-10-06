@@ -41,6 +41,28 @@ _COLLAPSIBLE_COMPONENT_STYLE = """
         overflow: hidden;
         transition: box-shadow 0.2s ease;
     }
+    .cd-accordion.compact {
+        margin: 0;
+        border-radius: 0;
+        border-bottom: none;
+        box-shadow: none;
+    }
+    .cd-accordion.compact:first-of-type {
+        border-top-left-radius: 8px;
+        border-top-right-radius: 8px;
+    }
+    .cd-accordion.compact:last-of-type {
+        border-bottom-left-radius: 8px;
+        border-bottom-right-radius: 8px;
+        border-bottom: 1px solid rgba(209, 213, 225, 0.65);
+    }
+    .cd-accordion.compact[open] {
+        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+        z-index: 1;
+        position: relative;
+        border-bottom: 1px solid rgba(209, 213, 225, 0.65);
+        margin: 0.2rem 0;
+    }
     .cd-accordion[open] {
         box-shadow: 0 20px 48px rgba(15, 23, 42, 0.12);
     }
@@ -172,10 +194,12 @@ def render_collapsible_panel(
     *,
     meta: Optional[str] = None,
     expanded: bool = False,
+    compact: bool = False,
 ) -> None:
     """Render a custom collapsible panel via an isolated HTML component."""
 
     open_attr = "open" if expanded else ""
+    compact_class = " compact" if compact else ""
     escaped_title = html.escape(title)
     meta_html = f'<span class="cd-accordion__meta">{html.escape(meta)}</span>' if meta else ""
 
@@ -217,7 +241,7 @@ def render_collapsible_panel(
 
     panel_html = f"""
         <div class="cd-accordion-shell">
-            <details class="cd-accordion" {open_attr}>
+            <details class="cd-accordion{compact_class}" {open_attr}>
                 <summary class="cd-accordion__summary">
                     <span class="cd-accordion__title">{escaped_title}</span>
                     {meta_html}
@@ -248,6 +272,205 @@ def render_collapsible_panel(
         """,
         height=height,
         scrolling=scrolling,
+    )
+
+
+def render_compact_mutation_panels(
+    panels: Sequence[dict],
+    *,
+    columns: int = 2,
+    expanded_index: Optional[int] = None,
+) -> None:
+    """Render a responsive grid of compact collapsible panels used for mutation judging results.
+
+    Each panel dict should contain:
+      - title: str
+      - meta: Optional[str]
+      - sections: Sequence[AccordionSection]
+      - expanded (optional): bool
+
+    Only one panel is expanded at a time (if expanded_index specified). Mimics the
+    interaction pattern requested: tiles sit side-by-side (default 2 columns) and
+    expanding one pushes the rest downward.
+    """
+
+    if not panels:
+        st.info("No judging results to display yet.")
+        return
+
+    # Build HTML for all panels in one iframe so CSS grid works.
+    # Clamp columns between 1 and 4 for safety
+    try:
+        columns = max(1, min(int(columns), 4))
+    except Exception:  # pragma: no cover
+        columns = 2
+
+    style_block = """
+    <style>
+        :root {{ color-scheme: light; --primary:#2563eb; --primary-hover:#1d4ed8; --slate:#334155; }}
+        body {{ margin:0; padding:0.25rem 0.15rem 0.15rem; background:transparent; font-family:'Inter',system-ui,sans-serif; }}
+        .cd-mgrid {{ display:grid; grid-template-columns:repeat({columns}, 1fr); gap:0.65rem; align-items:start; margin-bottom:0; }}
+        @media (max-width: 900px) {{ .cd-mgrid {{ grid-template-columns:1fr; }} }}
+        details.cd-mtile {{
+            position:relative;
+            border:1px solid rgba(203,213,225,0.75);
+            border-radius:16px;
+            background:linear-gradient(145deg,rgba(255,255,255,0.98),rgba(248,250,252,0.92));
+            box-shadow:0 8px 20px rgba(15,23,42,0.06), 0 2px 6px rgba(15,23,42,0.04);
+            overflow:hidden;
+            transition:all .22s cubic-bezier(0.4,0,0.2,1);
+        }}
+        details.cd-mtile:hover {{
+            box-shadow:0 12px 28px rgba(15,23,42,0.1), 0 4px 10px rgba(15,23,42,0.06);
+            transform:translateY(-2px);
+        }}
+        details.cd-mtile[open] {{
+            box-shadow:0 20px 40px rgba(15,23,42,0.14), 0 8px 16px rgba(15,23,42,0.08);
+            border-color:rgba(148,163,184,0.85);
+            grid-column:span var(--span,1);
+            transform:translateY(0);
+        }}
+        /* Enhanced status accent bars with glow effect */
+        .cd-mtile[data-status="pass"] {{ 
+            border-left:5px solid #16a34a; 
+            background:linear-gradient(145deg,rgba(240,253,244,0.4),rgba(248,250,252,0.92));
+        }}
+        .cd-mtile[data-status="fail"] {{ 
+            border-left:5px solid #dc2626; 
+            background:linear-gradient(145deg,rgba(254,242,242,0.4),rgba(248,250,252,0.92));
+        }}
+        .cd-mtile[data-status="pending"] {{ 
+            border-left:5px solid #f59e0b; 
+            background:linear-gradient(145deg,rgba(255,251,235,0.4),rgba(248,250,252,0.92));
+        }}
+        .cd-mtile[data-status="unclear"] {{ 
+            border-left:5px solid #6366f1; 
+            background:linear-gradient(145deg,rgba(238,242,255,0.4),rgba(248,250,252,0.92));
+        }}
+        summary.cd-mtile__summary {{
+            list-style:none; cursor:pointer; display:flex; flex-direction:column; gap:0.3rem;
+            padding:0.75rem 0.95rem 0.8rem 2rem; position:relative; font-weight:600; color:#0f172a;
+            background:linear-gradient(135deg,rgba(251,252,253,0.95),rgba(243,246,249,0.7));
+            border-bottom:1px solid transparent;
+            transition:all .18s ease;
+        }}
+        summary.cd-mtile__summary:hover {{
+            background:linear-gradient(135deg,rgba(248,250,252,0.98),rgba(240,244,248,0.85));
+        }}
+        details.cd-mtile[open] > summary.cd-mtile__summary {{
+            border-bottom-color:rgba(203,213,225,0.5);
+        }}
+        summary.cd-mtile__summary::-webkit-details-marker {{ display:none; }}
+        summary.cd-mtile__summary::before {{
+            content:''; position:absolute; left:0.75rem; top:0.95rem; width:0.7rem; height:0.7rem;
+            border-right:2.5px solid var(--primary); border-bottom:2.5px solid var(--primary);
+            transform:rotate(-45deg); transition:all .2s cubic-bezier(0.4,0,0.2,1);
+        }}
+        details.cd-mtile[open] > summary.cd-mtile__summary::before {{ 
+            transform:rotate(45deg); top:1.05rem; 
+            border-color:var(--primary-hover);
+        }}
+        .cd-mtile__title {{ font-size:0.9rem; letter-spacing:0.25px; color:#1e293b; }}
+        .cd-mtile__meta {{ font-size:0.68rem; font-weight:600; color:#64748b; text-transform:uppercase; letter-spacing:0.6px; }}
+        .cd-mtile__chips {{ display:flex; flex-wrap:wrap; gap:0.32rem; margin-top:0.2rem; }}
+        .cd-chip {{
+            --chip-bg:rgba(226,232,240,0.7);
+            --chip-color:#334155;
+            display:inline-flex; align-items:center; gap:0.28rem;
+            padding:0.2rem 0.5rem; border-radius:999px; font-size:0.6rem; font-weight:700;
+            background:var(--chip-bg); color:var(--chip-color); letter-spacing:0.4px;
+            box-shadow:0 1px 3px rgba(15,23,42,0.1);
+            transition:all .15s ease;
+        }}
+        .cd-chip:hover {{ transform:translateY(-1px); box-shadow:0 2px 6px rgba(15,23,42,0.15); }}
+        .cd-chip.score {{ --chip-bg:linear-gradient(135deg,#1d4ed8,#2563eb); --chip-color:#f1f5f9; }}
+        .cd-chip.jaccard {{ --chip-bg:linear-gradient(135deg,#0891b2,#06b6d4); --chip-color:#ecfeff; }}
+        .cd-chip.lev {{ --chip-bg:linear-gradient(135deg,#475569,#64748b); --chip-color:#f1f5f9; }}
+        .cd-chip.pass {{ --chip-bg:linear-gradient(135deg,#16a34a,#15803d); --chip-color:#f0fdf4; }}
+        .cd-chip.fail {{ --chip-bg:linear-gradient(135deg,#dc2626,#b91c1c); --chip-color:#fef2f2; }}
+        .cd-chip.pending {{ --chip-bg:linear-gradient(135deg,#f59e0b,#d97706); --chip-color:#fffbeb; }}
+        .cd-chip.unclear {{ --chip-bg:linear-gradient(135deg,#6366f1,#4f46e5); --chip-color:#eef2ff; }}
+        .cd-mtile__content {{ 
+            padding:0.75rem 0.95rem 0.9rem; 
+            border-top:1px solid rgba(203,213,225,0.45); 
+            background:linear-gradient(to bottom,rgba(249,250,251,0.85),rgba(248,250,252,0.6));
+        }}
+        .cd-mtile__block + .cd-mtile__block {{ margin-top:0.65rem; padding-top:0.7rem; border-top:1px dashed rgba(148,163,184,0.32); }}
+        .cd-mtile__block-title {{ 
+            font-size:0.75rem; font-weight:700; color:#1e293b; margin-bottom:0.28rem; 
+            letter-spacing:0.6px; text-transform:uppercase; 
+        }}
+        .cd-mtile__text {{ font-size:0.78rem; line-height:1.6; color:#334155; white-space:pre-wrap; }}
+        .cd-mtile__text.generated {{
+            background:linear-gradient(135deg,rgba(239,246,255,0.96),rgba(224,237,255,0.88));
+            border:1px solid rgba(191,219,254,0.75); border-left:4px solid var(--primary);
+            padding:0.55rem 0.7rem; border-radius:0 14px 14px 0; font-family:Georgia,serif; 
+            font-size:0.8rem; color:#1e40af; line-height:1.65;
+            box-shadow:0 2px 8px rgba(29,78,216,0.08);
+        }}
+    </style>
+    """
+    # Inject the columns value into the CSS placeholder. Using replace here avoids needing to escape
+    # all literal braces in the CSS block for an f-string.
+    style_block = style_block.replace("{columns}", str(columns))
+
+    panel_html_parts = []
+    total_lines = 0
+    for i, panel in enumerate(panels):
+        title = html.escape(panel.get("title") or f"Panel {i+1}")
+        meta = panel.get("meta")
+        sections: Sequence[AccordionSection] = panel.get("sections") or []
+        is_open = False
+        if expanded_index is not None:
+            is_open = (i == expanded_index)
+        else:
+            is_open = bool(panel.get("expanded"))
+        open_attr = "open" if is_open else ""
+        status = panel.get("status") or "pending"
+        status_class = html.escape(status.lower())
+        meta_html = f'<div class="cd-mtile__meta">{html.escape(meta)}</div>' if meta else ""
+
+        # Metric chips
+        chips_spec = panel.get("chips") or []  # list of (label, class)
+        chip_html_parts = []
+        for label, cls in chips_spec:
+            chip_html_parts.append(f'<span class="cd-chip {html.escape(cls)}">{html.escape(label)}</span>')
+        chips_html = f'<div class="cd-mtile__chips">{"".join(chip_html_parts)}</div>' if chip_html_parts else ""
+
+        blocks_html = []
+        for heading, body, variant in sections:
+            h_safe = html.escape(heading)
+            b_text = body or ""
+            b_safe = html.escape(b_text)
+            lines = b_text.count("\n") + 1 if b_text else 1
+            approx_soft = max(1, math.ceil(len(b_text) / 90))
+            total_lines += max(lines, approx_soft)
+            text_class = "cd-mtile__text generated" if variant == "generated" else "cd-mtile__text"
+            blocks_html.append(
+                f'<div class="cd-mtile__block"><div class="cd-mtile__block-title">{h_safe}</div>'
+                f'<div class="{text_class}">{b_safe}</div></div>'
+            )
+
+        if not blocks_html:
+            blocks_html.append('<div class="cd-mtile__block"><div class="cd-mtile__block-title">Empty</div><div class="cd-mtile__text">No content</div></div>')
+
+        panel_html_parts.append(
+            f'<details class="cd-mtile" data-status="{status_class}" {open_attr}><summary class="cd-mtile__summary">'
+            f'<span class="cd-mtile__title">{title}</span>{meta_html}{chips_html}</summary>'
+            f'<div class="cd-mtile__content">{"".join(blocks_html)}</div></details>'
+        )
+
+    grid_html = "".join(panel_html_parts)
+
+    estimated_height = min(1400, 120 + total_lines * 14)
+    components.html(
+        f"""
+        <!DOCTYPE html>
+        <html><head><meta charset='utf-8' />{style_block}</head>
+        <body><div class='cd-mgrid'>{grid_html}</div></body></html>
+        """,
+        height=max(360, estimated_height),
+        scrolling=True,
     )
 
 
