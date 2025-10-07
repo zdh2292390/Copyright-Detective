@@ -1996,7 +1996,7 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                                     ]
                                     meta = "Response"
 
-                                render_collapsible_panel(
+                                render_prompt_style_panel(
                                     title=f"Strategy · {result.strategy_name}",
                                     sections=sections,
                                     meta=meta,
