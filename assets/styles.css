@@ -468,6 +468,86 @@
     line-height: 1.65;
 }
 
+.cd-prompt-panel { margin: 0.4rem 0 0.8rem; }
+.cd-prompt-panel__summary {
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.6rem;
+}
+.cd-prompt-panel__title {
+    font-size: 1.02rem;
+    font-weight: 700;
+    color: #0f172a;
+    letter-spacing: 0.25px;
+}
+.cd-prompt-panel__meta {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-left: auto;
+}
+.cd-prompt-panel__chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.22rem 0.6rem;
+    border-radius: 999px;
+    background: rgba(37, 99, 235, 0.14);
+    color: #1d4ed8;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.35px;
+    text-transform: uppercase;
+    box-shadow: 0 6px 14px rgba(37, 99, 235, 0.12);
+}
+.cd-prompt-panel__chip:first-child {
+    background: linear-gradient(135deg, rgba(37, 99, 235, 0.22), rgba(37, 99, 235, 0.1));
+    color: #0f172a;
+}
+.cd-prompt-panel__content {
+    display: flex;
+    flex-direction: column;
+    gap: 1.05rem;
+    padding: 1rem 1rem 2rem 1rem;
+    border-radius: 12px;
+    background: linear-gradient(145deg, rgba(248, 250, 252, 0.75), rgba(236, 243, 255, 0.6));
+}
+.cd-prompt-panel__section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding-bottom: 0.8rem;
+    border-bottom: 1px dashed rgba(148, 163, 184, 0.35);
+}
+.cd-prompt-panel__section:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+}
+.cd-prompt-panel__heading {
+    font-size: 0.86rem;
+    font-weight: 700;
+    color: #1e293b;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+.cd-prompt-panel__body {
+    font-size: 0.88rem;
+    line-height: 1.65;
+    color: #334155;
+    background: rgba(255, 255, 255, 0.9);
+    border: 1px solid rgba(203, 213, 225, 0.6);
+    border-radius: 12px;
+    padding: 0.75rem 0.9rem;
+    white-space: pre-wrap;
+}
+.cd-prompt-panel__body--empty {
+    font-style: italic;
+    color: rgba(71, 85, 105, 0.8);
+    background: rgba(248, 250, 252, 0.6);
+    border-style: dashed;
+}
+
 /* Custom accordion panels */
 .cd-accordion {
     border: 1px solid rgba(209, 213, 225, 0.65);

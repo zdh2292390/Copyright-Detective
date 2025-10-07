@@ -51,6 +51,7 @@ from src.prompt_utils import get_full_prompt, get_persuasion_prompt, get_persuas
 from src.components import (
     render_collapsible_panel,
     render_prompt_preview,
+    render_prompt_style_panel,
     render_table_card,
     render_collapsible_table_card,
     render_top_sample_distribution,
@@ -1582,19 +1583,23 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         sections.append(("⚖️ Secondary Validation", "⏳ Pending — judge not run yet.", None))
 
                     # Build meta string with metrics
-                    meta_parts = [status_icon.strip()]
+                    meta_parts = [f"{status_icon.strip()} {status_text.strip()}"]
                     if metrics:
-                        meta_parts.append(f"ROUGE-L: {rouge_score:.4f}")
-                        meta_parts.append(f"Jaccard: {jaccard_value:.4f}")
-                        meta_parts.append(f"Levenshtein: {levenshtein_value}")
+                        levenshtein_display = (
+                            str(levenshtein_value)
+                            if levenshtein_value is not None
+                            else "N/A"
+                        )
+                        meta_parts.append(f"ROUGE-L {rouge_score:.4f}")
+                        meta_parts.append(f"Jaccard {jaccard_value:.4f}")
+                        meta_parts.append(f"Levenshtein {levenshtein_display}")
                     meta_text = " | ".join(meta_parts)
 
-                    render_collapsible_panel(
+                    render_prompt_style_panel(
                         title=f"Mutation #{idx} — {evaluation.mutation.strategy}",
                         sections=sections,
                         meta=meta_text,
                         expanded=False,
-                        compact=True,
                     )
 
     st.divider()

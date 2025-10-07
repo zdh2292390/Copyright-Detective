@@ -4,7 +4,7 @@ import base64
 import html
 import json
 import math
-from typing import Iterable, Optional, Sequence, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -177,6 +177,77 @@ def render_prompt_preview(
                         setTimeout(() => btn.innerText = previous, 2000);
                     }}); event.stopPropagation(); return false;'>Copy</button>
                     <pre class="cd-prompt-preview__text">{escaped_text}</pre>
+                </div>
+            </details>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_prompt_style_panel(
+    title: str,
+    sections: Iterable[AccordionSection],
+    *,
+    meta: Optional[str] = None,
+    expanded: bool = False,
+) -> None:
+    """Render a collapsible panel reusing the prompt preview styling."""
+
+    open_attr = "open" if expanded else ""
+    safe_title = html.escape(title)
+
+    meta_bits = []
+    if meta:
+        for part in meta.split("|"):
+            item = part.strip()
+            if item:
+                meta_bits.append(html.escape(item))
+
+    if meta_bits:
+        chips_html = "".join(
+            f'<span class="cd-prompt-panel__chip">{bit}</span>' for bit in meta_bits
+        )
+        meta_html = f'<div class="cd-prompt-panel__meta">{chips_html}</div>'
+    else:
+        meta_html = ""
+
+    section_html_parts: List[str] = []
+    for heading, body, variant in sections:
+        safe_heading = html.escape(heading)
+        body_text = body or ""
+        safe_body = html.escape(body_text)
+
+        if variant == "generated":
+            body_block = f'<div class="generated-text sm">{safe_body}</div>'
+        else:
+            body_block = f'<div class="cd-prompt-panel__body">{safe_body}</div>'
+
+        section_html_parts.append(
+            f'<div class="cd-prompt-panel__section">'
+            f'<div class="cd-prompt-panel__heading">{safe_heading}</div>'
+            f'{body_block}'
+            f'</div>'
+        )
+
+    if not section_html_parts:
+        section_html_parts.append(
+            '<div class="cd-prompt-panel__section">'
+            '<div class="cd-prompt-panel__heading">No details available</div>'
+            '<div class="cd-prompt-panel__body cd-prompt-panel__body--empty">No content supplied.</div>'
+            '</div>'
+        )
+
+    st.markdown(
+        f"""
+        <div class="cd-prompt-preview cd-prompt-panel">
+            <details class="cd-prompt-preview__container cd-prompt-panel__container" {open_attr}>
+                <summary class="cd-prompt-preview__summary cd-prompt-panel__summary">
+                    <span class="cd-prompt-panel__title">{safe_title}</span>
+                    {meta_html}
+                </summary>
+                <div class="cd-prompt-preview__content cd-prompt-panel__content">
+                    {''.join(section_html_parts)}
                 </div>
             </details>
         </div>
