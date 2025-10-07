@@ -1628,26 +1628,23 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             help="Choose which Stage 1 prompts to use for few-shot generation.",
         )
         
-        col_f1, col_f2 = st.columns(2)
-        with col_f1:
-            few_shot_strategies = st.multiselect(
-                "Persuasion strategies",
-                strategies,
-                default=strategies[:2] if len(strategies) >= 2 else strategies,
-                key="stage2_strategies",
-                help="Select strategies for few-shot mode.",
-            )
-        
-        with col_f2:
-            few_shot_attempts = st.number_input(
-                "Attempts per strategy",
-                min_value=1,
-                max_value=20,
-                value=5,
-                step=1,
-                key="stage2_attempts",
-                help="Number of few-shot mutation attempts per strategy.",
-            )
+        few_shot_strategies = st.multiselect(
+            "Persuasion strategies",
+            strategies,
+            default=strategies[:2] if len(strategies) >= 2 else strategies,
+            key="stage2_strategies",
+            help="Select strategies for few-shot mode.",
+        )
+
+        few_shot_attempts = st.number_input(
+            "Attempts per strategy",
+            min_value=1,
+            max_value=20,
+            value=5,
+            step=1,
+            key="stage2_attempts",
+            help="Number of few-shot mutation attempts per strategy.",
+        )
         
         run_stage2 = st.button(
             "🎯 Run Stage 2: Few-Shot Generation",
@@ -1690,9 +1687,11 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 "generated",
                             )
                         ]
-                        render_collapsible_panel(
+                        reference_meta = f"Length {len(prompt_reference_text)} chars"
+                        render_prompt_style_panel(
                             title="📄 Stage 1 Reference Text",
                             sections=reference_sections,
+                            meta=reference_meta,
                             expanded=False,
                         )
                     else:
@@ -1708,9 +1707,10 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                             )
                         )
 
-                    render_collapsible_panel(
+                    render_prompt_style_panel(
                         title="🧾 Stage 1 Top Examples",
                         sections=example_sections,
+                        meta=f"{len(few_shot_examples)} exemplars",
                         expanded=False,
                     )
                     
@@ -1853,14 +1853,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             st.caption(f"  - Zero-shot: {zero_count} mutations | Few-shot: {few_count} mutations")
     else:
         st.info("No mutations stored yet. Run Stage 1 to begin.")
-
-    st.divider()
-    st.markdown("### 🗂️ Legacy Evaluation Section")
-    st.caption("This section is deprecated. Use the two-stage workflow above.")
-    
-    with st.expander("Show legacy controls", expanded=False):
-        st.info("Legacy evaluation suite functionality has been replaced by the two-stage workflow above.")
-
 
 def render_unlearning_detection_page(api_key, model_choice, provider):
     """Render the unlearning detection page with membership inference."""
