@@ -363,13 +363,11 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         )
 
     st.markdown("---")
-    col_center = st.columns([1, 2, 1])[1]
-    with col_center:
-        run_analysis = st.button(
-            "🚀 Run Analysis",
-            width='stretch',
-            key="run_snippet_analysis_button",
-        )
+    run_analysis = st.button(
+        "🚀 Run Analysis",
+        width='stretch',
+        key="run_snippet_analysis_button",
+    )
 
     if run_analysis:
         if not api_key:
@@ -1934,13 +1932,11 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
             )
 
         st.markdown("---")
-        probe_button_col = st.columns([1, 1, 1])[1]
-        with probe_button_col:
-            run_prompt_probe = st.button(
-                "🚀 Run Prompt-Based Probes",
-                width='stretch',
-                key="run_unlearning_prompt_button",
-            )
+        run_prompt_probe = st.button(
+            "🚀 Run Prompt-Based Probes",
+            width='stretch',
+            key="run_unlearning_prompt_button",
+        )
 
         if run_prompt_probe:
             if not api_key:
@@ -2079,13 +2075,12 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                 key="membership_confidence_level",
             )
 
-        membership_button_col = st.columns([1, 1, 1])[1]
-        with membership_button_col:
-            run_membership = st.button(
-                "🧮 Run Membership Inference",
-                width='stretch',
-                key="run_membership_inference_button",
-            )
+        st.markdown("---")
+        run_membership = st.button(
+            "🧮 Run Membership Inference",
+            width='stretch',
+            key="run_membership_inference_button",
+        )
 
         if run_membership:
             if not api_key:
