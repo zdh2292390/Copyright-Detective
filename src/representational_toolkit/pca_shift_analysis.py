@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+from pathlib import Path
 from typing import List
 
 import matplotlib as mpl
@@ -16,12 +17,29 @@ from .types import FeatureAnalysisResult, VisualizationItem
 
 
 def _load_tokenizer(path: str) -> AutoTokenizer:
+    local_dir = Path(path)
     try:
+        if local_dir.exists() and local_dir.is_dir():
+            return AutoTokenizer.from_pretrained(str(local_dir), trust_remote_code=True)
         return AutoTokenizer.from_pretrained(path, trust_remote_code=True)
     except Exception as exc:  # pragma: no cover - HF hub issues
         print(f"[!] Online tokenizer loading failed ({path}): {exc}")
         print("[!] Retrying with local_files_only=True...")
-        return AutoTokenizer.from_pretrained(path, trust_remote_code=True, local_files_only=True)
+        try:
+            return AutoTokenizer.from_pretrained(path, trust_remote_code=True, local_files_only=True)
+        except Exception as exc2:
+            raise RuntimeError(
+                f"Failed to load tokenizer for '{path}'.\n"
+                "Tried online access and offline cache lookup but both failed.\n"
+                "Possible causes:\n"
+                " - The model id is incorrect or points to a private/gated repo (requires HF authentication).\n"
+                " - You are offline and the model isn't cached locally.\n\n"
+                f"Online attempt error: {exc}\n"
+                f"Offline attempt error: {exc2}\n\n"
+                "Suggested fixes:\n"
+                " - If the model is on Hugging Face, authenticate with `huggingface-cli login` or `hf auth login` and retry.\n"
+                " - Provide a local path to a directory containing the model/tokenizer files (e.g. './models/Qwen2-0.5B').\n"
+            )
 
 
 def _ensure_tokenizer_has_pad(tokenizer: AutoTokenizer) -> bool:

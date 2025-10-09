@@ -1,6 +1,7 @@
 import contextlib
 import gc
 import io
+from pathlib import Path
 from typing import Dict, Iterable, List
 
 import matplotlib as mpl
@@ -26,12 +27,34 @@ def _warn_if_low_memory() -> None:
 
 
 def _load_tokenizer(path: str) -> AutoTokenizer:
+    # Prefer a local directory if the path points to one (useful for offline workflows)
+    local_dir = Path(path)
     try:
+        if local_dir.exists() and local_dir.is_dir():
+            return AutoTokenizer.from_pretrained(str(local_dir), use_fast=True)
+
+        # First attempt: normal (may download from the Hub)
         return AutoTokenizer.from_pretrained(path, use_fast=True)
     except Exception as exc:  # pragma: no cover - network / HF hub issues
-        print(f"[!] Online tokenizer loading failed: {exc}")
-        print("[!] Attempting offline mode...")
-        return AutoTokenizer.from_pretrained(path, use_fast=True, local_files_only=True)
+        print(f"[!] Online tokenizer loading failed ({path}): {exc}")
+        print("[!] Retrying with local_files_only=True...")
+        try:
+            return AutoTokenizer.from_pretrained(path, use_fast=True, local_files_only=True)
+        except Exception as exc2:
+            # Provide an actionable error message so users can resolve auth/offline issues quickly.
+            raise RuntimeError(
+                f"Failed to load tokenizer for '{path}'.\n"
+                "Tried online access and offline cache lookup but both failed.\n"
+                "Possible causes:\n"
+                " - The model id is incorrect or points to a private/gated repo (requires HF authentication).\n"
+                " - You are offline and the model isn't cached locally.\n\n"
+                f"Online attempt error: {exc}\n"
+                f"Offline attempt error: {exc2}\n\n"
+                "Suggested fixes:\n"
+                " - If the model is on Hugging Face, authenticate with `huggingface-cli login` or `hf auth login` and retry.\n"
+                " - Provide a local path to a directory containing the model/tokenizer files (e.g. './models/Qwen2-0.5B').\n"
+                " - If you intentionally want to allow downloads, ensure network access and that `local_files_only` is not set in calling code.\n"
+            )
 
 
 def _ensure_tokenizer_has_pad(tokenizer: AutoTokenizer) -> bool:

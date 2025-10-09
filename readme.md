@@ -145,6 +145,17 @@ run_feature_analysis(
 
 Each probe shares the same signature—only the `feature` flag and `output_path` semantics change (directory for `fim`, single file for PCA/CKA plots). Feel free to switch `device="cpu"` if your GPU memory is limited.
 
+#### Hugging Face models / Offline usage
+
+If you see errors about failing to connect to `https://huggingface.co` or `Repository Not Found` when running the representational probes, it means the code attempted to download tokenizer/model files from the Hugging Face Hub but could not (either due to lack of network access or because the repo is private).
+
+Quick fixes:
+- Authenticate with Hugging Face: run `huggingface-cli login` or `hf auth login` and provide a token that has access to private/gated repos.
+- Use a local model directory: download the model and tokenizer files ahead of time and pass the local path (e.g. `./models/Qwen2-0.5B`) as `model_reference_path` and `model_path` when calling the API or in the UI.
+- Run fully offline: ensure the model files are present in the local Hugging Face cache or in a directory you point to. The toolkit will try an online load first, then retry with `local_files_only=True` and surface a helpful error if both attempts fail.
+
+If problems persist, check the exact exception printed to the console for hints (401 = authentication, 404 = wrong model id). The updated toolkit will now raise a clearer RuntimeError with suggested remediation steps when tokenizer loading fails.
+
 To run the perplexity probe, supply both the reference text and an equivalent-length control passage. You can adjust token window size, number of sampled windows, and the perplexity gap required to flag memorisation. When SciPy is unavailable the statistical tests degrade gracefully to analytical approximations, and the UI will annotate any fallbacks or tokenizer limitations.
 
 ### Whole PDF Analysis Notes
