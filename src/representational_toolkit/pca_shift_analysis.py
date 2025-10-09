@@ -29,8 +29,24 @@ def run_pca_shift(
       max_length:           Tokenizer max_length for truncation/padding.
     """
 
-    # Load tokenizer once
+    # Normalize device and choose dtype
+    if isinstance(device, str) and device.startswith("cuda") and not torch.cuda.is_available():
+        print("[!] CUDA requested but not available; falling back to CPU")
+        device = "cpu"
+    device = torch.device(device)
+    torch_dtype = torch.float16 if device.type == "cuda" else torch.float32
+
+    # Load tokenizer once and ensure pad token exists
     tokenizer = AutoTokenizer.from_pretrained(model_reference_path, trust_remote_code=True)
+    tokenizer_added_pad = False
+    if tokenizer.pad_token is None:
+        if tokenizer.eos_token is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+        elif tokenizer.bos_token is not None:
+            tokenizer.pad_token = tokenizer.bos_token
+        else:
+            tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+            tokenizer_added_pad = True
 
     # Helper to load & move a causal LM
     def load_model(path):
@@ -40,6 +56,17 @@ def run_pca_shift(
                                  trust_remote_code=True)
                 .to(device)
                 .eval())
+
+    # If we added a pad token, try to resize model embeddings lazily when loading
+    if tokenizer_added_pad:
+        # Best-effort: load and resize reference model embeddings to match tokenizer
+        try:
+            tmp = AutoModelForCausalLM.from_pretrained(model_reference_path, trust_remote_code=True)
+            tmp.resize_token_embeddings(len(tokenizer))
+            tmp.to(device).eval()
+            del tmp
+        except Exception:
+            pass
 
     # Load both models
     model_ref = load_model(model_reference_path)
@@ -53,7 +80,8 @@ def run_pca_shift(
             padding="max_length",
             truncation=True,
             max_length=max_length
-        ).to(device)
+        )
+        inputs = {k: v.to(device) for k, v in inputs.items()}
         with torch.no_grad():
             outs = model(**inputs, output_hidden_states=True)
         # take hidden_states[layer_idx], shape (batch, seq, hidden)

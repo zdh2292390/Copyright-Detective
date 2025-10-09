@@ -34,15 +34,40 @@ def run_fim_analysis(
         layers_to_analyze: Specific layer indices to analyze; if None, all layers.
     """
 
-    # Load tokenizer and define a helper to load models
+    # Normalize device and choose an appropriate torch dtype
+    if isinstance(device, str) and device.startswith("cuda") and not torch.cuda.is_available():
+        print("[!] CUDA requested but not available; falling back to CPU")
+        device = "cpu"
+    device = torch.device(device)
+    torch_dtype = torch.float16 if device.type == "cuda" else torch.float32
+
+    # Load tokenizer and defensively ensure a pad token exists
     tokenizer = AutoTokenizer.from_pretrained(model_reference_path, use_fast=True)
+    # Some causal LM tokenizers don't define a pad token — fall back to eos/bos
+    tokenizer_added_pad = False
+    if tokenizer.pad_token is None:
+        if tokenizer.eos_token is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+        elif tokenizer.bos_token is not None:
+            tokenizer.pad_token = tokenizer.bos_token
+        else:
+            # Last resort: add an explicit pad token. Models must be resized after loading.
+            tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+            tokenizer_added_pad = True
+
     def load_model(path: str) -> AutoModelForCausalLM:
         """Load and prepare a causal language model."""
         model = AutoModelForCausalLM.from_pretrained(
             path,
-            torch_dtype=torch.bfloat16,
-            trust_remote_code=True
+            torch_dtype=torch_dtype,
+            trust_remote_code=True,
         )
+        # If we added a pad token to the tokenizer, resize token embeddings to match
+        if tokenizer_added_pad:
+            try:
+                model.resize_token_embeddings(len(tokenizer))
+            except Exception:
+                pass
         return model.to(device).eval()
     # Prepare dataset and dataloader for input query
     class TextDataset(Dataset):
@@ -72,7 +97,8 @@ def run_fim_analysis(
     loader = DataLoader(
         TextDataset(query),
         batch_size=batch_size,
-        shuffle=False
+        shuffle=False,
+        pin_memory=(device.type == "cuda"),
     )
 
     # Function to compute diagonal of the Fisher Information Matrix for a layer

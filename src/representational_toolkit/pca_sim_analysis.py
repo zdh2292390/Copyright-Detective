@@ -27,21 +27,47 @@ def run_pca_similarity(
         output_path:          Path to save the PDF plot.
         max_length:           Tokenizer max_length for truncation/padding.
     """
+    # Normalize device and choose dtype
+    if isinstance(device, str) and device.startswith("cuda") and not torch.cuda.is_available():
+        print("[!] CUDA requested but not available; falling back to CPU")
+        device = "cpu"
+    device = torch.device(device)
+    torch_dtype = torch.float16 if device.type == "cuda" else torch.float32
+
     # 2) Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
         model_reference_path, trust_remote_code=True
     )
+    tokenizer_added_pad = False
+    if tokenizer.pad_token is None:
+        if tokenizer.eos_token is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+        elif tokenizer.bos_token is not None:
+            tokenizer.pad_token = tokenizer.bos_token
+        else:
+            tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+            tokenizer_added_pad = True
 
     # 3) Helper to load & move a causal LM
     def load_model(path):
         return (AutoModelForCausalLM
                 .from_pretrained(
                     path,
-                    torch_dtype=torch.bfloat16,
+                    torch_dtype=torch_dtype,
                     trust_remote_code=True
                 )
                 .to(device)
                 .eval())
+
+    # If we added a pad token, ensure model token embeddings match tokenizer
+    if tokenizer_added_pad:
+        try:
+            model_ref = AutoModelForCausalLM.from_pretrained(model_reference_path, trust_remote_code=True)
+            model_ref.resize_token_embeddings(len(tokenizer))
+            model_ref.to(device).eval()
+        except Exception:
+            # ignore failures here; individual load_model will attempt resize as needed
+            pass
 
     # 4) Load both models
     model_ref = load_model(model_reference_path)
@@ -59,7 +85,8 @@ def run_pca_similarity(
         enc = tokenizer(
             query, return_tensors="pt",
             padding=True, truncation=True, max_length=max_length
-        ).to(device)
+        )
+        enc = {k: v.to(device) for k, v in enc.items()}
         with torch.no_grad():
             out = model(**enc, output_hidden_states=True)
         hs = out.hidden_states[layer_idx].float().cpu().numpy()
