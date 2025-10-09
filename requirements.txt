@@ -9,7 +9,7 @@ ghostscript
 requests
 anthropic
 google-generativeai
-# Optional: representational analysis toolkit
+representational-analysis
 matplotlib
 torch
 transformers
