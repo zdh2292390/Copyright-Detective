@@ -1,232 +1,326 @@
-import os
-import torch
-import numpy as np
-import matplotlib.pyplot as plt
+import contextlib
+import gc
+import io
+from typing import Dict, Iterable, List
+
 import matplotlib as mpl
-from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from torch.utils.data import DataLoader, Dataset
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+
+from .types import FeatureAnalysisResult, VisualizationItem
+
+
+def _warn_if_low_memory() -> None:
+    with contextlib.suppress(ImportError):
+        import psutil  # type: ignore
+
+        available_gb = psutil.virtual_memory().available / (1024 ** 3)
+        if available_gb < 2.0:
+            print(
+                f"[!] WARNING: Low memory detected (only {available_gb:.1f} GB available).\n"
+                "[!] Recommendation: close other applications or choose a smaller model before running FIM analysis."
+            )
+
+
+def _load_tokenizer(path: str) -> AutoTokenizer:
+    try:
+        return AutoTokenizer.from_pretrained(path, use_fast=True)
+    except Exception as exc:  # pragma: no cover - network / HF hub issues
+        print(f"[!] Online tokenizer loading failed: {exc}")
+        print("[!] Attempting offline mode...")
+        return AutoTokenizer.from_pretrained(path, use_fast=True, local_files_only=True)
+
+
+def _ensure_tokenizer_has_pad(tokenizer: AutoTokenizer) -> bool:
+    if tokenizer.pad_token is not None:
+        return False
+    if tokenizer.eos_token is not None:
+        tokenizer.pad_token = tokenizer.eos_token
+        return False
+    if tokenizer.bos_token is not None:
+        tokenizer.pad_token = tokenizer.bos_token
+        return False
+    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    return True
+
+
+def _normalise_layers(config: AutoConfig, layers: Iterable[int] | None) -> List[int]:
+    num_layers = getattr(config, "num_hidden_layers", None) or getattr(config, "n_layer", None)
+    if num_layers is None:
+        raise ValueError("Unable to determine the number of transformer layers from the reference model configuration.")
+    if layers is None:
+        return list(range(num_layers))
+    resolved: List[int] = []
+    for layer_index in layers:
+        if not isinstance(layer_index, int):
+            continue
+        if 0 <= layer_index < num_layers:
+            resolved.append(layer_index)
+    if not resolved:
+        raise ValueError("No valid layer indices matched the reference model configuration.")
+    return resolved
 
 
 def run_fim_analysis(
     model_reference_path: str,
     model_path: str,
-    query: list[str],
-    output_dir: str,
+    query: List[str],
     device: str = "cuda",
     batch_size: int = 4,
     num_batches: int = 10,
     max_length: int = 128,
-    layers_to_analyze: list[int] | None = None,
-):
-    """
-    Compare the reference and updated models by computing the diagonal of the
-    Fisher Information Matrix (FIM) for specified layers, then plot histograms
-    of these values for each layer.
+    layers_to_analyze: List[int] | None = None,
+) -> FeatureAnalysisResult:
+    """Compute Fisher Information Matrix histograms comparing two language models."""
 
-    Args:
-        model_reference_path: Path or identifier for the reference (original) model.
-        model_path: Path or identifier for the updated model.
-        query: List of input text strings for analysis.
-        output_dir: Directory where output histograms will be saved.
-        batch_size: Number of samples per inference batch.
-        num_batches: Number of batches to use for FIM estimation.
-        max_length: Maximum token length for padding/truncation.
-        layers_to_analyze: Specific layer indices to analyze; if None, all layers.
-    """
+    _warn_if_low_memory()
 
-    # Normalize device and choose an appropriate torch dtype
     if isinstance(device, str) and device.startswith("cuda") and not torch.cuda.is_available():
         print("[!] CUDA requested but not available; falling back to CPU")
         device = "cpu"
-    device = torch.device(device)
-    torch_dtype = torch.float16 if device.type == "cuda" else torch.float32
+    compute_device = torch.device(device)
+    target_dtype = torch.float16 if compute_device.type == "cuda" else torch.float32
 
-    # Load tokenizer and defensively ensure a pad token exists
-    tokenizer = AutoTokenizer.from_pretrained(model_reference_path, use_fast=True)
-    # Some causal LM tokenizers don't define a pad token — fall back to eos/bos
-    tokenizer_added_pad = False
-    if tokenizer.pad_token is None:
-        if tokenizer.eos_token is not None:
-            tokenizer.pad_token = tokenizer.eos_token
-        elif tokenizer.bos_token is not None:
-            tokenizer.pad_token = tokenizer.bos_token
-        else:
-            # Last resort: add an explicit pad token. Models must be resized after loading.
-            tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-            tokenizer_added_pad = True
+    tokenizer = _load_tokenizer(model_reference_path)
+    tokenizer_added_pad = _ensure_tokenizer_has_pad(tokenizer)
 
-    def load_model(path: str) -> AutoModelForCausalLM:
-        """Load and prepare a causal language model."""
-        model = AutoModelForCausalLM.from_pretrained(
-            path,
-            torch_dtype=torch_dtype,
-            trust_remote_code=True,
-        )
-        # If we added a pad token to the tokenizer, resize token embeddings to match
-        if tokenizer_added_pad:
-            try:
-                model.resize_token_embeddings(len(tokenizer))
-            except Exception:
-                pass
-        return model.to(device).eval()
-    # Prepare dataset and dataloader for input query
     class TextDataset(Dataset):
-        def __init__(self, query: list[str]):
-            # Tokenize with padding and truncation
-            enc = tokenizer(
-                query,
+        def __init__(self, items: List[str]):
+            encodings = tokenizer(
+                items,
                 return_tensors="pt",
                 truncation=True,
                 padding="max_length",
-                max_length=max_length
+                max_length=max_length,
             )
-            self.input_ids = enc["input_ids"]
-            self.attention_mask = enc["attention_mask"]
-            self.labels = enc["input_ids"]  # Labels equal inputs for loss computation
+            self.input_ids = encodings["input_ids"]
+            self.attention_mask = encodings["attention_mask"]
+            self.labels = encodings["input_ids"]
 
         def __len__(self) -> int:
             return self.input_ids.size(0)
 
-        def __getitem__(self, idx: int) -> dict:
+        def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
             return {
-                "input_ids": self.input_ids[idx],
-                "attention_mask": self.attention_mask[idx],
-                "labels": self.labels[idx],
+                "input_ids": self.input_ids[index],
+                "attention_mask": self.attention_mask[index],
+                "labels": self.labels[index],
             }
 
+    dataset = TextDataset([item.strip() for item in query if item and item.strip()])
+    if len(dataset) == 0:
+        raise ValueError("At least one non-empty query string is required for FIM analysis.")
+
     loader = DataLoader(
-        TextDataset(query),
+        dataset,
         batch_size=batch_size,
         shuffle=False,
-        pin_memory=(device.type == "cuda"),
+        pin_memory=(compute_device.type == "cuda"),
     )
 
-    # Function to compute diagonal of the Fisher Information Matrix for a layer
-    def compute_fim_diag(model: AutoModelForCausalLM, layer_key: str) -> np.ndarray:
-        # Collect parameters belonging to the specified layer
-        params = [p for name, p in model.named_parameters() if p.requires_grad and layer_key in name]
-        # Initialize accumulator for squared gradients
-        acc = [torch.zeros_like(p) for p in params]
+    def _load_model(weights_path: str) -> AutoModelForCausalLM:
+        base_kwargs = {
+            "trust_remote_code": True,
+            "low_cpu_mem_usage": True,
+            "dtype": target_dtype,
+        }
+        
+        for local_only in (False, True):
+            kwargs = dict(base_kwargs)
+            if local_only:
+                kwargs["local_files_only"] = True
+                
+            try:
+                try:
+                    import accelerate  # type: ignore  # noqa: F401
 
-        for i, batch in enumerate(loader):
-            if i >= num_batches:
+                    if compute_device.type == "cuda":
+                        kwargs["device_map"] = "auto"
+                    model = AutoModelForCausalLM.from_pretrained(weights_path, **kwargs)
+                except (ImportError, ValueError):
+                    kwargs.pop("device_map", None)
+                    model = AutoModelForCausalLM.from_pretrained(weights_path, **kwargs).to(compute_device)
+                if tokenizer_added_pad:
+                    with contextlib.suppress(Exception):
+                        model.resize_token_embeddings(len(tokenizer))
+                return model.eval()
+            except TypeError as exc:
+                # Fallback: try with torch_dtype if dtype is not supported
+                if "dtype" in str(exc) and "unexpected keyword" not in str(exc):
+                    raise
+                kwargs_fallback = dict(base_kwargs)
+                kwargs_fallback.pop("dtype", None)
+                kwargs_fallback["torch_dtype"] = target_dtype
+                if local_only:
+                    kwargs_fallback["local_files_only"] = True
+                try:
+                    try:
+                        import accelerate  # type: ignore  # noqa: F401
+
+                        if compute_device.type == "cuda":
+                            kwargs_fallback["device_map"] = "auto"
+                        model = AutoModelForCausalLM.from_pretrained(weights_path, **kwargs_fallback)
+                    except (ImportError, ValueError):
+                        kwargs_fallback.pop("device_map", None)
+                        model = AutoModelForCausalLM.from_pretrained(weights_path, **kwargs_fallback).to(compute_device)
+                    if tokenizer_added_pad:
+                        with contextlib.suppress(Exception):
+                            model.resize_token_embeddings(len(tokenizer))
+                    return model.eval()
+                except Exception:
+                    if local_only:
+                        raise
+            except Exception as exc:  # pragma: no cover - IO / HF hub issues
+                if local_only:
+                    raise
+                print(f"[!] Online model loading failed ({weights_path}): {exc}")
+                print("[!] Retrying with local_files_only=True...")
+        
+        raise RuntimeError(f"Failed to load model from {weights_path} after trying all loading strategies.")
+
+    def _compute_fim_diagonal(model: AutoModelForCausalLM, layer_key: str) -> np.ndarray:
+        params = [(name, param) for name, param in model.named_parameters() if param.requires_grad and layer_key in name]
+        if not params:
+            raise ValueError(f"Layer key '{layer_key}' did not match any trainable parameters.")
+
+        accumulators = [torch.zeros(param.numel(), dtype=torch.float32) for _, param in params]
+        effective_batches = 0
+
+        for effective_batches, batch in enumerate(loader, start=1):
+            if effective_batches > num_batches:
                 break
-            # Move batch data to the compute device
-            batch = {k: v.to(device) for k, v in batch.items()}
-            # Zero gradients before backward pass
-            model.zero_grad()
-            # Forward pass with labels to compute loss
-            loss = model(
-                input_ids=batch["input_ids"],
-                attention_mask=batch["attention_mask"],
-                labels=batch["labels"]
-            ).loss
-            # Backward pass to accumulate gradients
+            batch = {key: tensor.to(compute_device) for key, tensor in batch.items()}
+            model.zero_grad(set_to_none=True)
+            loss = model(**batch).loss
             loss.backward()
-            # Accumulate squared gradients for each parameter
-            for j, p in enumerate(params):
-                acc[j] += p.grad.detach() ** 2
 
-        # Average the accumulated squared gradients
-        denom = min(len(loader), num_batches)
-        # Flatten and concatenate all parameter arrays
-        fim_values = torch.cat([a.view(-1).float() / denom for a in acc]).cpu().numpy()
-        return fim_values
+            for idx, (_, param) in enumerate(params):
+                grad = param.grad
+                if grad is None:
+                    continue
+                grad_cpu = grad.detach().float().cpu().view(-1)
+                accumulators[idx] += grad_cpu.pow_(2)
 
-    # --- 1) Configure global plotting style (scientific look + DejaVu Serif font) ---
+            model.zero_grad(set_to_none=True)
+
+        if effective_batches == 0:
+            raise RuntimeError("Failed to execute any dataloader batches for FIM computation.")
+
+        denom = max(1, min(len(loader), num_batches, effective_batches))
+        fim_values = torch.cat([accumulator / denom for accumulator in accumulators])
+        return fim_values.numpy()
+
+    with contextlib.suppress(Exception):
+        config = AutoConfig.from_pretrained(model_reference_path)
+    if 'config' not in locals() or config is None:
+        with contextlib.suppress(Exception):
+            config = AutoConfig.from_pretrained(model_reference_path, local_files_only=True)
+    if 'config' not in locals() or config is None:
+        raise RuntimeError(
+            "Unable to load the reference model configuration (both online and offline attempts failed)."
+        )
+
+    target_layers = _normalise_layers(config, layers_to_analyze)
+
+    def _collect_fim_by_layer(weights_path: str) -> Dict[int, np.ndarray]:
+        model = _load_model(weights_path)
+        try:
+            results: Dict[int, np.ndarray] = {}
+            for layer_idx in target_layers:
+                layer_key = f"model.layers.{layer_idx}"
+                results[layer_idx] = _compute_fim_diagonal(model, layer_key)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            return results
+        finally:
+            del model
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    fim_reference = _collect_fim_by_layer(model_reference_path)
+    fim_updated = _collect_fim_by_layer(model_path)
+
     mpl.rcParams.update({
-        'font.family':        'sans-serif',
-        'font.sans-serif':    ['DejaVu Serif'],
-        'font.size':          18,
-        'axes.titlesize':     20,
-        'axes.labelsize':     16,
-        'xtick.labelsize':    16,
-        'ytick.labelsize':    16,
-        'legend.fontsize':    16,
-        'figure.dpi':         300,
-        'axes.grid':          True,
-        'grid.linestyle':     '--',
-        'grid.linewidth':     0.6,
-        'grid.alpha':         0.6
+        "font.family": "sans-serif",
+        "font.sans-serif": ["DejaVu Serif"],
+        "font.size": 18,
+        "axes.titlesize": 20,
+        "axes.labelsize": 16,
+        "xtick.labelsize": 16,
+        "ytick.labelsize": 16,
+        "legend.fontsize": 16,
+        "figure.dpi": 300,
+        "axes.grid": True,
+        "grid.linestyle": "--",
+        "grid.linewidth": 0.6,
+        "grid.alpha": 0.6,
     })
 
-    # --- 2) Define color palette and line styles for Reference vs. Updated ---
-    plot_colors = {
-        "Reference": "#d62728",  # red
-        "Updated":   "#1f77b4"   # blue
-    }
-    linestyles = {
-        "Reference": "-",
-        "Updated":   "--"
-    }
+    plot_colors = {"Reference": "#d62728", "Updated": "#1f77b4"}
+    linestyles = {"Reference": "-", "Updated": "--"}
 
-    # --- 3) Ensure the output directory exists ---
-    os.makedirs(output_dir, exist_ok=True)
-    config = AutoConfig.from_pretrained(model_reference_path)
-    num_layers = getattr(config, "num_hidden_layers", None) or getattr(config, "n_layer", None)
-    layers_to_analyze = list(range(num_layers))
-    # --- 4) Loop over each layer and plot the FIM histograms ---
-    for L in layers_to_analyze:
-        # Compute the diagonal FIM values for both models
-        # Instantiate reference and updated models
-        model_ref = load_model(model_reference_path)
-        model_upd = load_model(model_path)
-        fim_ref = compute_fim_diag(model_ref, f"model.layers.{L}")
-        fim_upd = compute_fim_diag(model_upd, f"model.layers.{L}")
+    visualizations: List[VisualizationItem] = []
 
-        # Create a new figure and axis
+    for layer_idx in target_layers:
+        fim_ref = fim_reference[layer_idx]
+        fim_upd = fim_updated[layer_idx]
+
         fig, ax = plt.subplots(figsize=(5, 3))
-
-        # Plot histograms for each tag
-        for tag, vals in [("Reference", fim_ref), ("Updated", fim_upd)]:
+        for tag, values in (("Reference", fim_ref), ("Updated", fim_upd)):
             ax.hist(
-                vals,
+                values,
                 bins=40,
-                histtype='step',
+                histtype="step",
                 linewidth=2,
                 linestyle=linestyles[tag],
                 color=plot_colors[tag],
-                label=tag
+                label=tag,
             )
 
-        # Use a logarithmic x-axis for dynamic range
-        ax.set_xscale('log')
+        ax.set_xscale("log")
         ax.set_xlabel("FIM diagonal values (log scale)")
         ax.set_ylabel("Frequency")
-        ax.set_title(f"FIM Histogram @ Layer {L}", pad=12)
+        ax.set_title(f"FIM Histogram @ Layer {layer_idx}", pad=12)
 
-        # Dynamically adjust the y-axis to avoid overlap with the legend
         ymax = 0
-        for vals in (fim_ref, fim_upd):
-            counts, _ = np.histogram(vals, bins=40)
-            ymax = max(ymax, counts.max())
-        ax.set_ylim(0, ymax *1.2)
+        for values in (fim_ref, fim_upd):
+            counts, _ = np.histogram(values, bins=40)
+            ymax = max(ymax, counts.max() if len(counts) else 0)
+        ax.set_ylim(0, max(1, ymax * 1.2))
 
-        # Dynamically pad the x-axis limits to prevent clipping at the edges
-        x_all = np.concatenate([fim_ref, fim_upd])
-        x_min, x_max = x_all.min(), x_all.max()
-        pad = 0.1 * (np.log10(x_max + 1e-12) - np.log10(x_min + 1e-12))
-        ax.set_xlim(
-            10 ** (np.log10(x_min + 1e-12) - pad),
-            10 ** (np.log10(x_max + 1e-12) + pad)
-        )
+        combined = np.concatenate([fim_ref, fim_upd])
+        combined = combined[combined > 0]
+        if combined.size:
+            x_min, x_max = combined.min(), combined.max()
+            if x_min == x_max:
+                pad_decades = 0.1
+            else:
+                pad_decades = 0.1 * (np.log10(x_max) - np.log10(x_min))
+            ax.set_xlim(
+                10 ** (np.log10(x_min) - pad_decades),
+                10 ** (np.log10(x_max) + pad_decades),
+            )
 
-        # Place the legend inside the plot area
         ax.legend(loc="upper right", frameon=False, fancybox=True)
 
-        # Finalize layout, save as PDF, and close the figure
         fig.tight_layout()
-        fig.savefig(
-            os.path.join(output_dir, f"layer_{L}.pdf"),
-            dpi=300,
-            bbox_inches='tight'
-        )
+        image_buffer = io.BytesIO()
+        fig.savefig(image_buffer, dpi=300, bbox_inches="tight", format="png")
         plt.close(fig)
-        # === 清理缓存 ===
-        del fim_upd,fim_ref,model_upd,model_ref
-        torch.cuda.empty_cache()
 
-    print(f"[✓] All histograms saved under '{output_dir}'")
+        visualizations.append(
+            VisualizationItem(
+                title=f"FIM Histogram – Layer {layer_idx}",
+                data=image_buffer.getvalue(),
+                description="Histogram comparison of Fisher Information diagonals for reference vs updated model.",
+            )
+        )
+
+    return FeatureAnalysisResult(visualizations=visualizations)
 
 
 

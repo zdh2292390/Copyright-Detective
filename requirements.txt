@@ -15,3 +15,4 @@ torch
 transformers
 scikit-learn
 representational-analysis
+accelerate

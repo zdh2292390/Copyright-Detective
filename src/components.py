@@ -266,6 +266,7 @@ def render_collapsible_panel(
     meta: Optional[str] = None,
     expanded: bool = False,
     compact: bool = False,
+    max_height: Optional[int] = None,
 ) -> None:
     """Render a custom collapsible panel via an isolated HTML component."""
 
@@ -326,7 +327,7 @@ def render_collapsible_panel(
 
     section_count = max(len(content_html_parts), 1)
     estimated_height = 160 + total_lines * 22 + section_count * 18
-    max_height = 780
+    max_height = max_height or 780
     height = min(max_height, max(220, estimated_height))
     scrolling = height >= max_height
 

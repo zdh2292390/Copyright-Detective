@@ -2249,6 +2249,15 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
         st.caption(
             "Run Fisher Information, PCA shift/sim, and layer-wise CKA probes to quantify how unlearning reshapes the reference versus adapted model across every layer."
         )
+        
+        # Memory warning
+        st.warning(
+            "⚠️ **Important Notes:**\n\n"
+            "- **Memory Requirements**: Large models (>7B parameters) may cause crashes due to insufficient RAM/VRAM\n"
+            "- **Network**: First-time use requires internet to download models from HuggingFace\n"
+            "- **Recommendation**: Start with small models (≤1B parameters) like `Qwen/Qwen2-0.5B` or `gpt2`\n"
+            "- **Offline Mode**: Pre-download models using `huggingface-cli` for offline use"
+        )
 
         dependencies_available = is_representational_analysis_available()
         if not dependencies_available:
@@ -2300,21 +2309,19 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                 )
                 query_preview = [line.strip() for line in query_text.splitlines() if line.strip()]
 
-                recommended_output = f"./representational_outputs/{selected_feature.id}"
-                if selected_feature.output_kind == "file":
-                    recommended_output += ".pdf"
+                recommended_output = ""
                 output_path = st.text_input(
-                    "Output location",
+                    "Output location (optional)",
                     value=recommended_output,
                     help=(
-                        "For Fisher Information Matrix, provide a directory. For other probes, provide a PDF file path (the parent directory will be created if needed)."
+                        "Optional legacy output path. Visualisations now render directly in the app; specify a path only if you need the underlying modules to persist files."
                     ),
                     key="representational_output_path",
                 )
 
                 st.markdown("##### Runtime parameters")
-                st.caption("Device is fixed to `cuda` for this analysis module.")
-                device = "cuda"
+                st.caption("Device is set to `cpu` (CUDA disabled due to compatibility issues).")
+                device = "cpu"
 
                 col_batch, col_batches, col_length = st.columns([1, 1, 1])
                 with col_batch:
@@ -2405,7 +2412,54 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                         st.error(f"❌ {exc}")
                         rep_result = None
                     except RuntimeError as exc:
-                        st.error(f"❌ Representational analysis failed: {exc}")
+                        # The RuntimeError raised by run_representational_analysis includes
+                        # a detailed diagnostic containing captured stdout/stderr and the traceback.
+                        err_text = str(exc)
+                        st.error("❌ Representational analysis failed. Expand for full diagnostics below.")
+                        # Parse the diagnostic into sections for the custom component
+                        sections = []
+                        parts = err_text.split("--- Captured stdout ---")
+                        if len(parts) == 2:
+                            before_stdout = parts[0]
+                            after_stdout = parts[1]
+                            parts2 = after_stdout.split("--- Captured stderr ---")
+                            if len(parts2) == 2:
+                                stdout_content = parts2[0]
+                                after_stderr = parts2[1]
+                                parts3 = after_stderr.split("--- Traceback ---")
+                                if len(parts3) == 2:
+                                    stderr_content = parts3[0]
+                                    tb_content = parts3[1]
+                                    exception_part = before_stdout.strip()
+                                    sections.append(("Exception", exception_part, None))
+                                    if stdout_content.strip():
+                                        sections.append(("Captured stdout", stdout_content.strip(), None))
+                                    if stderr_content.strip():
+                                        sections.append(("Captured stderr", stderr_content.strip(), None))
+                                    if tb_content.strip():
+                                        sections.append(("Traceback", tb_content.strip(), None))
+                                else:
+                                    sections.append(("Full Diagnostics", err_text, None))
+                            else:
+                                sections.append(("Full Diagnostics", err_text, None))
+                        else:
+                            sections.append(("Full Diagnostics", err_text, None))
+                        # Add slider for panel height
+                        panel_max_height = st.slider(
+                            "Panel Display Height (pixels)",
+                            min_value=200,
+                            max_value=1200,
+                            value=600,
+                            step=50,
+                            help="Adjust the maximum height of the error details panel.",
+                            key="error_panel_height_slider",
+                        )
+                        render_collapsible_panel(
+                            title="Representational Analysis Logs and Traceback",
+                            sections=sections,
+                            expanded=False,
+                            max_height=panel_max_height,
+                        )
                         rep_result = None
 
             if rep_result:
@@ -2421,6 +2475,23 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                 if rep_result.warnings:
                     for warning in rep_result.warnings:
                         st.warning(warning)
+
+                if rep_result.inline_artifacts:
+                    st.markdown("##### Visualisations")
+                    for inline_idx, artifact in enumerate(rep_result.inline_artifacts, start=1):
+                        caption = artifact.title or f"Visualisation {inline_idx}"
+                        if artifact.mime_type.startswith("image/"):
+                            st.image(artifact.data, caption=caption, use_column_width=True)
+                        else:
+                            st.download_button(
+                                label=f"⬇️ Download {caption}",
+                                data=artifact.data,
+                                file_name=f"representational_artifact_{inline_idx}",
+                                mime=artifact.mime_type,
+                                key=f"representational_inline_{inline_idx}",
+                            )
+                        if artifact.description:
+                            st.caption(artifact.description)
 
                 if rep_result.generated_artifacts:
                     st.markdown("##### Generated artifacts")
@@ -2468,8 +2539,8 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                         st.caption(
                             "Additional artifacts are available in the output directory. Download them from the filesystem if needed."
                         )
-                else:
-                    st.info("No artifacts were detected. Check the logs and ensure the selected feature writes output files.")
+                if not rep_result.generated_artifacts and not rep_result.inline_artifacts:
+                    st.info("No artifacts were detected. Check the logs and ensure the selected feature produces outputs.")
 
 
 def render_jailbreak_persuasion_probe_section(api_key, model_choice, provider):

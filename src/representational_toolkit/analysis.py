@@ -1,10 +1,12 @@
 # src/cka_analyzer/feature_analysis.py
 
 from typing import List
-from .fisher_analysis       import run_fim_analysis
+
+from .cka_analysis import run_cka_analysis
+from .fisher_analysis import run_fim_analysis
 from .pca_shift_analysis import run_pca_shift
-from .pca_sim_analysis   import run_pca_similarity
-from .cka_analysis       import run_cka_analysis
+from .pca_sim_analysis import run_pca_similarity
+from .types import FeatureAnalysisResult
 
 def run_feature_analysis(
     feature: str,
@@ -16,7 +18,7 @@ def run_feature_analysis(
     batch_size: int = 4,
     num_batches: int = 10,
     max_length: int = 128
-):
+)-> FeatureAnalysisResult:
     """
     Unified API to run different representation analyses.
 
@@ -33,11 +35,10 @@ def run_feature_analysis(
     """
     feature = feature.lower()
     if feature == "fim":
-        run_fim_analysis(
+        return run_fim_analysis(
             model_reference_path=model_reference_path,
             model_path=model_path,
             query=query,
-            output_dir=output_path,
             device=device,
             batch_size=batch_size,
             num_batches=num_batches,
@@ -45,31 +46,28 @@ def run_feature_analysis(
         )
 
     elif feature == "pca_shift":
-        run_pca_shift(
+        return run_pca_shift(
             model_reference_path=model_reference_path,
             model_path=model_path,
             query=query,
-            output_path=output_path,
             device=device,
             max_length=max_length
         )
 
     elif feature == "pca_sim":
-        run_pca_similarity(
+        return run_pca_similarity(
             model_reference_path=model_reference_path,
             model_path=model_path,
             query=query,
-            output_path=output_path,
             device=device,
             max_length=max_length
         )
 
     elif feature == "cka":
-        run_cka_analysis(
+        return run_cka_analysis(
             model_reference_path=model_reference_path,
             model_path=model_path,
             query=query,
-            output_path=output_path,
             device=device,
             batch_size=batch_size,
             num_batches=num_batches,

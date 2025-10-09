@@ -1,202 +1,269 @@
 # src/cka_analyzer/analysis.py
 
-import os
-import torch
-import numpy as np
-import matplotlib.pyplot as plt
+import contextlib
+import io
+from typing import Dict, List
+
 import matplotlib as mpl
-from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer, AutoModelForCausalLM
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from torch.utils.data import DataLoader, Dataset
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from .types import FeatureAnalysisResult, VisualizationItem
+
+
+def _load_tokenizer(path: str) -> AutoTokenizer:
+    try:
+        return AutoTokenizer.from_pretrained(path, use_fast=True)
+    except Exception as exc:  # pragma: no cover - HF hub issues
+        print(f"[!] Online tokenizer loading failed ({path}): {exc}")
+        print("[!] Retrying with local_files_only=True...")
+        return AutoTokenizer.from_pretrained(path, use_fast=True, local_files_only=True)
+
+
+def _ensure_tokenizer_has_pad(tokenizer: AutoTokenizer) -> bool:
+    if tokenizer.pad_token is not None:
+        return False
+    if tokenizer.eos_token is not None:
+        tokenizer.pad_token = tokenizer.eos_token
+        return False
+    if tokenizer.bos_token is not None:
+        tokenizer.pad_token = tokenizer.bos_token
+        return False
+    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    return True
+
+
+def _load_model(
+    path: str,
+    *,
+    tokenizer: AutoTokenizer,
+    tokenizer_added_pad: bool,
+    device: torch.device,
+    torch_dtype: torch.dtype,
+) -> AutoModelForCausalLM:
+    base_kwargs = {
+        "trust_remote_code": True,
+        "low_cpu_mem_usage": True,
+    }
+    dtype_keys = ("dtype", "torch_dtype")
+    last_error: Exception | None = None
+
+    for dtype_key in dtype_keys:
+        kwargs = dict(base_kwargs)
+        kwargs[dtype_key] = torch_dtype
+        for local_only in (False, True):
+            try:
+                try:
+                    import accelerate  # type: ignore  # noqa: F401
+
+                    if device.type == "cuda":
+                        kwargs["device_map"] = "auto"
+                    model = AutoModelForCausalLM.from_pretrained(path, **kwargs)
+                except (ImportError, ValueError):
+                    kwargs.pop("device_map", None)
+                    model = AutoModelForCausalLM.from_pretrained(path, **kwargs).to(device)
+                if tokenizer_added_pad:
+                    with contextlib.suppress(Exception):
+                        model.resize_token_embeddings(len(tokenizer))
+                return model.eval()
+            except TypeError as exc:
+                last_error = exc
+                if dtype_key == "dtype" and "unexpected keyword" in str(exc):
+                    break
+                raise
+            except Exception as exc:  # pragma: no cover - IO / HF hub issues
+                last_error = exc
+                if local_only:
+                    break
+                print(f"[!] Online model loading failed ({path}): {exc}")
+                print("[!] Retrying with local_files_only=True...")
+                kwargs["local_files_only"] = True
+        if last_error and dtype_key == "dtype" and isinstance(last_error, TypeError):
+            continue
+        if last_error and not isinstance(last_error, TypeError):
+            continue
+    assert last_error is not None
+    raise last_error
+
 
 def run_cka_analysis(
     model_reference_path: str,
     model_path: str,
-    query: list[str],
-    output_path: str,
+    query: List[str],
     device: str = "cuda",
     batch_size: int = 4,
     num_batches: int = 10,
     max_length: int = 128,
-):
-    """
-    Single‐file CKA analysis:
-      - load reference & updated models
-      - tokenize & dataloader
-      - extract token‐0 activations
-      - compute layerwise linear CKA
-      - plot & save PDF
-    """
-    # Normalize device and choose dtype
+) -> FeatureAnalysisResult:
+    """Compute layer-wise linear CKA between two language models."""
+
     if isinstance(device, str) and device.startswith("cuda") and not torch.cuda.is_available():
         print("[!] CUDA requested but not available; falling back to CPU")
         device = "cpu"
-    device = torch.device(device)
-    torch_dtype = torch.float16 if device.type == "cuda" else torch.float32
+    compute_device = torch.device(device)
+    torch_dtype = torch.float16 if compute_device.type == "cuda" else torch.float32
 
-    tokenizer = AutoTokenizer.from_pretrained(model_reference_path, use_fast=True)
-    tokenizer_added_pad = False
-    if tokenizer.pad_token is None:
-        if tokenizer.eos_token is not None:
-            tokenizer.pad_token = tokenizer.eos_token
-        elif tokenizer.bos_token is not None:
-            tokenizer.pad_token = tokenizer.bos_token
-        else:
-            tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-            tokenizer_added_pad = True
+    sanitized_query = [item.strip() for item in query if item and item.strip()]
+    if not sanitized_query:
+        raise ValueError("At least one non-empty query string is required for CKA analysis.")
 
-    def load_model(path):
-        m = AutoModelForCausalLM.from_pretrained(
-            path,
-            torch_dtype=torch.bfloat16,
-            trust_remote_code=True
-        )
-        # resize embeddings if we added a pad token to the tokenizer
-        if tokenizer_added_pad:
-            try:
-                m.resize_token_embeddings(len(tokenizer))
-            except Exception:
-                pass
-        return m.to(device).eval()
+    tokenizer = _load_tokenizer(model_reference_path)
+    tokenizer_added_pad = _ensure_tokenizer_has_pad(tokenizer)
 
-    model_ref = load_model(model_reference_path)
-    model_upd = load_model(model_path)
-
-    # Dataset & DataLoader
     class TextDataset(Dataset):
-        def __init__(self, query):
-            enc = tokenizer(
-                query,
+        def __init__(self, prompts: List[str]):
+            encodings = tokenizer(
+                prompts,
                 return_tensors="pt",
                 truncation=True,
                 padding="max_length",
-                max_length=max_length
+                max_length=max_length,
             )
-            enc = {k: v.to(device) for k, v in enc.items()}
-            self.input_ids = enc["input_ids"]
-            self.attention_mask = enc["attention_mask"]
+            self.input_ids = encodings["input_ids"].to(compute_device)
+            self.attention_mask = encodings["attention_mask"].to(compute_device)
 
-        def __len__(self):
+        def __len__(self) -> int:
             return self.input_ids.size(0)
 
-        def __getitem__(self, idx):
+        def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
             return {
-                "input_ids":      self.input_ids[idx],
-                "attention_mask": self.attention_mask[idx],
+                "input_ids": self.input_ids[index],
+                "attention_mask": self.attention_mask[index],
             }
 
-    loader = DataLoader(TextDataset(query), batch_size=batch_size, shuffle=False)
+    dataset = TextDataset(sanitized_query)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
-    # Centering Gram matrix
-    def center_gram(K):
-        n = K.shape[0]
-        u = np.ones((n,n)) / n
-        return K - u @ K - K @ u + u @ K @ u
+    model_ref = _load_model(
+        model_reference_path,
+        tokenizer=tokenizer,
+        tokenizer_added_pad=tokenizer_added_pad,
+        device=compute_device,
+        torch_dtype=torch_dtype,
+    )
+    model_upd = _load_model(
+        model_path,
+        tokenizer=tokenizer,
+        tokenizer_added_pad=tokenizer_added_pad,
+        device=compute_device,
+        torch_dtype=torch_dtype,
+    )
 
-    def linear_cka(X, Y):
-        Xc = X - X.mean(0, keepdims=True)
-        Yc = Y - Y.mean(0, keepdims=True)
-        Kx, Ky = Xc @ Xc.T, Yc @ Yc.T
-        hsic = np.trace(center_gram(Kx) @ center_gram(Ky))
-        denom = np.sqrt(np.trace(center_gram(Kx) @ center_gram(Kx)) *
-                        np.trace(center_gram(Ky) @ center_gram(Ky)) + 1e-12)
+    def center_gram(kernel: np.ndarray) -> np.ndarray:
+        n = kernel.shape[0]
+        u = np.ones((n, n), dtype=kernel.dtype) / n
+        return kernel - u @ kernel - kernel @ u + u @ kernel @ u
+
+    def linear_cka(features_x: np.ndarray, features_y: np.ndarray) -> float:
+        x_centered = features_x - features_x.mean(0, keepdims=True)
+        y_centered = features_y - features_y.mean(0, keepdims=True)
+        gram_x = x_centered @ x_centered.T
+        gram_y = y_centered @ y_centered.T
+        hsic = np.trace(center_gram(gram_x) @ center_gram(gram_y))
+        denom = np.sqrt(
+            np.trace(center_gram(gram_x) @ center_gram(gram_x))
+            * np.trace(center_gram(gram_y) @ center_gram(gram_y))
+            + 1e-12
+        )
         return float(hsic / denom)
 
-    # Extract token-0 activations
-    def extract_acts(model):
-        acts = {}
-        num_layers = len(model.model.layers)
-        for L in range(num_layers):
-            buf = []
-            def hook(m,i,o):
-                t = o[0] if isinstance(o, tuple) else o
-                buf.append(t[:,0,:].float().detach().cpu().numpy())
-            h = dict(model.named_modules())[f"model.layers.{L}"].register_forward_hook(hook)
-            with torch.no_grad():
-                for i,b in enumerate(loader):
-                    if i >= num_batches: break
-                    model(input_ids=b["input_ids"], attention_mask=b["attention_mask"])
-            h.remove()
-            acts[L] = np.concatenate(buf, axis=0)
-        return acts
+    def extract_activations(model: AutoModelForCausalLM) -> Dict[int, np.ndarray]:
+        activations: Dict[int, np.ndarray] = {}
+        module_lookup = dict(model.named_modules())
+        layer_names = [name for name in module_lookup if name.startswith("model.layers.")]
+        layer_indices = sorted(int(name.rsplit(".", 1)[-1]) for name in layer_names)
 
-    ref_acts = extract_acts(model_ref)
-    upd_acts = extract_acts(model_upd)
+        for layer_idx in layer_indices:
+            buffer: List[np.ndarray] = []
 
-    # Compute linear CKA
-    cka = {L: linear_cka(ref_acts[L], upd_acts[L]) for L in ref_acts}
+            def hook(_, __, output):
+                tensor = output[0] if isinstance(output, tuple) else output
+                buffer.append(tensor[:, 0, :].float().detach().cpu().numpy())
 
-    # 1) Configure global plotting style (scientific look + DejaVu Serif font)
+            hook_handle = module_lookup[f"model.layers.{layer_idx}"].register_forward_hook(hook)
+            try:
+                with torch.no_grad():
+                    for batch_index, batch in enumerate(loader):
+                        if batch_index >= num_batches:
+                            break
+                        model(**batch)
+                activations[layer_idx] = np.concatenate(buffer, axis=0)
+            finally:
+                hook_handle.remove()
+        return activations
+
+    ref_acts = extract_activations(model_ref)
+    upd_acts = extract_activations(model_upd)
+
+    del model_ref, model_upd
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    cka_scores = {layer: linear_cka(ref_acts[layer], upd_acts[layer]) for layer in ref_acts}
+
     mpl.rcParams.update({
-        'font.family':        'sans-serif',
-        'font.sans-serif':    ['DejaVu Serif'],
-        'font.size':          18,
-        'axes.titlesize':     22,
-        'axes.labelsize':     18,
-        'xtick.labelsize':    16,
-        'ytick.labelsize':    16,
-        'lines.linewidth':    2,
-        'lines.markersize':   8,
-        'axes.linewidth':     1.2,
-        'axes.spines.top':    False,
-        'axes.spines.right':  False,
-        'axes.grid':          True,
-        'grid.linestyle':     '--',
-        'grid.linewidth':     0.6,
-        'grid.alpha':         0.6,
-        'legend.frameon':     True,
-        'legend.fontsize':    16,
-        'legend.title_fontsize': 16,
+        "font.family": "sans-serif",
+        "font.sans-serif": ["DejaVu Serif"],
+        "font.size": 18,
+        "axes.titlesize": 22,
+        "axes.labelsize": 18,
+        "xtick.labelsize": 16,
+        "ytick.labelsize": 16,
+        "lines.linewidth": 2,
+        "lines.markersize": 8,
+        "axes.linewidth": 1.2,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.grid": True,
+        "grid.linestyle": "--",
+        "grid.linewidth": 0.6,
+        "grid.alpha": 0.6,
+        "legend.frameon": True,
+        "legend.fontsize": 16,
+        "legend.title_fontsize": 16,
     })
 
-    # 2) Define color palette and line/marker style
-    plot_color = "#1b9e77"   # green for Updated vs Reference
-    linestyle = "--"
-    marker    = "o"
+    layers = list(cka_scores.keys())
+    values = [cka_scores[layer] for layer in layers]
 
-    # 3) Prepare data for plotting
-    layers = list(cka.keys())
-    values = [cka[L] for L in layers]
-
-    # 4) Create the figure and axis
     fig, ax = plt.subplots(figsize=(5, 3))
 
-    # 5) Plot the CKA curve with markers every N points
     marker_freq = 5
-    marker_indices = [i for i in range(len(layers)) if i % marker_freq == 0]
+    marker_indices = [idx for idx in range(len(layers)) if idx % marker_freq == 0]
 
+    plot_color = "#1b9e77"
+    ax.plot(layers, values, linestyle="--", color=plot_color, label="Updated vs Reference")
     ax.plot(
-        layers, values,
-        linestyle=linestyle,
-        color=plot_color,
-        label="Updated vs Reference"
-    )
-    ax.plot(
-        [layers[i] for i in marker_indices],
-        [values[i] for i in marker_indices],
-        marker, 
+        [layers[idx] for idx in marker_indices],
+        [values[idx] for idx in marker_indices],
+        "o",
         color=plot_color,
         markersize=8,
-        linestyle='None'
+        linestyle="None",
     )
 
-    # 6) Configure ticks on the x-axis
-    ax.set_xticks([layers[i] for i in range(len(layers)) if i % marker_freq == 0])
-    ax.set_xticklabels([str(l) for i, l in enumerate(layers) if i % marker_freq == 0])
-
-    # 7) Set axis labels and title
+    ax.set_xticks([layers[idx] for idx in marker_indices])
+    ax.set_xticklabels([str(layers[idx]) for idx in marker_indices])
     ax.set_xlabel("Layer index")
     ax.set_ylabel("Linear CKA")
     ax.set_title("Layerwise CKA", pad=12)
-
-    # 8) Set y-axis limits
     ax.set_ylim(-1, 3)
-
-    # 9) Add legend inside the plot
     ax.legend(loc="best", frameon=False, fancybox=True)
 
-    # 10) Final layout adjustments, save as PDF, then close
     fig.tight_layout()
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    fig.savefig(output_path, dpi=300, bbox_inches='tight')
+
+    image_buffer = io.BytesIO()
+    fig.savefig(image_buffer, dpi=300, bbox_inches="tight", format="png")
     plt.close(fig)
+
+    visualization = VisualizationItem(
+        title="Layer-wise Linear CKA",
+        data=image_buffer.getvalue(),
+        description="Linear CKA similarity across transformer layers between updated and reference models.",
+    )
+
+    return FeatureAnalysisResult(visualizations=[visualization])
 

@@ -1,205 +1,273 @@
 # src/cka_analyzer/pca_analysis.py
 
-import os
-import torch
-import numpy as np
-import pandas as pd
+import contextlib
+import io
+from typing import List
+
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-from transformers import AutoTokenizer, AutoModelForCausalLM
+import numpy as np
+import pandas as pd
+import torch
 from sklearn.decomposition import PCA
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from .types import FeatureAnalysisResult, VisualizationItem
+
+
+def _load_tokenizer(path: str) -> AutoTokenizer:
+    try:
+        return AutoTokenizer.from_pretrained(path, trust_remote_code=True)
+    except Exception as exc:  # pragma: no cover - HF hub issues
+        print(f"[!] Online tokenizer loading failed ({path}): {exc}")
+        print("[!] Retrying with local_files_only=True...")
+        return AutoTokenizer.from_pretrained(path, trust_remote_code=True, local_files_only=True)
+
+
+def _ensure_tokenizer_has_pad(tokenizer: AutoTokenizer) -> bool:
+    if tokenizer.pad_token is not None:
+        return False
+    if tokenizer.eos_token is not None:
+        tokenizer.pad_token = tokenizer.eos_token
+        return False
+    if tokenizer.bos_token is not None:
+        tokenizer.pad_token = tokenizer.bos_token
+        return False
+    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    return True
+
+
+def _load_model(
+    path: str,
+    *,
+    tokenizer: AutoTokenizer,
+    tokenizer_added_pad: bool,
+    device: torch.device,
+    torch_dtype: torch.dtype,
+) -> AutoModelForCausalLM:
+    base_kwargs = {
+        "trust_remote_code": True,
+        "low_cpu_mem_usage": True,
+    }
+    dtype_keys = ("dtype", "torch_dtype")
+    last_error: Exception | None = None
+
+    for dtype_key in dtype_keys:
+        kwargs = dict(base_kwargs)
+        kwargs[dtype_key] = torch_dtype
+        for local_only in (False, True):
+            try:
+                try:
+                    import accelerate  # type: ignore  # noqa: F401
+
+                    if device.type == "cuda":
+                        kwargs["device_map"] = "auto"
+                    model = AutoModelForCausalLM.from_pretrained(path, **kwargs)
+                except (ImportError, ValueError):
+                    kwargs.pop("device_map", None)
+                    model = AutoModelForCausalLM.from_pretrained(path, **kwargs).to(device)
+                if tokenizer_added_pad:
+                    with contextlib.suppress(Exception):
+                        model.resize_token_embeddings(len(tokenizer))
+                return model.eval()
+            except TypeError as exc:
+                last_error = exc
+                if dtype_key == "dtype" and "unexpected keyword" in str(exc):
+                    break
+                raise
+            except Exception as exc:  # pragma: no cover - IO / HF hub issues
+                last_error = exc
+                if local_only:
+                    break
+                print(f"[!] Online model loading failed ({path}): {exc}")
+                print("[!] Retrying with local_files_only=True...")
+                kwargs["local_files_only"] = True
+        if last_error and dtype_key == "dtype" and isinstance(last_error, TypeError):
+            continue
+        if last_error and not isinstance(last_error, TypeError):
+            continue
+    assert last_error is not None
+    raise last_error
+
 
 def run_pca_shift(
     model_reference_path: str,
     model_path: str,
-    query: list[str],
-    output_path: str,
+    query: List[str],
     device: str = "cuda",
-    max_length: int = 128
-):
-    """
-    Compute and plot PCA shift vs principal component for a list of query,
-    comparing a reference model to an updated model.
-    
-    Args:
-      model_reference_path: HF or local path to the reference model.
-      model_path:           HF or local path to the updated model.
-      query:                List of raw text strings to analyze.
-      output_path:          Path to save a PDF figure.
-      max_length:           Tokenizer max_length for truncation/padding.
-    """
+    max_length: int = 128,
+) -> FeatureAnalysisResult:
+    """Compute PCA shift diagnostics between a reference and an updated model."""
 
-    # Normalize device and choose dtype
     if isinstance(device, str) and device.startswith("cuda") and not torch.cuda.is_available():
         print("[!] CUDA requested but not available; falling back to CPU")
         device = "cpu"
-    device = torch.device(device)
-    torch_dtype = torch.float16 if device.type == "cuda" else torch.float32
+    compute_device = torch.device(device)
+    torch_dtype = torch.float16 if compute_device.type == "cuda" else torch.float32
 
-    # Load tokenizer once and ensure pad token exists
-    tokenizer = AutoTokenizer.from_pretrained(model_reference_path, trust_remote_code=True)
-    tokenizer_added_pad = False
-    if tokenizer.pad_token is None:
-        if tokenizer.eos_token is not None:
-            tokenizer.pad_token = tokenizer.eos_token
-        elif tokenizer.bos_token is not None:
-            tokenizer.pad_token = tokenizer.bos_token
-        else:
-            tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-            tokenizer_added_pad = True
+    sanitized_query = [item.strip() for item in query if item and item.strip()]
+    if not sanitized_query:
+        raise ValueError("At least one non-empty query string is required for PCA shift analysis.")
+    
+    if len(sanitized_query) < 2:
+        print("[!] Warning: Only 1 query provided. PCA shift analysis works best with 2+ queries for better statistical representation.")
 
-    # Helper to load & move a causal LM
-    def load_model(path):
-        return (AutoModelForCausalLM
-                .from_pretrained(path,
-                                 torch_dtype=torch.bfloat16,
-                                 trust_remote_code=True)
-                .to(device)
-                .eval())
+    tokenizer = _load_tokenizer(model_reference_path)
+    tokenizer_added_pad = _ensure_tokenizer_has_pad(tokenizer)
 
-    # If we added a pad token, try to resize model embeddings lazily when loading
-    if tokenizer_added_pad:
-        # Best-effort: load and resize reference model embeddings to match tokenizer
-        try:
-            tmp = AutoModelForCausalLM.from_pretrained(model_reference_path, trust_remote_code=True)
-            tmp.resize_token_embeddings(len(tokenizer))
-            tmp.to(device).eval()
-            del tmp
-        except Exception:
-            pass
+    model_ref = _load_model(
+        model_reference_path,
+        tokenizer=tokenizer,
+        tokenizer_added_pad=tokenizer_added_pad,
+        device=compute_device,
+        torch_dtype=torch_dtype,
+    )
+    model_upd = _load_model(
+        model_path,
+        tokenizer=tokenizer,
+        tokenizer_added_pad=tokenizer_added_pad,
+        device=compute_device,
+        torch_dtype=torch_dtype,
+    )
 
-    # Load both models
-    model_ref = load_model(model_reference_path)
-    model_upd = load_model(model_path)
-
-    # Extract mean hidden state at a given layer
-    def extract_mean_hidden(model, layer_idx):
-        inputs = tokenizer(
-            query,
+    def extract_mean_hidden(model: AutoModelForCausalLM, layer_idx: int) -> np.ndarray:
+        encodings = tokenizer(
+            sanitized_query,
             return_tensors="pt",
             padding="max_length",
             truncation=True,
-            max_length=max_length
+            max_length=max_length,
         )
-        inputs = {k: v.to(device) for k, v in inputs.items()}
+        encodings = {key: value.to(compute_device) for key, value in encodings.items()}
         with torch.no_grad():
-            outs = model(**inputs, output_hidden_states=True)
-        # take hidden_states[layer_idx], shape (batch, seq, hidden)
-        hs = outs.hidden_states[layer_idx].float().cpu().numpy()
-        # mean over sequence dimension → (batch, hidden)
-        return hs.mean(axis=1)
+            outputs = model(**encodings, output_hidden_states=True)
+        hidden_states = outputs.hidden_states
+        if hidden_states is None:
+            raise RuntimeError("Model did not return hidden states; enable output_hidden_states support.")
+        selected = hidden_states[layer_idx].float().cpu().numpy()
+        return selected.mean(axis=1)
 
-    # Determine number of layers
     cfg = model_ref.config
-    n_layers = getattr(cfg, "num_hidden_layers", None) or getattr(cfg, "n_layer", None)
-    if n_layers is None:
-        n_layers = len(model_ref.model.layers)
-    # include embedding layer as layer 0
-    layers = list(range(n_layers + 1))
+    num_layers = getattr(cfg, "num_hidden_layers", None) or getattr(cfg, "n_layer", None)
+    if num_layers is None:
+        raise ValueError("Unable to determine the number of decoder layers from the reference model configuration.")
+    layers = list(range(num_layers + 1))
 
     records = []
-    for L in layers:
-        # Extract features for each model
-        feat_ref = extract_mean_hidden(model_ref, L)
-        feat_upd = extract_mean_hidden(model_upd, L)
+    for layer_idx in layers:
+        ref_features = extract_mean_hidden(model_ref, layer_idx)
+        upd_features = extract_mean_hidden(model_upd, layer_idx)
 
-        # Fit PCA on reference features
-        pca = PCA(n_components=2).fit(feat_ref)
-        comp1, comp2 = pca.components_
+        # Determine number of PCA components based on available samples
+        n_samples = ref_features.shape[0]
+        n_features = ref_features.shape[1]
+        n_components = min(2, n_samples, n_features)
+        
+        if n_components < 2:
+            # Fall back to 1 component if insufficient samples
+            pca = PCA(n_components=1).fit(ref_features)
+            comp1 = pca.components_[0]
+            comp2 = np.zeros_like(comp1)  # Dummy second component
+        else:
+            pca = PCA(n_components=2).fit(ref_features)
+            comp1, comp2 = pca.components_
 
-        # Project and average along PC1 & PC2
-        pc1_ref = feat_ref.dot(comp1).mean()
-        pc2_ref = feat_ref.dot(comp2).mean()
-        pc1_upd = feat_upd.dot(comp1).mean()
-        pc2_upd = feat_upd.dot(comp2).mean()
+        pc1_ref = ref_features.dot(comp1).mean()
+        pc2_ref = ref_features.dot(comp2).mean()
+        pc1_upd = upd_features.dot(comp1).mean()
+        pc2_upd = upd_features.dot(comp2).mean()
 
         records.append({
-            "layer":     L,
-            "state":   "Reference",
-            "shift":      0.0,
-            "principal":  pc2_ref
+            "layer": layer_idx,
+            "state": "Reference",
+            "shift": 0.0,
+            "principal": pc2_ref,
         })
         records.append({
-            "layer":     L,
-            "state":   "Updated",
-            "shift":      pc1_upd - pc1_ref,
-            "principal":  pc2_upd
+            "layer": layer_idx,
+            "state": "Updated",
+            "shift": pc1_upd - pc1_ref,
+            "principal": pc2_upd,
         })
 
-    # Build DataFrame
+    del model_ref, model_upd
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     df = pd.DataFrame(records)
 
-    # --- 1) Configure global style (scientific look + DejaVu Serif font) ---
     mpl.rcParams.update({
-        'font.family':        'serif',
-        'font.serif':         ['DejaVu Serif'],  # or 'Calibri' if available
-        'font.size':          18,
-        'axes.titlesize':     20,
-        'axes.labelsize':     18,
-        'xtick.labelsize':    16,
-        'ytick.labelsize':    16,
-        'lines.linewidth':    2,
-        'lines.markersize':   8,
-        'axes.linewidth':     1.2,
-        'axes.spines.top':    False,
-        'axes.spines.right':  False,
-        'axes.grid':          True,
-        'grid.linestyle':     '--',
-        'grid.linewidth':     0.6,
-        'grid.alpha':         0.6,
-        'legend.frameon':     True,
-        'legend.fontsize':    16,
-        'legend.title_fontsize': 16,
-        'axes.prop_cycle':    mpl.cycler('color', ['#0072B2', '#D55E00', '#009E73']),
+        "font.family": "serif",
+        "font.serif": ["DejaVu Serif"],
+        "font.size": 18,
+        "axes.titlesize": 20,
+        "axes.labelsize": 18,
+        "xtick.labelsize": 16,
+        "ytick.labelsize": 16,
+        "lines.linewidth": 2,
+        "lines.markersize": 8,
+        "axes.linewidth": 1.2,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.grid": True,
+        "grid.linestyle": "--",
+        "grid.linewidth": 0.6,
+        "grid.alpha": 0.6,
+        "legend.frameon": True,
+        "legend.fontsize": 16,
+        "legend.title_fontsize": 16,
+        "axes.prop_cycle": mpl.cycler("color", ["#0072B2", "#D55E00", "#009E73"]),
     })
 
-    # --- 2) Create the figure and axis ---
     fig, ax = plt.subplots(figsize=(5, 3))
 
-    # --- 3) Draw grey connector lines for each layer ---
     for layer in df["layer"].unique():
-        sub = df[df["layer"] == layer].sort_values("state")
+        subset = df[df["layer"] == layer].sort_values("state")
         ax.plot(
-            sub["shift"], sub["principal"],
-            color="gray", linewidth=1, alpha=0.5, zorder=1
+            subset["shift"],
+            subset["principal"],
+            color="gray",
+            linewidth=1,
+            alpha=0.5,
+            zorder=1,
         )
 
-    # --- 4) Scatter points for each state with edgecolors ---
     markers = {"Reference": "o", "Updated": "^"}
     for state in df["state"].unique():
-        sub = df[df["state"] == state]
+        subset = df[df["state"] == state]
         ax.scatter(
-            sub["shift"], sub["principal"],
+            subset["shift"],
+            subset["principal"],
             marker=markers[state],
             edgecolors="black",
             label=state,
-            zorder=2
+            zorder=2,
         )
 
-    # --- 5) Axis labels and title ---
     ax.set_xlabel("Δ PC1")
     ax.set_ylabel("PC2")
     ax.set_title("PCA Shift", pad=12)
 
-    # --- 6) Dynamically pad x- and y-limits ---
     x_min, x_max = df["shift"].min(), df["shift"].max()
     y_min, y_max = df["principal"].min(), df["principal"].max()
     x_pad = 0.05 * (x_max - x_min)
-    y_pad = 0.7  * (y_max - y_min)
+    y_pad = 0.7 * (y_max - y_min)
     ax.set_xlim(x_min - x_pad, x_max + x_pad)
     ax.set_ylim(y_min - y_pad, y_max + y_pad)
 
-    # --- 7) Legend formatting (inside, centered above) ---
-    ax.legend(
-        loc="upper center",
-        bbox_to_anchor=(0.7, 1.2),
-        frameon=False,
-        fancybox=True
+    ax.legend(loc="upper center", bbox_to_anchor=(0.7, 1.2), frameon=False, fancybox=True)
+
+    plt.tight_layout()
+
+    image_buffer = io.BytesIO()
+    plt.savefig(image_buffer, bbox_inches="tight", dpi=300, format="png")
+    plt.close(fig)
+
+    visualization = VisualizationItem(
+        title="PCA Shift",
+        data=image_buffer.getvalue(),
+        description="Scatter plot showing per-layer PCA shift between reference and updated models.",
     )
 
-    # --- 8) Final layout, save and close ---
-    plt.tight_layout()
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    plt.savefig(output_path, bbox_inches='tight', dpi=300)
-    plt.close(fig)
+    return FeatureAnalysisResult(visualizations=[visualization])
 

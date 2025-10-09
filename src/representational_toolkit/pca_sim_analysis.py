@@ -1,170 +1,241 @@
 # src/cka_analyzer/pca_similarity.py
 
-import os
-import torch
-import numpy as np
+import contextlib
+import io
+from typing import List
+
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-from transformers import AutoTokenizer, AutoModelForCausalLM
+import numpy as np
+import torch
 from sklearn.decomposition import PCA
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from .types import FeatureAnalysisResult, VisualizationItem
+
+
+def _load_tokenizer(path: str) -> AutoTokenizer:
+    try:
+        return AutoTokenizer.from_pretrained(path, trust_remote_code=True)
+    except Exception as exc:  # pragma: no cover - HF hub issues
+        print(f"[!] Online tokenizer loading failed ({path}): {exc}")
+        print("[!] Retrying with local_files_only=True...")
+        return AutoTokenizer.from_pretrained(path, trust_remote_code=True, local_files_only=True)
+
+
+def _ensure_tokenizer_has_pad(tokenizer: AutoTokenizer) -> bool:
+    if tokenizer.pad_token is not None:
+        return False
+    if tokenizer.eos_token is not None:
+        tokenizer.pad_token = tokenizer.eos_token
+        return False
+    if tokenizer.bos_token is not None:
+        tokenizer.pad_token = tokenizer.bos_token
+        return False
+    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    return True
+
+
+def _load_model(
+    path: str,
+    *,
+    tokenizer: AutoTokenizer,
+    tokenizer_added_pad: bool,
+    device: torch.device,
+    torch_dtype: torch.dtype,
+) -> AutoModelForCausalLM:
+    base_kwargs = {
+        "trust_remote_code": True,
+        "low_cpu_mem_usage": True,
+    }
+    dtype_keys = ("dtype", "torch_dtype")
+    last_error: Exception | None = None
+
+    for dtype_key in dtype_keys:
+        kwargs = dict(base_kwargs)
+        kwargs[dtype_key] = torch_dtype
+        for local_only in (False, True):
+            try:
+                try:
+                    import accelerate  # type: ignore  # noqa: F401
+
+                    if device.type == "cuda":
+                        kwargs["device_map"] = "auto"
+                    model = AutoModelForCausalLM.from_pretrained(path, **kwargs)
+                except (ImportError, ValueError):
+                    kwargs.pop("device_map", None)
+                    model = AutoModelForCausalLM.from_pretrained(path, **kwargs).to(device)
+                if tokenizer_added_pad:
+                    with contextlib.suppress(Exception):
+                        model.resize_token_embeddings(len(tokenizer))
+                return model.eval()
+            except TypeError as exc:
+                last_error = exc
+                if dtype_key == "dtype" and "unexpected keyword" in str(exc):
+                    break
+                raise
+            except Exception as exc:  # pragma: no cover - IO / HF hub issues
+                last_error = exc
+                if local_only:
+                    break
+                print(f"[!] Online model loading failed ({path}): {exc}")
+                print("[!] Retrying with local_files_only=True...")
+                kwargs["local_files_only"] = True
+        if last_error and dtype_key == "dtype" and isinstance(last_error, TypeError):
+            continue
+        if last_error and not isinstance(last_error, TypeError):
+            continue
+    assert last_error is not None
+    raise last_error
+
 
 def run_pca_similarity(
     model_reference_path: str,
     model_path: str,
-    query: list[str],
-    output_path: str,
+    query: List[str],
     device: str = "cuda",
-    max_length: int = 128
-):
-    """
-    Compute and plot the cosine similarity between the first principal components
-    of a reference and an updated model, layer by layer.
+    max_length: int = 128,
+) -> FeatureAnalysisResult:
+    """Plot cosine similarity between the top principal components of two models."""
 
-    Args:
-        model_reference_path: Path or HuggingFace ID for the reference model.
-        model_path:           Path or HuggingFace ID for the updated model.
-        query:                List of input strings to analyze.
-        output_path:          Path to save the PDF plot.
-        max_length:           Tokenizer max_length for truncation/padding.
-    """
-    # Normalize device and choose dtype
     if isinstance(device, str) and device.startswith("cuda") and not torch.cuda.is_available():
         print("[!] CUDA requested but not available; falling back to CPU")
         device = "cpu"
-    device = torch.device(device)
-    torch_dtype = torch.float16 if device.type == "cuda" else torch.float32
+    compute_device = torch.device(device)
+    torch_dtype = torch.float16 if compute_device.type == "cuda" else torch.float32
 
-    # 2) Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_reference_path, trust_remote_code=True
+    sanitized_query = [item.strip() for item in query if item and item.strip()]
+    if not sanitized_query:
+        raise ValueError("At least one non-empty query string is required for PCA similarity analysis.")
+    
+    if len(sanitized_query) < 2:
+        print("[!] Warning: Only 1 query provided. PCA similarity analysis works best with 2+ queries for better statistical representation.")
+
+    tokenizer = _load_tokenizer(model_reference_path)
+    tokenizer_added_pad = _ensure_tokenizer_has_pad(tokenizer)
+
+    model_ref = _load_model(
+        model_reference_path,
+        tokenizer=tokenizer,
+        tokenizer_added_pad=tokenizer_added_pad,
+        device=compute_device,
+        torch_dtype=torch_dtype,
     )
-    tokenizer_added_pad = False
-    if tokenizer.pad_token is None:
-        if tokenizer.eos_token is not None:
-            tokenizer.pad_token = tokenizer.eos_token
-        elif tokenizer.bos_token is not None:
-            tokenizer.pad_token = tokenizer.bos_token
-        else:
-            tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-            tokenizer_added_pad = True
+    model_upd = _load_model(
+        model_path,
+        tokenizer=tokenizer,
+        tokenizer_added_pad=tokenizer_added_pad,
+        device=compute_device,
+        torch_dtype=torch_dtype,
+    )
 
-    # 3) Helper to load & move a causal LM
-    def load_model(path):
-        return (AutoModelForCausalLM
-                .from_pretrained(
-                    path,
-                    torch_dtype=torch_dtype,
-                    trust_remote_code=True
-                )
-                .to(device)
-                .eval())
-
-    # If we added a pad token, ensure model token embeddings match tokenizer
-    if tokenizer_added_pad:
-        try:
-            model_ref = AutoModelForCausalLM.from_pretrained(model_reference_path, trust_remote_code=True)
-            model_ref.resize_token_embeddings(len(tokenizer))
-            model_ref.to(device).eval()
-        except Exception:
-            # ignore failures here; individual load_model will attempt resize as needed
-            pass
-
-    # 4) Load both models
-    model_ref = load_model(model_reference_path)
-    model_upd = load_model(model_path)
-
-    # 5) Determine number of layers (+1 for embedding)
-    cfg = model_ref.config
-    n = getattr(cfg, "num_hidden_layers", None) or getattr(cfg, "n_layer", None)
-    if n is None:
-        n = len(model_ref.model.layers)
-    layers = list(range(n + 1))
-
-    # 6) Function to extract mean hidden state at one layer
-    def extract_mean(model, layer_idx):
+    def extract_mean(model: AutoModelForCausalLM, layer_idx: int) -> np.ndarray:
         enc = tokenizer(
-            query, return_tensors="pt",
-            padding=True, truncation=True, max_length=max_length
+            sanitized_query,
+            return_tensors="pt",
+            padding="max_length",
+            truncation=True,
+            max_length=max_length,
         )
-        enc = {k: v.to(device) for k, v in enc.items()}
+        enc = {key: value.to(compute_device) for key, value in enc.items()}
         with torch.no_grad():
-            out = model(**enc, output_hidden_states=True)
-        hs = out.hidden_states[layer_idx].float().cpu().numpy()
-        return hs.mean(axis=1)
+            outputs = model(**enc, output_hidden_states=True)
+        hidden_states = outputs.hidden_states
+        if hidden_states is None:
+            raise RuntimeError("Model did not return hidden states; enable output_hidden_states support.")
+        layer_hidden = hidden_states[layer_idx].float().cpu().numpy()
+        return layer_hidden.mean(axis=1)
 
-    # 7) Compute first principal component for each layer on reference
+    cfg = model_ref.config
+    num_layers = getattr(cfg, "num_hidden_layers", None) or getattr(cfg, "n_layer", None)
+    if num_layers is None:
+        raise ValueError("Unable to determine the number of decoder layers from the reference model configuration.")
+    layers = list(range(num_layers + 1))
+
     pcs_ref = {}
-    for L in layers:
-        feats_ref = extract_mean(model_ref, L)
-        pcs_ref[L] = PCA(n_components=1).fit(feats_ref).components_[0]
+    for layer_idx in layers:
+        feats_ref = extract_mean(model_ref, layer_idx)
+        n_samples = feats_ref.shape[0]
+        n_features = feats_ref.shape[1]
+        n_components = min(1, n_samples, n_features)
+        
+        if n_components < 1:
+            raise ValueError(f"Insufficient data for PCA at layer {layer_idx}: shape={feats_ref.shape}")
+        
+        pcs_ref[layer_idx] = PCA(n_components=1).fit(feats_ref).components_[0]
 
-    # 8) Compute cosine similarities
     sims = []
-    for L in layers:
-        comp_ref = pcs_ref[L]
-        feats_upd = extract_mean(model_upd, L)
-        comp_upd = PCA(n_components=1).fit(feats_upd).components_[0]
-        cos = (comp_ref @ comp_upd) / (np.linalg.norm(comp_ref) * np.linalg.norm(comp_upd))
-        sims.append(cos)
+    for layer_idx in layers:
+        ref_component = pcs_ref[layer_idx]
+        feats_upd = extract_mean(model_upd, layer_idx)
+        n_samples = feats_upd.shape[0]
+        n_features = feats_upd.shape[1]
+        n_components = min(1, n_samples, n_features)
+        
+        if n_components < 1:
+            raise ValueError(f"Insufficient data for PCA at layer {layer_idx}: shape={feats_upd.shape}")
+        
+        upd_component = PCA(n_components=1).fit(feats_upd).components_[0]
+        numerator = float(ref_component @ upd_component)
+        denominator = float(np.linalg.norm(ref_component) * np.linalg.norm(upd_component))
+        sims.append(numerator / denominator if denominator else 0.0)
 
-    # 1) Configure scientific plotting style + DejaVu Serif font (Calibri fallback)
+    del model_ref, model_upd
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     mpl.rcParams.update({
-        'font.family':        'serif',
-        'font.serif':         ['DejaVu Serif'],
-        'font.size':          18,
-        'axes.titlesize':     20,
-        'axes.labelsize':     18,
-        'xtick.labelsize':    16,
-        'ytick.labelsize':    16,
-        'lines.linewidth':    2.0,
-        'lines.markersize':   8,
-        'axes.linewidth':     1.2,
-        'axes.spines.top':    False,
-        'axes.spines.right':  False,
-        'axes.grid':          True,
-        'grid.linestyle':     '--',
-        'grid.linewidth':     0.5,
-        'grid.alpha':         0.7,
-        'legend.frameon':     False,
-        'legend.fontsize':    16,
-        'axes.prop_cycle':    mpl.cycler('color', ['#0072B2'])
+        "font.family": "serif",
+        "font.serif": ["DejaVu Serif"],
+        "font.size": 18,
+        "axes.titlesize": 20,
+        "axes.labelsize": 18,
+        "xtick.labelsize": 16,
+        "ytick.labelsize": 16,
+        "lines.linewidth": 2.0,
+        "lines.markersize": 8,
+        "axes.linewidth": 1.2,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.grid": True,
+        "grid.linestyle": "--",
+        "grid.linewidth": 0.5,
+        "grid.alpha": 0.7,
+        "legend.frameon": False,
+        "legend.fontsize": 16,
+        "axes.prop_cycle": mpl.cycler("color", ["#0072B2"]),
     })
 
-    # 2) Create the figure and axis
     fig, ax = plt.subplots(figsize=(6, 4))
 
-    # 3) Plot the cosine similarity curve with markers every N layers
     marker_freq = 5
-    marker_idx  = [i for i in range(len(layers)) if i % marker_freq == 0]
+    marker_indices = [idx for idx in range(len(layers)) if idx % marker_freq == 0]
 
-    # Use the first color ('#0072B2') for the line and markers
+    ax.plot(layers, sims, linestyle="-", label="Updated vs Reference")
     ax.plot(
-        layers, sims,
-        linestyle='-',
-        label='Updated vs Reference'
-    )
-    ax.plot(
-        [layers[i] for i in marker_idx],
-        [sims[i]   for i in marker_idx],
-        linestyle='None', marker='o'
+        [layers[idx] for idx in marker_indices],
+        [sims[idx] for idx in marker_indices],
+        linestyle="None",
+        marker="o",
     )
 
-    # 4) Set axis labels and title
     ax.set_xlabel("Layer index")
     ax.set_ylabel("Cosine similarity of PC1")
     ax.set_title("Layer-wise PCA Similarity", pad=12)
-
-    # 5) Set y-axis limits
     ax.set_ylim(-1, 1)
-
-    # 6) Enable grid (already styled by rcParams)
     ax.grid(True)
-
-    # 7) Add legend inside the plot area
     ax.legend(loc="best")
 
-    # 8) Finalize layout and save as PDF
     fig.tight_layout()
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    fig.savefig(output_path, dpi=300, bbox_inches='tight')
+
+    image_buffer = io.BytesIO()
+    fig.savefig(image_buffer, dpi=300, bbox_inches="tight", format="png")
     plt.close(fig)
+
+    visualization = VisualizationItem(
+        title="Layer-wise PCA Similarity",
+        data=image_buffer.getvalue(),
+        description="Cosine similarity of the first principal component across decoder layers.",
+    )
+
+    return FeatureAnalysisResult(visualizations=[visualization])
