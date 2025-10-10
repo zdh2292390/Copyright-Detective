@@ -1078,3 +1078,35 @@ def render_collapsible_table_card(
         height=estimated_height,
         scrolling=False,
     )
+
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def render_streamlit_accordion(title: str, *, key: Optional[str] = None, expanded: bool = False, help: Optional[str] = None):
+    """A lightweight Streamlit-native accordion helper.
+
+    Usage:
+        with render_streamlit_accordion("Advanced settings", key="acc1"):
+            st.slider(...)
+
+    This preserves Streamlit interactive widgets and their keys (unlike HTML/iframe components)
+    while visually grouping controls under a summary line. It uses an st.expander under the hood
+    but provides a single shared place to add extra styling or replace implementation later.
+    """
+
+    # For now, we wrap st.expander to ensure correct widget behavior. Using a contextmanager
+    # keeps the call-site simple and makes it straightforward to later swap to a pure-Streamlit
+    # implementation if desired.
+    if help:
+        summary = f"{title} — {help}"
+    else:
+        summary = title
+
+    exp = st.expander(summary, expanded=expanded)
+    try:
+        with exp:
+            yield
+    finally:
+        pass

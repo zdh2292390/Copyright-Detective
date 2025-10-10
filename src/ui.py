@@ -2053,8 +2053,10 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                 key="membership_gap_threshold",
             )
 
-        advanced_expander = st.expander("Advanced settings", expanded=False)
-        with advanced_expander:
+        # Use the Streamlit-native accordion helper so widgets inside remain interactive and maintain keys
+        from src.components import render_streamlit_accordion
+
+        with render_streamlit_accordion("Advanced settings", key="membership_advanced_settings", expanded=False, help="Tune confidence reporting and sampling depth"):
             st.caption("Tune confidence reporting and sampling depth for the perplexity probe.")
             bootstrap_samples = st.slider(
                 "Bootstrap iterations",
