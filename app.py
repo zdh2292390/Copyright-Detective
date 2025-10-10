@@ -29,11 +29,11 @@ render_header()
 api_key, model_choice, provider, page = render_sidebar()
 
 # Render main content based on selected page
-if page == "Snippet-to-Document Analysis":
+if page == "Direct Recall Test":
     render_snippet_to_document_page(api_key, model_choice, provider)
-elif page == "Unlearning Detection":
+elif page == "Unlearning Detection Test":
     render_unlearning_detection_page(api_key, model_choice, provider)
-elif page == "Adversarial Persuasive Prompting":
+elif page == "Persuasive Jailbreak Test":
     render_adversarial_persuasion_page(api_key, model_choice, provider)
 
 # Footer (commented out as it's not defined)

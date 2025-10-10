@@ -151,9 +151,9 @@ def render_sidebar():
         page = st.radio(
             "Go to",
             [
-                "Snippet-to-Document Analysis",
-                "Unlearning Detection",
-                "Adversarial Persuasive Prompting",
+                "Direct Recall Test",
+                "Persuasive Jailbreak Test",
+                "Unlearning Detection Test",
             ],
             label_visibility="collapsed",
         )
@@ -165,7 +165,7 @@ def render_sidebar():
 def render_snippet_to_document_page(api_key, model_choice, provider):
     """Render the combined snippet-to-document analysis workspace."""
 
-    st.markdown("### 🔎 Snippet-to-Document Analysis")
+    st.markdown("### 🔎 Direct Recall Test")
     st.markdown(
         "Investigate potential copyright issues from a single excerpt through to an entire document."
     )
@@ -948,7 +948,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
 def render_adversarial_persuasion_page(api_key, model_choice, provider):
     """Render the adversarial persuasive prompting workspace."""
 
-    st.markdown("### 🧠 Adversarial Persuasive Prompting")
+    st.markdown("### 🧠 Persuasive Jailbreak Test")
     strategies = list_persuasion_strategies()
     baseline_prompts = list_baseline_prompts()
     strategy_count = len(strategies)
@@ -1854,7 +1854,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
 
 def render_unlearning_detection_page(api_key, model_choice, provider):
     """Render the unlearning detection page with membership inference."""
-    st.markdown("### 🧠 Unlearning Detection")
+    st.markdown("### 🧠 Unlearning Detection Test")
     st.markdown(
         "Combine targeted jailbreak prompts with perplexity-based probes to uncover lingering memorisation."
     )
@@ -2633,10 +2633,12 @@ def main():
     render_header()
     api_key, model_choice, provider, page = render_sidebar()
 
-    if page == "Snippet-to-Document Analysis":
+    if page == "Direct Recall Test":
         render_snippet_to_document_page(api_key, model_choice, provider)
-    else:
+    elif page == "Unlearning Detection Test":
         render_unlearning_detection_page(api_key, model_choice, provider)
+    elif page == "Persuasive Jailbreak Test":
+        render_adversarial_persuasion_page(api_key, model_choice, provider)
 
     # Footer (currently empty, can be customized)
     render_footer()
