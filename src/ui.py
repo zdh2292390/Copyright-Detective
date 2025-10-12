@@ -195,9 +195,9 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     prompt_type = st.selectbox(
         "🎛️ Choose the Prompt Type:",
         [
-            "Sequential Continuation Evaluation",
-            "Preceding Context Reconstruction",
-            "Copyright Attribution Inference",
+            "Next-Passage Prediction",
+            "Prior-Context Reconstruction",
+            "Title Prediction",
         ],
         help="Select the type of prompt to guide the Text Snippet Analysis. (Choose only; typing custom values is not allowed.)",
     )
@@ -221,9 +221,9 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         )
 
     # Explanatory notes for each prompt type
-    if prompt_type == "Sequential Continuation Evaluation":
+    if prompt_type == "Next-Passage Prediction":
         st.markdown(
-            "_Sequential Continuation Evaluation: Provide the prefix (previous sentence) and ask the model to continue by generating the next sentence. This probes whether the model reproduces or closely follows memorized sequences from source texts._"
+            "_Next-Passage Prediction: Provide the current excerpt and ask the model to generate the following passage. This surfaces whether the model recalls memorized continuations from source texts._"
         )
         
         continuation_method = st.selectbox(
@@ -251,7 +251,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         chunk_size_preview = len(text2.split()) if text2 else None
         char_count_preview = len(text2) if text2 else None
         prompt_to_preview = get_full_prompt(
-            prompt_type="Sequential Continuation Evaluation",
+            prompt_type="Next-Passage Prediction",
             input_text=text1,
             chunk_size=chunk_size_preview,
             continuation_method=continuation_method,
@@ -263,9 +263,9 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         )
         render_prompt_preview(prompt_to_preview)
         
-    elif prompt_type == "Preceding Context Reconstruction":
+    elif prompt_type == "Prior-Context Reconstruction":
         st.markdown(
-            "_Preceding Context Reconstruction: Provide the continuation or subsequent sentence and ask the model to generate the most likely preceding sentence. This helps detect whether the model can reconstruct prior context, which may indicate memorization of original works._"
+            "_Prior-Context Reconstruction: Provide the continuation or subsequent passage and ask the model to recreate the most likely preceding context. This helps reveal whether the model can recover earlier text from memory._"
         )
         preceding_method = st.selectbox(
             "Choose a continuation method (Jailbreak Persuasion):",
@@ -301,9 +301,9 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         )
         render_prompt_preview(prompt_to_preview)
 
-    elif prompt_type == "Copyright Attribution Inference":
+    elif prompt_type == "Title Prediction":
         st.markdown(
-            "_Copyright Attribution Inference: Based on the provided text snippet, ask the model to infer a likely title or attribution for the work (for example, a classic novel or another copyrighted source). Useful for identifying potential origins of the snippet._"
+            "_Title Prediction: Based on the provided snippet, ask the model to infer the most likely title or attribution for the work. This can surface potential source identification signals._"
         )
         chunk_size_preview = len(text2.split()) if text2 else None
         char_count_preview = len(text2) if text2 else None
@@ -323,7 +323,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     #     # Define continuation_method for the preview logic even if it's not set
     #     continuation_method = "Normal Continuation"
     #     chunk_size = len(text2.split()) if text2 else None
-    #     if prompt_type == "Sequential Continuation Evaluation":
+    #     if prompt_type == "Next-Passage Prediction":
     #         continuation_method = st.session_state.get("continuation_method_selector", "Normal Continuation")
     #         prompt_to_preview = get_full_prompt(continuation_method, text1, chunk_size=chunk_size)
     #     else:
@@ -376,7 +376,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             st.warning("⚠️ Please enter both input text and ground truth.")
         else:
             # Define a variable for continuation_method if it's not set
-            if prompt_type == "Preceding Context Reconstruction":
+            if prompt_type == "Prior-Context Reconstruction":
                 continuation_method = st.session_state.get("preceding_method_selector", "Normal Continuation")
                 custom_template = (
                     st.session_state.get("custom_preceding_prompt", "").strip()
@@ -402,7 +402,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 with st.spinner(
                     f"🔄 Generating text with {model_choice} and calculating scores..."
                 ):
-                    if prompt_type == "Sequential Continuation Evaluation" and continuation_method != "Normal Continuation":
+                    if prompt_type == "Next-Passage Prediction" and continuation_method != "Normal Continuation":
                         result = run_persuasion_probe(
                             api_key,
                             model_choice,
@@ -481,7 +481,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                         (i) / inference_runs,
                         text=f"🔄 Generating text for run {i+1}/{inference_runs}...",
                     )
-                    if prompt_type == "Sequential Continuation Evaluation" and continuation_method != "Normal Continuation":
+                    if prompt_type == "Next-Passage Prediction" and continuation_method != "Normal Continuation":
                         result = run_persuasion_probe(
                             api_key,
                             model_choice,
@@ -781,7 +781,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
             else None
         )
         preview_prompt = get_full_prompt(
-            prompt_type="Sequential Continuation Evaluation",
+            prompt_type="Next-Passage Prediction",
             input_text="[PDF chunk]",
             chunk_size=chunk_size,
             continuation_method=continuation_method,

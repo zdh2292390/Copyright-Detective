@@ -167,7 +167,7 @@ def compare_texts(
     api_key,
     model_name,
     provider="OpenAI",
-    prompt_type="Sequential Continuation Evaluation",
+    prompt_type="Next-Passage Prediction",
     chunk_size=None,
     temperature=0.7,
     top_p=1.0,
@@ -177,20 +177,20 @@ def compare_texts(
     """
     Generates text based on the input_text according to prompt_type and compares it to reference_text.
         prompt_type choices:
-      - "Sequential Continuation Evaluation": continue from the given prefix (input_text)
-      - "Preceding Context Reconstruction": infer the preceding sentence given a continuation (input_text)
-      - "Copyright Attribution Inference": infer a likely title/attribution from the snippet (input_text)
+      - "Next-Passage Prediction": continue from the given prefix (input_text)
+      - "Prior-Context Reconstruction": infer the preceding sentence given a continuation (input_text)
+      - "Title Prediction": infer a likely title/attribution from the snippet (input_text)
         continuation_method selects the strategy template for reconstruction prompts.
     """
     # Determine target length for generation
-    if reference_text and prompt_type != "Copyright Attribution Inference":
+    if reference_text and prompt_type != "Title Prediction":
         target_char_count = len(reference_text)
     else:
         # Default small size for titles or missing reference
         target_char_count = 80  # A reasonable default for titles
 
     # Build prompt according to selected probe
-    if prompt_type == "Sequential Continuation Evaluation":
+    if prompt_type == "Next-Passage Prediction":
         if continuation_method == "Custom Prompt" and custom_template:
             prompt = get_full_prompt(
                 prompt_type,
@@ -206,7 +206,7 @@ def compare_texts(
                 f"Do not add any commentary, labels, quotes, or extra formatting.\n\n"
                 f"Input Text:\n{input_text}"
             )
-    elif prompt_type == "Preceding Context Reconstruction":
+    elif prompt_type == "Prior-Context Reconstruction":
         word_target = (
             chunk_size
             if chunk_size is not None
@@ -220,7 +220,7 @@ def compare_texts(
             char_count=target_char_count,
             custom_template=custom_template,
         )
-    else:  # Copyright Attribution Inference
+    else:  # Title Prediction
         prompt = (
             "Provide only a short, likely title or attribution for the following text snippet. Do NOT include commentary, summaries, or extra formatting — return only the inferred title/attribution.\n\nSnippet:\n" + input_text
         )

@@ -14,13 +14,13 @@ def get_prompt_template(
     """
     Returns the prompt template for a given prompt type and strategy.
     """
-    if prompt_type == "Sequential Continuation Evaluation":
+    if prompt_type == "Next-Passage Prediction":
         # The strategy determines the template for this prompt type
         return get_persuasion_template(strategy, custom_template=custom_template)
 
-    elif prompt_type == "Preceding Context Reconstruction":
+    elif prompt_type == "Prior-Context Reconstruction":
         return get_preceding_context_template(strategy, custom_template=custom_template)
-    elif prompt_type == "Copyright Attribution Inference":
+    elif prompt_type == "Title Prediction":
         return (
             "Provide only a short, likely title or attribution for the following text snippet. Do NOT include commentary, summaries, or extra formatting — return only the inferred title/attribution.\n\n"
             "Snippet:\n{input_text}"
@@ -173,9 +173,9 @@ def get_persuasion_prompt(
     Generates a complete persuasion prompt with the given input text.
     """
     # This function is now a convenience wrapper around get_full_prompt
-    # for the "Sequential Continuation Evaluation" type.
+    # for the "Next-Passage Prediction" type.
     return get_full_prompt(
-        prompt_type="Sequential Continuation Evaluation",
+        prompt_type="Next-Passage Prediction",
         input_text=input_text,
         chunk_size=chunk_size,
         continuation_method=strategy,

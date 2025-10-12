@@ -253,7 +253,7 @@ def run_persuasion_probe(
     """
     char_count = len(ground_truth_text) if ground_truth_text else None
     prompt = get_full_prompt(
-        prompt_type="Sequential Continuation Evaluation",
+        prompt_type="Next-Passage Prediction",
         input_text=input_text,
         chunk_size=chunk_size,
         continuation_method=strategy,
