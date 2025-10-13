@@ -228,7 +228,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         )
         
         continuation_method = st.selectbox(
-            "Choose a continuation method (Jailbreak Persuasion):",
+            "Choose a continuation method:",
             CONTINUATION_STRATEGIES,
             help="Select 'Normal Continuation' for a direct prompt or a persuasion strategy to frame the request differently.",
             key="continuation_method_selector",
@@ -269,7 +269,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             "_Prior-Context Reconstruction: Provide the continuation or subsequent passage and ask the model to recreate the most likely preceding context. This helps reveal whether the model can recover earlier text from memory._"
         )
         preceding_method = st.selectbox(
-            "Choose a continuation method (Jailbreak Persuasion):",
+            "Choose a continuation method:",
             CONTINUATION_STRATEGIES,
             help="Select a reconstruction framing. Each strategy nudges the model toward recreating the missing preceding context.",
             key="preceding_method_selector",
