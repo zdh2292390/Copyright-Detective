@@ -3,7 +3,10 @@ from rouge_score import rouge_scorer
 from Levenshtein import distance
 import anthropic
 import google.generativeai as genai
-from typing import Optional
+import re
+from dataclasses import dataclass
+from difflib import SequenceMatcher
+from typing import Dict, List, Optional
 
 from src.prompt_utils import get_full_prompt
 from src.copyright_detective.progress import (
@@ -15,6 +18,88 @@ from src.copyright_detective.progress import (
 
 def _normalize_spaces(s: str) -> str:
     return " ".join(s.strip().split())
+
+
+_TOKEN_SPLIT_RE = re.compile(r"\w+|\s+|[^\w\s]", flags=re.UNICODE)
+
+
+@dataclass(frozen=True)
+class DiffToken:
+    text: str
+    label: str  # match, miss, extra, neutral
+
+
+def _tokenize_for_diff(text: Optional[str]) -> List[str]:
+    if not text:
+        return []
+    return _TOKEN_SPLIT_RE.findall(text)
+
+
+def compute_direct_recall_alignment(
+    reference_text: str,
+    candidate_text: str,
+) -> Dict[str, object]:
+    """Compute token-level alignment between ground truth and generated text.
+
+    Returns a mapping containing token sequences for both texts with highlight labels
+    and aggregate counts for match/miss/extra tokens. Whitespace-only tokens are
+    preserved for rendering but labelled as ``neutral`` and excluded from counts.
+    """
+
+    reference_tokens = _tokenize_for_diff(reference_text)
+    candidate_tokens = _tokenize_for_diff(candidate_text)
+
+    matcher = SequenceMatcher(None, reference_tokens, candidate_tokens, autojunk=False)
+
+    reference_alignment: List[DiffToken] = []
+    candidate_alignment: List[DiffToken] = []
+    def add_tokens(
+        target: List[DiffToken],
+        tokens: List[str],
+        label: str,
+    ) -> None:
+        for token in tokens:
+            if token == "":
+                continue
+            effective_label = label if token.strip() else "neutral"
+            target.append(DiffToken(token, effective_label))
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            add_tokens(reference_alignment, reference_tokens[i1:i2], "match")
+            add_tokens(candidate_alignment, candidate_tokens[j1:j2], "match")
+        elif tag == "delete":
+            add_tokens(reference_alignment, reference_tokens[i1:i2], "miss")
+        elif tag == "insert":
+            add_tokens(candidate_alignment, candidate_tokens[j1:j2], "extra")
+        elif tag == "replace":
+            add_tokens(reference_alignment, reference_tokens[i1:i2], "miss")
+            add_tokens(candidate_alignment, candidate_tokens[j1:j2], "extra")
+
+    def token_length(tokens: List[DiffToken]) -> int:
+        return sum(1 for token in tokens if token.label != "neutral")
+
+    def token_count(tokens: List[DiffToken], label: str) -> int:
+        return sum(1 for token in tokens if token.label == label)
+
+    ground_match = token_count(reference_alignment, "match")
+    ground_miss = token_count(reference_alignment, "miss")
+    generated_match = token_count(candidate_alignment, "match")
+    generated_extra = token_count(candidate_alignment, "extra")
+
+    counts = {
+        "match": min(ground_match, generated_match),
+        "miss": ground_miss,
+        "extra": generated_extra,
+    }
+
+    return {
+        "ground_tokens": reference_alignment,
+        "generated_tokens": candidate_alignment,
+        "counts": counts,
+        "ground_non_whitespace": token_length(reference_alignment),
+        "generated_non_whitespace": token_length(candidate_alignment),
+    }
 
 
 def enforce_exact_char_count(text: str, target: Optional[int]) -> str:

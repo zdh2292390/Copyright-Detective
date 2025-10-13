@@ -4,11 +4,13 @@ import base64
 import html
 import json
 import math
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+
+from src.copyright_detective.comparison import compute_direct_recall_alignment, DiffToken
 
 
 _COLLAPSIBLE_COMPONENT_STYLE = """
@@ -148,6 +150,245 @@ _COLLAPSIBLE_COMPONENT_STYLE = """
     }
 </style>
 """
+
+_DIRECT_RECALL_DIFF_STYLE = """
+<style>
+    :root {
+        --dr-match: linear-gradient(135deg, #22c55e, #16a34a);
+        --dr-miss: linear-gradient(135deg, #f87171, #ef4444);
+        --dr-extra: linear-gradient(135deg, #f59e0b, #d97706);
+    }
+    .dr-diff-wrapper {
+        margin: 0.9rem 0 0.6rem;
+        padding: 1rem 1.15rem 1.05rem;
+        border-radius: 18px;
+        border: 1px solid rgba(203, 213, 225, 0.75);
+        background: linear-gradient(145deg, rgba(255,255,255,0.96), rgba(240, 245, 255, 0.9));
+        box-shadow: 0 18px 36px rgba(15, 23, 42, 0.08);
+    }
+    .dr-diff-title {
+        font-size: 0.95rem;
+        font-weight: 700;
+        color: #0f172a;
+        margin-bottom: 0.65rem;
+        letter-spacing: 0.3px;
+    }
+    .dr-diff-columns {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.85rem;
+    }
+    .dr-diff-column {
+        flex: 1 1 0;
+        min-width: 260px;
+        background: rgba(248, 250, 252, 0.75);
+        border: 1px solid rgba(191, 219, 254, 0.6);
+        border-radius: 14px;
+        padding: 0.75rem 0.85rem 0.8rem;
+        position: relative;
+    }
+    .dr-diff-column::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        pointer-events: none;
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+    }
+    .dr-diff-column__title {
+        font-size: 0.72rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        color: #475569;
+        letter-spacing: 0.42px;
+        margin-bottom: 0.4rem;
+    }
+    .dr-diff-column__body {
+        font-size: 0.9rem;
+        line-height: 1.7;
+        color: #1f2937;
+        background: rgba(255, 255, 255, 0.85);
+        border-radius: 12px;
+        border-left: 4px solid #2563eb;
+        padding: 0.65rem 0.75rem;
+        white-space: normal;
+        word-break: break-word;
+    }
+    .dr-diff-column__body--ground {
+        border-left-color: #dc2626;
+    }
+    .dr-diff-column__body--generated {
+        border-left-color: #2563eb;
+    }
+    .dr-token {
+        display: inline;
+        padding: 0.08rem 0.14rem;
+        margin: 0 0.02rem;
+        border-radius: 8px;
+        font-weight: 510;
+        box-decoration-break: clone;
+        -webkit-box-decoration-break: clone;
+        transition: background 0.18s ease;
+    }
+    .dr-token--match {
+        background: rgba(34, 197, 94, 0.26);
+        color: #14532d;
+    }
+    .dr-token--miss {
+        background: rgba(248, 113, 113, 0.28);
+        color: #7f1d1d;
+        border-bottom: 1px dashed rgba(185, 28, 28, 0.65);
+    }
+    .dr-token--extra {
+        background: rgba(250, 204, 21, 0.26);
+        color: #78350f;
+    }
+    .dr-token br {
+        display: inline;
+    }
+    .dr-diff-legend {
+        margin-top: 0.7rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.55rem;
+        font-size: 0.77rem;
+        color: #475569;
+    }
+    .dr-legend-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        padding: 0.3rem 0.65rem;
+        border-radius: 999px;
+        background: rgba(241, 245, 249, 0.85);
+        box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
+        font-weight: 600;
+        letter-spacing: 0.35px;
+    }
+    .dr-legend-chip {
+        width: 0.75rem;
+        height: 0.75rem;
+        border-radius: 50%;
+        background: rgba(148, 163, 184, 0.5);
+    }
+    .dr-legend-chip.match { background: var(--dr-match); }
+    .dr-legend-chip.miss { background: var(--dr-miss); }
+    .dr-legend-chip.extra { background: var(--dr-extra); }
+    .dr-diff-metrics {
+        margin-top: 0.65rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        font-size: 0.78rem;
+        color: #334155;
+    }
+    .dr-diff-metric {
+        background: rgba(226, 232, 240, 0.35);
+        border-radius: 12px;
+        padding: 0.48rem 0.7rem;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+    }
+    .dr-diff-metric strong {
+        color: #0f172a;
+        font-size: 0.82rem;
+    }
+    @media (max-width: 820px) {
+        .dr-diff-wrapper { padding: 0.95rem; }
+        .dr-diff-column { min-width: 100%; }
+    }
+</style>
+"""
+
+
+def _escape_diff_token(token: str) -> str:
+    escaped = html.escape(token)
+    escaped = escaped.replace("\t", "&nbsp;&nbsp;&nbsp;&nbsp;")
+    escaped = escaped.replace(" ", "&nbsp;")
+    return escaped.replace("\n", "<br />")
+
+
+def _build_diff_html(tokens: List[DiffToken]) -> str:
+    class_map = {
+        "match": "dr-token dr-token--match",
+        "miss": "dr-token dr-token--miss",
+        "extra": "dr-token dr-token--extra",
+    }
+    parts: List[str] = []
+    for token in tokens:
+        text = _escape_diff_token(token.text)
+        css_class = class_map.get(token.label)
+        if css_class:
+            parts.append(f'<span class="{css_class}">{text}</span>')
+        else:
+            parts.append(text)
+    return "".join(parts)
+
+
+def render_direct_recall_diff(
+    ground_truth: str,
+    generated_text: str,
+    *,
+    title: Optional[str] = None,
+) -> Dict[str, int]:
+    """Render a side-by-side comparison highlighting token-level matches and errors."""
+
+    alignment = compute_direct_recall_alignment(ground_truth or "", generated_text or "")
+    ground_html = _build_diff_html(alignment["ground_tokens"])
+    generated_html = _build_diff_html(alignment["generated_tokens"])
+    counts = alignment["counts"]
+
+    ground_total = alignment["ground_non_whitespace"] or 0
+    generated_total = alignment["generated_non_whitespace"] or 0
+    recall_pct = (
+        f"{(counts['match'] / ground_total) * 100:.1f}%"
+        if ground_total
+        else "—"
+    )
+    precision_pct = (
+        f"{(counts['match'] / generated_total) * 100:.1f}%"
+        if generated_total
+        else "—"
+    )
+
+    legend_html = (
+        f'<div class="dr-diff-legend">'
+        f'<span class="dr-legend-item"><span class="dr-legend-chip match"></span>Matches: {counts["match"]}</span>'
+        f'<span class="dr-legend-item"><span class="dr-legend-chip miss"></span>Missed (Ground Truth Only): {counts["miss"]}</span>'
+        f'<span class="dr-legend-item"><span class="dr-legend-chip extra"></span>Extra (Model Only): {counts["extra"]}</span>'
+        f"</div>"
+    )
+
+    metrics_html = (
+        f'<div class="dr-diff-metrics">'
+        f'<div class="dr-diff-metric">Recall Coverage: <strong>{recall_pct}</strong></div>'
+        f'<div class="dr-diff-metric">Precision: <strong>{precision_pct}</strong></div>'
+        f'</div>'
+    )
+
+    section_title = title or "Direct Recall Comparison"
+
+    st.markdown(
+        f"""
+        {_DIRECT_RECALL_DIFF_STYLE}<div class="dr-diff-wrapper">
+            <div class="dr-diff-title">{html.escape(section_title)}</div>
+            <div class="dr-diff-columns">
+                <div class="dr-diff-column">
+                    <div class="dr-diff-column__title">Ground Truth</div>
+                    <div class="dr-diff-column__body dr-diff-column__body--ground">{ground_html}</div>
+                </div>
+                <div class="dr-diff-column">
+                    <div class="dr-diff-column__title">Model Output</div>
+                    <div class="dr-diff-column__body dr-diff-column__body--generated">{generated_html}</div>
+                </div>
+            </div>
+            {legend_html}
+            {metrics_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    return counts
 
 
 def render_prompt_preview(

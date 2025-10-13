@@ -55,6 +55,7 @@ from src.components import (
     render_table_card,
     render_collapsible_table_card,
     render_top_sample_distribution,
+    render_direct_recall_diff,
 )
 
 
@@ -448,12 +449,9 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                         st.markdown("---")
                         st.markdown("### 📊 Analysis Results")
 
-                        # Generated text
-                        st.markdown("**🤖 Generated Text**")
-                        st.markdown(
-                            f'<div class="generated-text">{generated_text}</div>',
-                            unsafe_allow_html=True,
-                        )
+                        # Highlighted alignment view
+                        st.markdown("**🧠 Direct Recall Alignment**")
+                        render_direct_recall_diff(text2, generated_text)
 
                         # Similarity scores summary
                         st.markdown("**📈 Similarity Scores**")
@@ -538,11 +536,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     # Display generated texts for each run
                     st.markdown('<h3 class="section-header sm">🤖 Generated Texts for Each Run</h3>', unsafe_allow_html=True)
                     for i, text in enumerate(generated_texts):
-                        st.markdown(f"**Run {i+1}:**")
-                        st.markdown(
-                            f'<div class="generated-text sm">{text}</div>',
-                            unsafe_allow_html=True,
-                        )
+                        render_direct_recall_diff(text2, text, title=f"Run {i+1}")
 
                     # Calculate statistics
                     rouge_scores = [score["rouge"] for score in similarity_scores]
