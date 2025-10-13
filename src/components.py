@@ -330,6 +330,9 @@ def render_direct_recall_diff(
     generated_text: str,
     *,
     title: Optional[str] = None,
+    rouge_score: Optional[float] = None,
+    jaccard_index: Optional[float] = None,
+    levenshtein_dist: Optional[int] = None,
 ) -> Dict[str, int]:
     """Render a side-by-side comparison highlighting token-level matches and errors."""
 
@@ -359,12 +362,21 @@ def render_direct_recall_diff(
         f"</div>"
     )
 
-    metrics_html = (
-        f'<div class="dr-diff-metrics">'
-        f'<div class="dr-diff-metric">Recall Coverage: <strong>{recall_pct}</strong></div>'
-        f'<div class="dr-diff-metric">Precision: <strong>{precision_pct}</strong></div>'
-        f'</div>'
-    )
+    if rouge_score is not None and jaccard_index is not None and levenshtein_dist is not None:
+        metrics_html = (
+            f'<div class="dr-diff-metrics">'
+            f'<div class="dr-diff-metric">ROUGE-L: <strong>{rouge_score:.4f}</strong></div>'
+            f'<div class="dr-diff-metric">Jaccard: <strong>{jaccard_index:.4f}</strong></div>'
+            f'<div class="dr-diff-metric">Levenshtein: <strong>{levenshtein_dist}</strong></div>'
+            f'</div>'
+        )
+    else:
+        metrics_html = (
+            f'<div class="dr-diff-metrics">'
+            f'<div class="dr-diff-metric">Recall Coverage: <strong>{recall_pct}</strong></div>'
+            f'<div class="dr-diff-metric">Precision: <strong>{precision_pct}</strong></div>'
+            f'</div>'
+        )
 
     section_title = title or "Direct Recall Comparison"
 

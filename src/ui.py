@@ -451,13 +451,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
 
                         # Highlighted alignment view
                         st.markdown("**🧠 Direct Recall Alignment**")
-                        render_direct_recall_diff(text2, generated_text)
-
-                        # Similarity scores summary
-                        st.markdown("**📈 Similarity Scores**")
-                        st.markdown(
-                            f"ROUGE-L: **{rouge_score:.4f}** | Jaccard: **{jaccard_index:.4f}** | Levenshtein: **{levenshtein_dist}**"
-                        )
+                        render_direct_recall_diff(text2, generated_text, rouge_score=rouge_score, jaccard_index=jaccard_index, levenshtein_dist=levenshtein_dist)
 
                         # Conclusion
                         if rouge_score > 0.5 or jaccard_index > 0.5:
@@ -536,7 +530,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     # Display generated texts for each run
                     st.markdown('<h3 class="section-header sm">🤖 Generated Texts for Each Run</h3>', unsafe_allow_html=True)
                     for i, text in enumerate(generated_texts):
-                        render_direct_recall_diff(text2, text, title=f"Run {i+1}")
+                        render_direct_recall_diff(text2, text, title=f"Run {i+1}", rouge_score=similarity_scores[i]['rouge'], jaccard_index=similarity_scores[i]['jaccard'], levenshtein_dist=similarity_scores[i]['levenshtein'])
 
                     # Calculate statistics
                     rouge_scores = [score["rouge"] for score in similarity_scores]
