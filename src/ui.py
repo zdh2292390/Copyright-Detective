@@ -56,6 +56,7 @@ from src.components import (
     render_collapsible_table_card,
     render_top_sample_distribution,
     render_direct_recall_diff,
+    render_direct_recall_diff_html,
 )
 
 
@@ -912,16 +913,20 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                 f"Generation strategy: {continuation_method} · Temperature {temperature:.2f} · Top-P {top_p:.2f}"
             )
             for rank, (upper, lower, gen, r, j, l) in enumerate(results[:display_limit], start=1):
+                diff_html, _ = render_direct_recall_diff_html(
+                    lower,
+                    gen,
+                    title="🧠 Direct Recall Alignment",
+                    rouge_score=r,
+                    jaccard_index=j,
+                    levenshtein_dist=l,
+                )
+
                 sections = [
                     ("📝 Prefix Context", upper, None),
-                    ("🎯 Ground Truth", lower, None),
-                    ("🤖 Generated Text", gen, "generated"),
-                    (
-                        "📈 Scores",
-                        f"ROUGE-L: {r:.4f}\nJaccard: {j:.4f}\nLevenshtein: {l}",
-                        None,
-                    ),
+                    ("🧠 Direct Recall Alignment", diff_html, "html"),
                 ]
+
                 render_prompt_style_panel(
                     title=f"Rank {rank}",
                     sections=sections,
