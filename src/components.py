@@ -325,7 +325,7 @@ def _build_diff_html(tokens: List[DiffToken]) -> str:
     return "".join(parts)
 
 
-def _build_direct_recall_diff_markup(
+def render_direct_recall_diff(
     ground_truth: str,
     generated_text: str,
     *,
@@ -333,7 +333,9 @@ def _build_direct_recall_diff_markup(
     rouge_score: Optional[float] = None,
     jaccard_index: Optional[float] = None,
     levenshtein_dist: Optional[int] = None,
-) -> Tuple[str, Dict[str, int]]:
+) -> Dict[str, int]:
+    """Render a side-by-side comparison highlighting token-level matches and errors."""
+
     alignment = compute_direct_recall_alignment(ground_truth or "", generated_text or "")
     ground_html = _build_diff_html(alignment["ground_tokens"])
     generated_html = _build_diff_html(alignment["generated_tokens"])
@@ -377,7 +379,8 @@ def _build_direct_recall_diff_markup(
         )
 
     section_title = title or "Direct Recall Comparison"
-    markup = (
+
+    st.markdown(
         f"""
         {_DIRECT_RECALL_DIFF_STYLE}<div class="dr-diff-wrapper">
             <div class="dr-diff-title">{html.escape(section_title)}</div>
@@ -394,56 +397,11 @@ def _build_direct_recall_diff_markup(
             {legend_html}
             {metrics_html}
         </div>
-        """
+        """,
+        unsafe_allow_html=True,
     )
-
-    return markup, counts
-
-
-def render_direct_recall_diff(
-    ground_truth: str,
-    generated_text: str,
-    *,
-    title: Optional[str] = None,
-    rouge_score: Optional[float] = None,
-    jaccard_index: Optional[float] = None,
-    levenshtein_dist: Optional[int] = None,
-) -> Dict[str, int]:
-    """Render a side-by-side comparison highlighting token-level matches and errors."""
-
-    markup, counts = _build_direct_recall_diff_markup(
-        ground_truth,
-        generated_text,
-        title=title,
-        rouge_score=rouge_score,
-        jaccard_index=jaccard_index,
-        levenshtein_dist=levenshtein_dist,
-    )
-
-    st.markdown(markup, unsafe_allow_html=True)
 
     return counts
-
-
-def render_direct_recall_diff_html(
-    ground_truth: str,
-    generated_text: str,
-    *,
-    title: Optional[str] = None,
-    rouge_score: Optional[float] = None,
-    jaccard_index: Optional[float] = None,
-    levenshtein_dist: Optional[int] = None,
-) -> Tuple[str, Dict[str, int]]:
-    """Return the direct recall diff markup and token counts without rendering."""
-
-    return _build_direct_recall_diff_markup(
-        ground_truth,
-        generated_text,
-        title=title,
-        rouge_score=rouge_score,
-        jaccard_index=jaccard_index,
-        levenshtein_dist=levenshtein_dist,
-    )
 
 
 def render_prompt_preview(
@@ -632,8 +590,6 @@ def render_prompt_style_panel(
 
         if variant == "generated":
             body_block = f'<div class="generated-text sm">{safe_body}</div>'
-        elif variant == "html":
-            body_block = f'<div class="cd-prompt-panel__body cd-prompt-panel__body--html">{body_text}</div>'
         else:
             body_block = f'<div class="cd-prompt-panel__body">{safe_body}</div>'
 
