@@ -354,7 +354,7 @@ def render_direct_recall_diff(
         f'<div class="dr-diff-legend">'
         f'<span class="dr-legend-item"><span class="dr-legend-chip match"></span>Matches: {counts["match"]}</span>'
         f'<span class="dr-legend-item"><span class="dr-legend-chip miss"></span>Missed (Ground Truth Only): {counts["miss"]}</span>'
-        f'<span class="dr-legend-item"><span class="dr-legend-chip extra"></span>Extra (Model Only): {counts["extra"]}</span>'
+        f'<span class="dr-legend-item"><span class="dr-legend-chip extra"></span>Extra (Model Generation Only): {counts["extra"]}</span>'
         f"</div>"
     )
 
