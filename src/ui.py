@@ -56,6 +56,7 @@ from src.components import (
     render_collapsible_table_card,
     render_top_sample_distribution,
     render_direct_recall_diff,
+    render_streamlit_accordion,
 )
 
 
@@ -912,23 +913,23 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                 f"Generation strategy: {continuation_method} · Temperature {temperature:.2f} · Top-P {top_p:.2f}"
             )
             for rank, (upper, lower, gen, r, j, l) in enumerate(results[:display_limit], start=1):
-                sections = [
-                    ("📝 Prefix Context", upper, None),
-                ]
-                render_prompt_style_panel(
-                    title=f"Rank {rank}",
-                    sections=sections,
-                    meta=f"ROUGE-L {r:.3f} · Jaccard {j:.3f} · Lev {l}",
+                with render_streamlit_accordion(
+                    f"Rank {rank}",
+                    key=f"pdf_top_section_{rank}",
                     expanded=False,
-                )
-                render_direct_recall_diff(
-                    lower,
-                    gen,
-                    title=f"Rank {rank} — Direct Recall Alignment",
-                    rouge_score=r,
-                    jaccard_index=j,
-                    levenshtein_dist=l,
-                )
+                    help=f"ROUGE-L {r:.3f} · Jaccard {j:.3f} · Lev {l}",
+                ):
+                    st.markdown("**📝 Prefix Context**")
+                    st.markdown(f"```\n{upper}\n```")
+                    st.markdown("**🧠 Direct Recall Alignment**")
+                    render_direct_recall_diff(
+                        lower,
+                        gen,
+                        title="Ground Truth vs. Generated Output",
+                        rouge_score=r,
+                        jaccard_index=j,
+                        levenshtein_dist=l,
+                    )
 
             progress_bar.progress(1.0, text=f"✅ Completed analysis with {model_choice}. Processed {total} chunks.")
         except Exception as e:
