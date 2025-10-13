@@ -4,6 +4,7 @@ import base64
 import html
 import json
 import math
+from uuid import uuid4
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import pandas as pd
@@ -397,33 +398,149 @@ def render_prompt_preview(
     expanded: bool = False,
     title: str = "Prompt Preview",
 ) -> None:
-    """Render a collapsible text preview with copy support."""
+    """Render a collapsible text preview with copy support inside an isolated iframe."""
 
     raw_text = prompt_text or ""
-    escaped_text = html.escape(raw_text)
-    copy_payload = json.dumps(raw_text).replace("'", "&apos;")
-    open_attr = "open" if expanded else ""
     summary_label = html.escape(title or "Prompt Preview")
+    copy_payload = json.dumps(raw_text)
+    escaped_text = html.escape(raw_text)
+    details_id = f"cd-prompt-preview-{uuid4().hex}"
+    copy_button_id = f"{details_id}-copy"
+    open_attr = "open" if expanded else ""
 
-    st.markdown(
-        f"""
-        <div class="cd-prompt-preview">
-            <details class="cd-prompt-preview__container" {open_attr}>
-                <summary class="cd-prompt-preview__summary">{summary_label}</summary>
-                <div class="cd-prompt-preview__content">
-                    <button class="cd-prompt-preview__copy" onclick='navigator.clipboard.writeText({copy_payload}).then(() => {{
-                        const btn = this;
-                        const previous = btn.innerText;
-                        btn.innerText = "Copied!";
-                        setTimeout(() => btn.innerText = previous, 2000);
-                    }}); event.stopPropagation(); return false;'>Copy</button>
-                    <pre class="cd-prompt-preview__text">{escaped_text}</pre>
-                </div>
-            </details>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    preview_markup = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <style>
+        :root {{
+            color-scheme: light;
+        }}
+        body {{
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: transparent;
+        }}
+        .cd-prompt-preview {{
+            margin: 0.25rem 0 0.6rem;
+        }}
+        .cd-prompt-preview__container {{
+            border: 1px solid rgba(203, 213, 225, 0.8);
+            border-radius: 14px;
+            background: linear-gradient(145deg, rgba(255, 255, 255, 0.95) 0%, rgba(237, 242, 247, 0.92) 100%);
+            padding: 16px;
+            color: #1f2937;
+            transition: box-shadow 0.2s ease, border-color 0.2s ease;
+        }}
+        .cd-prompt-preview__container[open] {{
+            box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
+            border-color: rgba(148, 163, 184, 0.8);
+        }}
+        .cd-prompt-preview__summary {{
+            list-style: none;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 1.05rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: #475569;
+        }}
+        .cd-prompt-preview__summary::-webkit-details-marker {{ display: none; }}
+        .cd-prompt-preview__summary::before {{
+            content: "\u25B6";
+            display: inline-flex;
+            transition: transform 0.2s ease;
+            color: #2563eb;
+        }}
+        .cd-prompt-preview__container[open] > .cd-prompt-preview__summary::before {{ transform: rotate(90deg); }}
+        .cd-prompt-preview__content {{
+            position: relative;
+            background: linear-gradient(140deg, rgba(255, 255, 255, 0.98), rgba(236, 243, 255, 0.92));
+            color: #1e293b;
+            border: 1px solid rgba(148, 163, 184, 0.45);
+            border-radius: 14px;
+            margin-top: 16px;
+            padding: 20px 18px 26px;
+            overflow: auto;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 16px 32px rgba(15, 23, 42, 0.08);
+        }}
+        .cd-prompt-preview__copy {{
+            position: absolute;
+            right: 0.75rem;
+            bottom: 0.75rem;
+            z-index: 1;
+            background: rgba(37, 99, 235, 0.12);
+            border: 1px solid rgba(37, 99, 235, 0.25);
+            border-radius: 10px;
+            color: #1d4ed8;
+            padding: 6px 14px;
+            font-size: 0.82rem;
+            cursor: pointer;
+            transition: background 0.2s ease, transform 0.2s ease;
+        }}
+        .cd-prompt-preview__copy:hover {{
+            background: rgba(37, 99, 235, 0.22);
+            transform: translateY(-1px);
+        }}
+        .cd-prompt-preview__text {{
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: "JetBrains Mono", "Fira Code", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 0.94rem;
+            line-height: 1.65;
+        }}
+    </style>
+</head>
+<body>
+    <div class="cd-prompt-preview">
+        <details id="{details_id}" class="cd-prompt-preview__container" {open_attr}>
+            <summary class="cd-prompt-preview__summary">{summary_label}</summary>
+            <div class="cd-prompt-preview__content">
+                <button type="button" id="{copy_button_id}" class="cd-prompt-preview__copy">Copy</button>
+                <pre class="cd-prompt-preview__text">{escaped_text}</pre>
+            </div>
+        </details>
+    </div>
+    <script>
+        (function() {{
+            const details = document.getElementById("{details_id}");
+            const copyBtn = document.getElementById("{copy_button_id}");
+
+            function resize() {{
+                const height = document.body.scrollHeight;
+                window.parent.postMessage({{ type: "streamlit:resize", height: height }}, "*");
+            }}
+
+            if (details) {{
+                details.addEventListener("toggle", resize, {{ passive: true }});
+            }}
+
+            if (copyBtn) {{
+                copyBtn.addEventListener("click", function(event) {{
+                    event.preventDefault();
+                    event.stopPropagation();
+                    navigator.clipboard.writeText({copy_payload}).then(() => {{
+                        const previous = copyBtn.innerText;
+                        copyBtn.innerText = "Copied!";
+                        setTimeout(() => {{
+                            copyBtn.innerText = previous;
+                        }}, 2000);
+                    }});
+                }});
+            }}
+
+            resize();
+        }})();
+    </script>
+</body>
+</html>
+    """
+
+    components.html(preview_markup, height=0, scrolling=False)
 
 
 def render_prompt_style_panel(
