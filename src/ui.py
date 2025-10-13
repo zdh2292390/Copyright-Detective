@@ -922,10 +922,11 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                         None,
                     ),
                 ]
-                render_collapsible_panel(
+                render_prompt_style_panel(
                     title=f"Rank {rank}",
                     sections=sections,
                     meta=f"ROUGE-L {r:.3f} · Jaccard {j:.3f} · Lev {l}",
+                    expanded=False,
                 )
 
             progress_bar.progress(1.0, text=f"✅ Completed analysis with {model_choice}. Processed {total} chunks.")
