@@ -998,11 +998,11 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
 
     if strategy_count:
         st.markdown(
-            f"Profile LLM copyright leakage using the {strategy_count} persuasion strategies introduced in the EMNLP 2025 paper _Profiling LLM's Copyright Infringement Risks under Adversarial Persuasive Prompting_ and released evaluation templates."
+            f"Profile LLM copyright leakage using the {strategy_count} persuasion strategies and released evaluation templates."
         )
     else:
         st.markdown(
-            "Profile LLM copyright leakage using the persuasion strategies introduced in the EMNLP 2025 paper _Profiling LLM's Copyright Infringement Risks under Adversarial Persuasive Prompting_ and released evaluation templates."
+            "Profile LLM copyright leakage using the persuasion strategies and released evaluation templates."
         )
 
     template_coverage_bullet = (
