@@ -74,7 +74,7 @@ _COLLAPSIBLE_COMPONENT_STYLE = """
         align-items: center;
         justify-content: space-between;
         gap: 1rem;
-        padding: 0.95rem 1.25rem;
+        padding: 0.95rem 1.25rem 0.95rem 2.5rem;
         cursor: pointer;
         list-style: none;
         font-weight: 700;
@@ -83,13 +83,20 @@ _COLLAPSIBLE_COMPONENT_STYLE = """
     }
     .cd-accordion__summary::-webkit-details-marker { display: none; }
     .cd-accordion__summary::before {
-        content: '\u25B6';
-        margin-right: 0.65rem;
+        content: '';
+        position: absolute;
+        left: 1rem;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 0;
+        height: 0;
+        border-left: 6px solid var(--primary-800);
+        border-top: 4px solid transparent;
+        border-bottom: 4px solid transparent;
         transition: transform 0.2s ease;
-        color: var(--primary-800);
     }
     .cd-accordion[open] > .cd-accordion__summary::before {
-        transform: rotate(90deg);
+        transform: translateY(-50%) rotate(90deg);
     }
     .cd-accordion__title {
         font-size: 0.98rem;
@@ -404,6 +411,88 @@ def render_direct_recall_diff(
     return counts
 
 
+def _format_metric(value: Optional[float | int]) -> str:
+    """Format a metric value for display."""
+    if value is None:
+        return "—"
+    if isinstance(value, float):
+        return f"{value:.3f}"
+    return str(value)
+
+
+def render_pdf_result_accordion(
+    title: str,
+    *,
+    prefix_context: Optional[str],
+    ground_truth: Optional[str],
+    generated_text: Optional[str],
+    rouge_score: Optional[float],
+    jaccard_index: Optional[float],
+    levenshtein_dist: Optional[int],
+    meta: Optional[str] = None,
+    expanded: bool = False,
+    key: Optional[str] = None,
+) -> None:
+    """Render an accessible accordion summarizing PDF chunk comparison results.
+    
+    This uses Streamlit's native expander to avoid rendering issues with custom HTML.
+    """
+    
+    header = (title or "Result").strip() or "Result"
+    if meta:
+        header = f"{header} · {meta}"
+    
+    base_key = key or f"pdf_result_{uuid4().hex}"
+    prefix_value = prefix_context or ""
+    ground_value = ground_truth or ""
+    generated_value = generated_text or ""
+    
+    with st.expander(header, expanded=expanded):
+        # Display metrics in columns
+        metric_cols = st.columns(3)
+        metric_cols[0].metric("ROUGE-L", _format_metric(rouge_score))
+        metric_cols[1].metric("Jaccard", _format_metric(jaccard_index))
+        metric_cols[2].metric("Levenshtein", _format_metric(levenshtein_dist))
+        
+        st.caption("📚 Source vs. model comparison for this ranked PDF chunk.")
+        
+        # Display text areas with proper labels (collapsed for cleaner UI)
+        st.text_area(
+            "Prefix Context",
+            prefix_value,
+            height=160,
+            key=f"{base_key}_prefix",
+            label_visibility="collapsed",
+            disabled=True,
+        )
+        st.text_area(
+            "Ground Truth Chunk",
+            ground_value,
+            height=160,
+            key=f"{base_key}_ground",
+            label_visibility="collapsed",
+            disabled=True,
+        )
+        st.text_area(
+            "Model Continuation",
+            generated_value,
+            height=160,
+            key=f"{base_key}_generated",
+            label_visibility="collapsed",
+            disabled=True,
+        )
+        
+        # Display the detailed diff comparison
+        render_direct_recall_diff(
+            ground_value,
+            generated_value,
+            title="Direct Recall Alignment",
+            rouge_score=rouge_score,
+            jaccard_index=jaccard_index,
+            levenshtein_dist=levenshtein_dist,
+        )
+
+
 def render_prompt_preview(
     prompt_text: str,
     *,
@@ -458,16 +547,25 @@ def render_prompt_preview(
             display: flex;
             align-items: center;
             gap: 0.5rem;
+            padding-left: 1.8rem;
+            position: relative;
             color: #475569;
         }}
         .cd-prompt-preview__summary::-webkit-details-marker {{ display: none; }}
         .cd-prompt-preview__summary::before {{
-            content: "\u25B6";
-            display: inline-flex;
+            content: '';
+            position: absolute;
+            left: 0.5rem;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 0;
+            height: 0;
+            border-left: 6px solid #2563eb;
+            border-top: 4px solid transparent;
+            border-bottom: 4px solid transparent;
             transition: transform 0.2s ease;
-            color: #2563eb;
         }}
-        .cd-prompt-preview__container[open] > .cd-prompt-preview__summary::before {{ transform: rotate(90deg); }}
+        .cd-prompt-preview__container[open] > .cd-prompt-preview__summary::before {{ transform: translateY(-50%) rotate(90deg); }}
         .cd-prompt-preview__content {{
             position: relative;
             background: linear-gradient(140deg, rgba(255, 255, 255, 0.98), rgba(236, 243, 255, 0.92));
