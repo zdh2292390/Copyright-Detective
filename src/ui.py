@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import streamlit as st
 import pandas as pd
 from Levenshtein import distance
+import html
 from src.copyright_detective.comparison import (
     compare_texts,
     enforce_exact_char_count,
@@ -920,7 +921,26 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                     help=f"ROUGE-L {r:.3f} · Jaccard {j:.3f} · Lev {l}",
                 ):
                     st.markdown("**📝 Prefix Context**")
-                    st.markdown(f"```\n{upper}\n```")
+                    st.markdown(
+                        f"""
+                        <div style="
+                            background: rgba(255, 255, 255, 0.85);
+                            border: 1px solid rgba(191, 219, 254, 0.6);
+                            border-left: 4px solid #2563eb;
+                            border-radius: 12px;
+                            padding: 0.65rem 0.75rem;
+                            font-size: 0.9rem;
+                            line-height: 1.7;
+                            color: #1f2937;
+                            white-space: pre-wrap;
+                            word-break: break-word;
+                            margin: 0.5rem 0;
+                        ">
+                        {html.escape(upper)}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
                     st.markdown("**🧠 Direct Recall Alignment**")
                     render_direct_recall_diff(
                         lower,
