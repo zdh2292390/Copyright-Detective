@@ -18,7 +18,10 @@
     --text: #0f172a; /* slate-900 */
 }
 
-* { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important; }
+/* 不要使用通配符覆盖所有元素的字体，这会破坏 Material Icons */
+body, input, button, select, textarea {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
 
 /* App background and base rhythm */
 [data-testid="stAppViewContainer"] > .main {

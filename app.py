@@ -15,6 +15,13 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+st.markdown(
+    """
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    """,
+    unsafe_allow_html=True
+)
+
 # Load custom CSS
 with open("assets/styles.css", "r") as f:
     css = f.read()
