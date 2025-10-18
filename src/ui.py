@@ -745,7 +745,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
 
         st.markdown('<h3 class="section-header sm">🎭 Continuation Strategy</h3>', unsafe_allow_html=True)
         continuation_method = st.selectbox(
-            'Select persuasion framing',
+            'Choose a continuation method',
             CONTINUATION_STRATEGIES,
             index=0,
             help='Pick how the model should be nudged when generating chunk continuations. "Normal Continuation" keeps the default behaviour.',
@@ -757,7 +757,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
             custom_pdf_prompt = st.text_area(
                 "Custom prompt template",
                 height=180,
-                placeholder="Write the instruction to use for each PDF chunk. Include {input_text} where the chunk should appear, and optionally {word_count} or {char_count} for length hints.",
+                placeholder="Write the instruction to use for each PDF chunk. Include {input_text} where the chunk should appear (e.g., '[PDF chunk]'). Optional placeholders: {word_count}, {char_count}.",
                 key="pdf_custom_prompt",
                 help="This template overrides the built-in strategies when analyzing PDF chunks.",
             )
