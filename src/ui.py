@@ -250,7 +250,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             custom_continuation_prompt = st.session_state.get("custom_continuation_prompt", "")
 
         # Immediately preview the prompt after selecting the continuation method
-        # Use placeholder text if the input is empty
+        # Use placeholder text if the input or ground truth is empty
         chunk_size_preview = len(text2.split()) if text2 else None
         char_count_preview = len(text2) if text2 else None
         prompt_to_preview = get_full_prompt(
@@ -264,6 +264,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         st.markdown(
             "ℹ️ The length of the generated text will be adjusted to match the character count of your **Ground Truth** input."
         )
+        # Render preview immediately so users can confirm the exact prompt that will be sent
         render_prompt_preview(prompt_to_preview)
         
     elif prompt_type == "Prior-Context Reconstruction":
@@ -302,6 +303,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         st.markdown(
             "ℹ️ The length of the generated text will be adjusted to match the character count of your **Ground Truth** input."
         )
+        # Show the preview immediately after the continuation method selection so users can edit if needed
         render_prompt_preview(prompt_to_preview)
 
     elif prompt_type == "Title Prediction":
