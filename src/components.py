@@ -423,8 +423,29 @@ def render_prompt_preview(
     
     # Use Streamlit's built-in expander component
     with st.expander(f"📝 {title}", expanded=expanded):
-        # Display the prompt in a code block with copy button
-        st.code(raw_text, language=None, line_numbers=False)
+        # Display the prompt in a container with custom styling to prevent cursor-not-allowed
+        st.markdown(
+            """
+            <style>
+            div[data-testid="stTextArea"] textarea[disabled] {
+                cursor: text !important;
+                color: rgba(49, 51, 63, 1) !important;
+                -webkit-text-fill-color: rgba(49, 51, 63, 1) !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+        
+        # Display the prompt in a read-only text area (normal text display, auto-wrapping)
+        st.text_area(
+            label="Prompt Content",
+            value=raw_text,
+            height=200,
+            disabled=True,
+            label_visibility="collapsed",
+            key=f"prompt_preview_{hash(raw_text)}"  # Unique key to avoid conflicts
+        )
         
         # Add a caption with character count
         char_count = len(raw_text)
