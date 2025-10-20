@@ -1970,7 +1970,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
 
 def render_unlearning_detection_page(api_key, model_choice, provider):
     """Render the unlearning detection page with membership inference."""
-    st.markdown("### 🧠 Unlearning Detection Test")
+    st.markdown("### 🧽 Unlearning Detection Test")
     st.markdown(
         "Combine targeted jailbreak prompts with perplexity-based probes to uncover lingering memorisation."
     )
