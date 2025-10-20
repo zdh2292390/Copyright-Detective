@@ -433,13 +433,11 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             )
 
     st.markdown('<p class="analysis-step-label">Step 4 · Launch comparison</p>', unsafe_allow_html=True)
-    action_cols = st.columns([1, 0.5, 1])
-    with action_cols[1]:
-        run_analysis = st.button(
-            "🚀 Run Analysis",
-            width='stretch',
-            key="run_snippet_analysis_button",
-        )
+    run_analysis = st.button(
+        "🚀 Run Analysis",
+        width='stretch',
+        key="run_snippet_analysis_button",
+    )
     st.caption("Provide both snippets and an API key, then launch the run to view alignment diagnostics.")
 
     if run_analysis:
@@ -1032,7 +1030,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
 def render_adversarial_persuasion_page(api_key, model_choice, provider):
     """Render the adversarial persuasive prompting workspace."""
 
-    st.markdown("### 🧠 Persuasive Jailbreak Test")
+    st.markdown("### 🔓 Persuasive Jailbreak Test")
     strategies = list_persuasion_strategies()
     baseline_prompts = list_baseline_prompts()
     strategy_count = len(strategies)
