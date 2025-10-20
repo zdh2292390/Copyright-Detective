@@ -1949,20 +1949,24 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                 
                 st.success(f"🎉 **Stage 2 Complete!** Total few-shot mutations: {total_few_shot}")
                 
-                # Display summary table
-                if stage2_results:
-                    df_stage2 = pd.DataFrame(stage2_results)
-                    st.markdown("**Stage 2 Summary**")
-                    st.dataframe(df_stage2, width='stretch')
-                    
-                    # Download CSV
-                    csv_stage2 = df_stage2.to_csv(index=False)
-                    st.download_button(
-                        label="📥 Download Stage 2 Results (CSV)",
-                        data=csv_stage2,
-                        file_name="1_all_few_shots.csv",
-                        mime="text/csv",
-                    )
+                # Store results in session state for persistence
+                st.session_state["stage2_results"] = stage2_results
+
+    # Display summary table if results exist
+    stage2_results = st.session_state.get("stage2_results", [])
+    if stage2_results:
+        df_stage2 = pd.DataFrame(stage2_results)
+        st.markdown("**Stage 2 Summary**")
+        st.dataframe(df_stage2, width='stretch')
+        
+        # Download CSV
+        csv_stage2 = df_stage2.to_csv(index=False)
+        st.download_button(
+            label="📥 Download Stage 2 Results (CSV)",
+            data=csv_stage2,
+            file_name="1_all_few_shots.csv",
+            mime="text/csv",
+        )
 
     st.divider()
     st.markdown("### 📊 Mutation Store Overview")
