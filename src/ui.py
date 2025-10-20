@@ -1968,18 +1968,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             mime="text/csv",
         )
 
-    st.divider()
-    st.markdown("### 📊 Mutation Store Overview")
-    if mutation_store:
-        st.caption(f"Total prompts tracked: {len(mutation_store)}")
-        for prompt_text, records in mutation_store.items():
-            zero_count = sum(1 for r in records if r.get("config", [""])[0] == "zero")
-            few_count = sum(1 for r in records if r.get("config", [""])[0] == "few")
-            st.markdown(f"**{textwrap.shorten(prompt_text, width=80, placeholder='…')}**")
-            st.caption(f"  - Zero-shot: {zero_count} mutations | Few-shot: {few_count} mutations")
-    else:
-        st.info("No mutations stored yet. Run Stage 1 to begin.")
-
 def render_unlearning_detection_page(api_key, model_choice, provider):
     """Render the unlearning detection page with membership inference."""
     st.markdown("### 🧠 Unlearning Detection Test")
