@@ -670,6 +670,84 @@ p { line-height: 1.7; color: #334155; }
     box-shadow: inset 0 1px 0 rgba(255,255,255,0.6), 0 16px 32px rgba(14, 116, 144, 0.08);
 }
 
+/* Direct Recall test enhancements */
+.analysis-callout {
+    margin: 0.5rem 0 1.1rem;
+    padding: 1rem 1.2rem 1.1rem;
+    border-radius: 18px;
+    border: 1px solid rgba(191, 219, 254, 0.75);
+    background: linear-gradient(135deg, rgba(236, 248, 255, 0.92), rgba(222, 235, 255, 0.86));
+    box-shadow: 0 18px 36px rgba(15, 23, 42, 0.08);
+}
+.analysis-callout__title {
+    font-weight: 700;
+    font-size: 0.95rem;
+    color: #0f172a;
+    letter-spacing: 0.35px;
+    margin-bottom: 0.35rem;
+}
+.analysis-callout__list {
+    margin: 0;
+    padding-left: 1.15rem;
+    display: grid;
+    gap: 0.35rem;
+    color: #334155;
+    font-size: 0.88rem;
+    line-height: 1.55;
+}
+.analysis-callout__list li::marker {
+    color: #2563eb;
+}
+
+.analysis-step-label {
+    margin: 0.85rem 0 0.35rem;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: #475569;
+}
+
+.analysis-step-caption {
+    font-size: 0.85rem;
+    color: #475569;
+    line-height: 1.6;
+    margin: 0 0 0.75rem;
+}
+
+.analysis-quick-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 0.75rem;
+    margin: 0.75rem 0 0.25rem;
+}
+.analysis-stat {
+    background: linear-gradient(140deg, rgba(255,255,255,0.94), rgba(241,245,255,0.88));
+    border: 1px solid rgba(203, 213, 225, 0.65);
+    border-radius: 14px;
+    padding: 0.7rem 0.85rem 0.85rem;
+    box-shadow: 0 12px 26px rgba(15, 23, 42, 0.08);
+}
+.analysis-stat__label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.45px;
+    color: #64748b;
+    margin-bottom: 0.3rem;
+}
+.analysis-stat__value {
+    font-size: 1.05rem;
+    font-weight: 800;
+    color: #1d4ed8;
+    margin-bottom: 0.15rem;
+}
+.analysis-stat__hint {
+    font-size: 0.78rem;
+    color: #475569;
+    letter-spacing: 0.25px;
+}
+
 /* Footer */
 .app-footer { margin-top: 2rem; padding: 1rem 0; border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; color: #64748b; font-size: 0.9rem; }
 .app-footer a { color: var(--primary-700); text-decoration: none; font-weight: 600; }

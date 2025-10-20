@@ -195,6 +195,21 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         )
 
     # Prompt Selection (moved from sidebar to main page)
+    st.markdown(
+        """
+        <div class=\"analysis-callout\">
+            <div class=\"analysis-callout__title\">How the Direct Recall Test works</div>
+            <ul class=\"analysis-callout__list\">
+                <li>Provide an input snippet and the expected ground-truth passage.</li>
+                <li>Select a prompting strategy to probe potential memorization.</li>
+                <li>Run inference and inspect alignment metrics with side-by-side diffs.</li>
+            </ul>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown('<p class="analysis-step-label">Step 1 · Choose recall framing</p>', unsafe_allow_html=True)
     prompt_type = st.selectbox(
         "🎛️ Choose the Prompt Type:",
         [
@@ -204,7 +219,9 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         ],
         help="Select the type of prompt to guide the Text Snippet Analysis. (Choose only; typing custom values is not allowed.)",
     )
+    st.caption("This selection controls how the model will be instructed during comparison.")
 
+    st.markdown('<p class="analysis-step-label">Step 2 · Provide comparison texts</p>', unsafe_allow_html=True)
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("**Input Text**")
@@ -222,6 +239,43 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             placeholder="Enter the ground truth text or expected target to compare against (e.g., the known reference or target continuation). Leave blank if not applicable.",
             label_visibility="collapsed",
         )
+
+    input_word_count = len(text1.split()) if text1 else 0
+    ground_word_count = len(text2.split()) if text2 else 0
+    input_char_count = len(text1) if text1 else 0
+    ground_char_count = len(text2) if text2 else 0
+
+    if text1 or text2:
+        delta_words = ground_word_count - input_word_count
+        delta_chars = ground_char_count - input_char_count
+
+        def _format_delta(value: int) -> str:
+            if value > 0:
+                return f"+{value}"
+            if value < 0:
+                return str(value)
+            return "0"
+
+        stats_html = f"""
+            <div class=\"analysis-quick-stats\">
+                <div class=\"analysis-stat\">
+                    <div class=\"analysis-stat__label\">Input snippet</div>
+                    <div class=\"analysis-stat__value\">{input_word_count} words</div>
+                    <div class=\"analysis-stat__hint\">{input_char_count} characters</div>
+                </div>
+                <div class=\"analysis-stat\">
+                    <div class=\"analysis-stat__label\">Ground truth</div>
+                    <div class=\"analysis-stat__value\">{ground_word_count} words</div>
+                    <div class=\"analysis-stat__hint\">{ground_char_count} characters</div>
+                </div>
+                <div class=\"analysis-stat\">
+                    <div class=\"analysis-stat__label\">Length delta</div>
+                    <div class=\"analysis-stat__value\">{_format_delta(delta_words)} words</div>
+                    <div class=\"analysis-stat__hint\">{_format_delta(delta_chars)} characters</div>
+                </div>
+            </div>
+        """
+        st.markdown(stats_html, unsafe_allow_html=True)
 
     # Explanatory notes for each prompt type
     if prompt_type == "Next-Passage Prediction":
@@ -336,43 +390,57 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
 
     #     prompt_preview(prompt_to_preview)
 
-    st.markdown("---")
-    st.markdown("**Inference Time Scaling & Parameters**")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        inference_runs = st.number_input(
-            "Number of Inference Runs",
-            min_value=1,
-            max_value=100,
-            value=1,
-            step=1,
-            help="Specify how many times to run the inference for statistical analysis.",
-        )
-    with col2:
-        temperature = st.slider(
-            "Temperature",
-            min_value=0.0,
-            max_value=2.0,
-            value=0.7,
-            step=0.01,
-            help="Controls randomness. Lower values make the model more deterministic.",
-        )
-    with col3:
-        top_p = st.slider(
-            "Top-P",
-            min_value=0.0,
-            max_value=1.0,
-            value=1.0,
-            step=0.01,
-            help="Controls diversity via nucleus sampling. 0.5 means half of all likelihood-weighted options are considered.",
-        )
+    st.divider()
+    st.markdown('<p class="analysis-step-label">Step 3 · Configure generation</p>', unsafe_allow_html=True)
 
-    st.markdown("---")
-    run_analysis = st.button(
-        "🚀 Run Analysis",
-        width='stretch',
-        key="run_snippet_analysis_button",
-    )
+    with render_streamlit_accordion(
+        "⚙️ Generation controls",
+        key="dr_generation_controls",
+        expanded=True,
+        help="Tune run counts and sampling before launching the recall probe.",
+    ):
+        st.markdown(
+            '<p class="analysis-step-caption">Adjust the number of inference passes and how exploratory the sampling should be.</p>',
+            unsafe_allow_html=True,
+        )
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            inference_runs = st.number_input(
+                "Number of Inference Runs",
+                min_value=1,
+                max_value=100,
+                value=1,
+                step=1,
+                help="Specify how many times to run the inference for statistical analysis.",
+            )
+        with col2:
+            temperature = st.slider(
+                "Temperature",
+                min_value=0.0,
+                max_value=2.0,
+                value=0.7,
+                step=0.01,
+                help="Controls randomness. Lower values make the model more deterministic.",
+            )
+        with col3:
+            top_p = st.slider(
+                "Top-P",
+                min_value=0.0,
+                max_value=1.0,
+                value=1.0,
+                step=0.01,
+                help="Controls diversity via nucleus sampling. 0.5 means half of all likelihood-weighted options are considered.",
+            )
+
+    st.markdown('<p class="analysis-step-label">Step 4 · Launch comparison</p>', unsafe_allow_html=True)
+    action_cols = st.columns([1, 0.5, 1])
+    with action_cols[1]:
+        run_analysis = st.button(
+            "🚀 Run Analysis",
+            width='stretch',
+            key="run_snippet_analysis_button",
+        )
+    st.caption("Provide both snippets and an API key, then launch the run to view alignment diagnostics.")
 
     if run_analysis:
         if not api_key:
@@ -450,7 +518,8 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                         generated_text = enforce_exact_char_count(generated_text, target_char_count)
 
                         # Results section
-                        st.markdown("---")
+                        st.divider()
+                        st.markdown('<p class="analysis-step-label">Results</p>', unsafe_allow_html=True)
                         st.markdown("### 📊 Analysis Results")
 
                         # Highlighted alignment view
@@ -468,6 +537,8 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                             )
             else:
                 # Multiple runs: Inference Results Over Multiple Runs
+                st.divider()
+                st.markdown('<p class="analysis-step-label">Results</p>', unsafe_allow_html=True)
                 st.markdown('<h3 class="multi-run-title">🔄 Inference Results Over Multiple Runs</h3>', unsafe_allow_html=True)
                 similarity_scores = []
                 generated_texts = []  # Store generated texts for each run
