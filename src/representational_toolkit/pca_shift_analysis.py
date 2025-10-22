@@ -33,12 +33,14 @@ def _load_tokenizer(path: str) -> AutoTokenizer:
                 "Tried online access and offline cache lookup but both failed.\n"
                 "Possible causes:\n"
                 " - The model id is incorrect or points to a private/gated repo (requires HF authentication).\n"
-                " - You are offline and the model isn't cached locally.\n\n"
+                " - You are offline and the model isn't cached locally.\n"
+                " - The path is a Hugging Face cache directory (do not use cache paths directly).\n\n"
                 f"Online attempt error: {exc}\n"
                 f"Offline attempt error: {exc2}\n\n"
                 "Suggested fixes:\n"
-                " - If the model is on Hugging Face, authenticate with `huggingface-cli login` or `hf auth login` and retry.\n"
-                " - Provide a local path to a directory containing the model/tokenizer files (e.g. './models/Qwen2-0.5B').\n"
+                " - Use a Hugging Face model ID (e.g., 'gpt2', 'microsoft/DialoGPT-medium').\n"
+                " - Provide a local path to a directory containing the model/tokenizer files.\n"
+                " - If using a private model, authenticate with `huggingface-cli login`.\n"
             )
 
 

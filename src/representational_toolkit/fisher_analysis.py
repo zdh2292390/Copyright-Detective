@@ -87,6 +87,46 @@ def _normalise_layers(config: AutoConfig, layers: Iterable[int] | None) -> List[
     return resolved
 
 
+def _get_layer_key_pattern(model: AutoModelForCausalLM) -> str:
+    """Detect the layer naming pattern in the model parameters."""
+    param_names = [name for name, param in model.named_parameters() if param.requires_grad]
+    
+    # Common patterns
+    patterns = [
+        "model.layers.{layer_idx}",
+        "transformer.h.{layer_idx}",
+        "encoder.layer.{layer_idx}",
+        "bert.encoder.layer.{layer_idx}",
+    ]
+    
+    for pattern in patterns:
+        # Check if any param matches the pattern with layer_idx=0
+        test_key = pattern.format(layer_idx=0)
+        if any(test_key in name for name in param_names):
+            return pattern
+    
+    # Fallback: try to find any pattern with numbers
+    import re
+    layer_matches = []
+    for name in param_names:
+        # Look for patterns like layers.0, h.0, layer.0
+        match = re.search(r'\b(layers?|h|layer)\.(\d+)', name)
+        if match:
+            prefix = match.group(1)
+            layer_num = int(match.group(2))
+            if layer_num == 0:  # Assume layer 0 exists
+                pattern = f"{prefix}.{{layer_idx}}"
+                # Find the full path
+                parts = name.split('.')[:-2]  # Remove the last two parts (prefix.num)
+                if parts:
+                    full_pattern = '.'.join(parts) + '.' + pattern
+                else:
+                    full_pattern = pattern
+                return full_pattern
+    
+    raise ValueError("Unable to detect layer naming pattern in model parameters.")
+
+
 def run_fim_analysis(
     model_reference_path: str,
     model_path: str,
@@ -243,7 +283,9 @@ def run_fim_analysis(
             config = AutoConfig.from_pretrained(model_reference_path, local_files_only=True)
     if 'config' not in locals() or config is None:
         raise RuntimeError(
-            "Unable to load the reference model configuration (both online and offline attempts failed)."
+            f"Unable to load the reference model configuration from '{model_reference_path}'. "
+            "Please ensure this is a valid Hugging Face model ID (e.g., 'gpt2') or a local directory containing config.json. "
+            "Do not use Hugging Face cache paths directly."
         )
 
     target_layers = _normalise_layers(config, layers_to_analyze)
@@ -251,9 +293,10 @@ def run_fim_analysis(
     def _collect_fim_by_layer(weights_path: str) -> Dict[int, np.ndarray]:
         model = _load_model(weights_path)
         try:
+            layer_key_pattern = _get_layer_key_pattern(model)
             results: Dict[int, np.ndarray] = {}
             for layer_idx in target_layers:
-                layer_key = f"model.layers.{layer_idx}"
+                layer_key = layer_key_pattern.format(layer_idx=layer_idx)
                 results[layer_idx] = _compute_fim_diagonal(model, layer_key)
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()

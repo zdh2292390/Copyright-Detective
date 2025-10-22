@@ -1157,72 +1157,64 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         unsafe_allow_html=True,
     )
 
-    with render_streamlit_accordion(
-        "📝 Baseline prompt setup",
-        key="pj_step1_prompt_setup",
-        expanded=True,
-        help="Add or load the adversarial prompt to mutate in Step 1.",
-    ):
-        stage1_input_prompt = st.text_area(
-            "Original adversarial prompt",
-            height=150,
-            placeholder="e.g., Reproduce verbatim the first 100 words of Harry Potter and the Sorcerer's Stone.",
-            key="stage1_input_prompt",
-            help="Enter the baseline prompt to mutate. This will be transformed using persuasion strategies.",
+    st.markdown("#### 📝 Baseline prompt setup")
+    st.caption("Add or load the adversarial prompt to mutate in Step 1.")
+    stage1_input_prompt = st.text_area(
+        "Original adversarial prompt",
+        height=150,
+        placeholder="e.g., Reproduce verbatim the first 100 words of Harry Potter and the Sorcerer's Stone.",
+        key="stage1_input_prompt",
+        help="Enter the baseline prompt to mutate. This will be transformed using persuasion strategies.",
+    )
+
+    if baseline_prompts:
+        no_preset_option = "Keep current text"
+
+        def _apply_stage1_preset() -> None:
+            selected = st.session_state.get("stage1_baseline_selector")
+            if selected and selected != no_preset_option:
+                st.session_state["stage1_input_prompt"] = selected
+            else:
+                st.session_state["stage1_input_prompt"] = ""
+
+        st.selectbox(
+            "Load a sample adversarial prompt",
+            [no_preset_option, *baseline_prompts],
+            key="stage1_baseline_selector",
+            on_change=_apply_stage1_preset,
+            help="These presets mirror the baseline requests from the paper's extraction study.",
         )
 
-        if baseline_prompts:
-            no_preset_option = "Keep current text"
+    st.markdown("#### ⚙️ Sampling & evaluation parameters")
+    st.caption("Choose persuasion strategies, attempt counts, and the reference excerpt for scoring.")
+    zero_shot_strategies = st.multiselect(
+        "Persuasion strategies",
+        strategies,
+        default=strategies[:3] if len(strategies) >= 3 else strategies,
+        key="stage1_strategies",
+        help="Select one or more persuasion strategies to apply in zero-shot mode.",
+    )
 
-            def _apply_stage1_preset() -> None:
-                selected = st.session_state.get("stage1_baseline_selector")
-                if selected and selected != no_preset_option:
-                    st.session_state["stage1_input_prompt"] = selected
-                else:
-                    st.session_state["stage1_input_prompt"] = ""
-
-            st.selectbox(
-                "Load a sample adversarial prompt",
-                [no_preset_option, *baseline_prompts],
-                key="stage1_baseline_selector",
-                on_change=_apply_stage1_preset,
-                help="These presets mirror the baseline requests from the paper's extraction study.",
-            )
-
-    with render_streamlit_accordion(
-        "⚙️ Sampling & evaluation parameters",
-        key="pj_step1_parameters",
-        expanded=True,
-        help="Choose persuasion strategies, attempt counts, and the reference excerpt for scoring.",
-    ):
-        zero_shot_strategies = st.multiselect(
-            "Persuasion strategies",
-            strategies,
-            default=strategies[:3] if len(strategies) >= 3 else strategies,
-            key="stage1_strategies",
-            help="Select one or more persuasion strategies to apply in zero-shot mode.",
+    col_attempts, _ = st.columns([1, 2])
+    with col_attempts:
+        zero_shot_attempts = st.number_input(
+            "Attempts per strategy",
+            min_value=1,
+            max_value=20,
+            value=5,
+            step=1,
+            key="stage1_attempts",
+            help="Number of mutation attempts for each strategy (more attempts = broader exploration).",
         )
 
-        col_attempts, _ = st.columns([1, 2])
-        with col_attempts:
-            zero_shot_attempts = st.number_input(
-                "Attempts per strategy",
-                min_value=1,
-                max_value=20,
-                value=5,
-                step=1,
-                key="stage1_attempts",
-                help="Number of mutation attempts for each strategy (more attempts = broader exploration).",
-            )
-
-        st.markdown("**Reference text for scoring**")
-        zero_shot_reference = st.text_area(
-            "Reference text (for ROUGE-L scoring)",
-            value=DEFAULT_HP_REFERENCE_EXCERPT,
-            height=150,
-            key="stage1_reference",
-            help="Ground-truth copyrighted text. ROUGE-L measures how well mutations induce the LLM to reproduce this content.",
-        )
+    st.markdown("**Reference text for scoring**")
+    zero_shot_reference = st.text_area(
+        "Reference text (for ROUGE-L scoring)",
+        value=DEFAULT_HP_REFERENCE_EXCERPT,
+        height=150,
+        key="stage1_reference",
+        help="Ground-truth copyrighted text. ROUGE-L measures how well mutations induce the LLM to reproduce this content.",
+    )
 
     with render_streamlit_accordion(
         "📋 Step 1 checklist",
@@ -2403,17 +2395,20 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                 selected_feature = feature_lookup[selected_feature_id]
 
                 st.markdown("##### Model checkpoints")
+                st.info("💡 **Model Path Format**: Use Hugging Face model IDs (e.g., 'gpt2', 'microsoft/DialoGPT-medium') or absolute paths to local directories containing `config.json` and model files. Do not use Hugging Face cache paths directly.")
                 col_ref, col_upd = st.columns(2)
                 with col_ref:
                     reference_model_path = st.text_input(
                         "Reference model (baseline)",
-                        placeholder="e.g. Qwen/Qwen2.5-7B",
+                        placeholder="e.g. gpt2, Qwen/Qwen2.5-7B, or /path/to/local/model",
+                        help="Hugging Face model ID (e.g., 'gpt2') or absolute path to local model directory containing config.json",
                         key="representational_reference_model",
                     )
                 with col_upd:
                     updated_model_path = st.text_input(
                         "Updated / deployed model",
                         placeholder="Path or HF repo ID for the model under audit",
+                        help="Hugging Face model ID (e.g., 'microsoft/DialoGPT-medium') or absolute path to local model directory",
                         key="representational_updated_model",
                     )
 
@@ -2438,8 +2433,8 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                 )
 
                 st.markdown("##### Runtime parameters")
-                st.caption("Device is set to `cpu` (CUDA disabled due to compatibility issues).")
-                device = "cpu"
+                st.caption("Device is set to `cuda` (GPU enabled).")
+                device = "cuda"
 
                 col_batch, col_batches, col_length = st.columns([1, 1, 1])
                 with col_batch:
@@ -2511,74 +2506,99 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
             elif not output_path.strip():
                 st.warning("⚠️ Specify an output location for analysis artifacts.")
             else:
-                analysis_request = {
-                    "feature": selected_feature.id,
-                    "model_reference_path": reference_model_path.strip(),
-                    "model_path": updated_model_path.strip(),
-                    "query": queries,
-                    "output_path": output_path.strip(),
-                    "device": device,
-                    "batch_size": int(batch_size),
-                    "num_batches": int(num_batches),
-                    "max_length": int(max_length),
-                }
-                with st.spinner("🔎 Computing representational differences... this may take several minutes for large models."):
-                    try:
-                        rep_result = run_representational_analysis(**analysis_request)
-                        st.session_state["representational_last_run_request"] = analysis_request
-                    except ValueError as exc:
-                        st.error(f"❌ {exc}")
-                        rep_result = None
-                    except RuntimeError as exc:
-                        # The RuntimeError raised by run_representational_analysis includes
-                        # a detailed diagnostic containing captured stdout/stderr and the traceback.
-                        err_text = str(exc)
-                        st.error("❌ Representational analysis failed. Expand for full diagnostics below.")
-                        # Parse the diagnostic into sections for the custom component
-                        sections = []
-                        parts = err_text.split("--- Captured stdout ---")
-                        if len(parts) == 2:
-                            before_stdout = parts[0]
-                            after_stdout = parts[1]
-                            parts2 = after_stdout.split("--- Captured stderr ---")
-                            if len(parts2) == 2:
-                                stdout_content = parts2[0]
-                                after_stderr = parts2[1]
-                                parts3 = after_stderr.split("--- Traceback ---")
-                                if len(parts3) == 2:
-                                    stderr_content = parts3[0]
-                                    tb_content = parts3[1]
-                                    exception_part = before_stdout.strip()
-                                    sections.append(("Exception", exception_part, None))
-                                    if stdout_content.strip():
-                                        sections.append(("Captured stdout", stdout_content.strip(), None))
-                                    if stderr_content.strip():
-                                        sections.append(("Captured stderr", stderr_content.strip(), None))
-                                    if tb_content.strip():
-                                        sections.append(("Traceback", tb_content.strip(), None))
+                # Validate model paths
+                import os
+                ref_path = reference_model_path.strip()
+                upd_path = updated_model_path.strip()
+                
+                ref_valid = False
+                upd_valid = False
+                
+                # Check if it's a Hugging Face model ID (contains slash or is simple name)
+                if '/' in ref_path or ref_path in ['gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl']:
+                    ref_valid = True
+                # Check if it's a local directory with config.json
+                elif os.path.isdir(ref_path) and os.path.exists(os.path.join(ref_path, 'config.json')):
+                    ref_valid = True
+                else:
+                    st.error(f"❌ Reference model path '{ref_path}' is not valid. Use a Hugging Face model ID (e.g., 'gpt2') or a local directory containing config.json")
+                
+                if '/' in upd_path or upd_path in ['gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl']:
+                    upd_valid = True
+                elif os.path.isdir(upd_path) and os.path.exists(os.path.join(upd_path, 'config.json')):
+                    upd_valid = True
+                else:
+                    st.error(f"❌ Updated model path '{upd_path}' is not valid. Use a Hugging Face model ID (e.g., 'gpt2') or a local directory containing config.json")
+                
+                if ref_valid and upd_valid:
+                    analysis_request = {
+                        "feature": selected_feature.id,
+                        "model_reference_path": ref_path,
+                        "model_path": upd_path,
+                        "query": queries,
+                        "output_path": output_path.strip(),
+                        "device": device,
+                        "batch_size": int(batch_size),
+                        "num_batches": int(num_batches),
+                        "max_length": int(max_length),
+                    }
+                    with st.spinner("🔎 Computing representational differences... this may take several minutes for large models."):
+                        try:
+                            rep_result = run_representational_analysis(**analysis_request)
+                            st.session_state["representational_last_run_request"] = analysis_request
+                        except ValueError as exc:
+                            st.error(f"❌ {exc}")
+                            rep_result = None
+                        except RuntimeError as exc:
+                            # The RuntimeError raised by run_representational_analysis includes
+                            # a detailed diagnostic containing captured stdout/stderr and the traceback.
+                            err_text = str(exc)
+                            st.error("❌ Representational analysis failed. Expand for full diagnostics below.")
+                            # Parse the diagnostic into sections for the custom component
+                            sections = []
+                            parts = err_text.split("--- Captured stdout ---")
+                            if len(parts) == 2:
+                                before_stdout = parts[0]
+                                after_stdout = parts[1]
+                                parts2 = after_stdout.split("--- Captured stderr ---")
+                                if len(parts2) == 2:
+                                    stdout_content = parts2[0]
+                                    after_stderr = parts2[1]
+                                    parts3 = after_stderr.split("--- Traceback ---")
+                                    if len(parts3) == 2:
+                                        stderr_content = parts3[0]
+                                        tb_content = parts3[1]
+                                        exception_part = before_stdout.strip()
+                                        sections.append(("Exception", exception_part, None))
+                                        if stdout_content.strip():
+                                            sections.append(("Captured stdout", stdout_content.strip(), None))
+                                        if stderr_content.strip():
+                                            sections.append(("Captured stderr", stderr_content.strip(), None))
+                                        if tb_content.strip():
+                                            sections.append(("Traceback", tb_content.strip(), None))
+                                    else:
+                                        sections.append(("Full Diagnostics", err_text, None))
                                 else:
                                     sections.append(("Full Diagnostics", err_text, None))
                             else:
                                 sections.append(("Full Diagnostics", err_text, None))
-                        else:
-                            sections.append(("Full Diagnostics", err_text, None))
-                        # Add slider for panel height
-                        panel_max_height = st.slider(
-                            "Panel Display Height (pixels)",
-                            min_value=200,
-                            max_value=1200,
-                            value=600,
-                            step=50,
-                            help="Adjust the maximum height of the error details panel.",
-                            key="error_panel_height_slider",
-                        )
-                        render_collapsible_panel(
-                            title="Representational Analysis Logs and Traceback",
-                            sections=sections,
-                            expanded=False,
-                            max_height=panel_max_height,
-                        )
-                        rep_result = None
+                            # Add slider for panel height
+                            panel_max_height = st.slider(
+                                "Panel Display Height (pixels)",
+                                min_value=200,
+                                max_value=1200,
+                                value=600,
+                                step=50,
+                                help="Adjust the maximum height of the error details panel.",
+                                key="error_panel_height_slider",
+                            )
+                            render_collapsible_panel(
+                                title="Representational Analysis Logs and Traceback",
+                                sections=sections,
+                                expanded=False,
+                                max_height=panel_max_height,
+                            )
+                            rep_result = None
 
             if rep_result:
                 st.markdown("---")
@@ -2599,7 +2619,7 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                     for inline_idx, artifact in enumerate(rep_result.inline_artifacts, start=1):
                         caption = artifact.title or f"Visualisation {inline_idx}"
                         if artifact.mime_type.startswith("image/"):
-                            st.image(artifact.data, caption=caption, use_column_width=True)
+                            st.image(artifact.data, caption=caption, use_container_width=True)
                         else:
                             st.download_button(
                                 label=f"⬇️ Download {caption}",

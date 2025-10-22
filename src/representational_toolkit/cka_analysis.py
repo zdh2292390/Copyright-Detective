@@ -32,12 +32,14 @@ def _load_tokenizer(path: str) -> AutoTokenizer:
                 "Tried online access and offline cache lookup but both failed.\n"
                 "Possible causes:\n"
                 " - The model id is incorrect or points to a private/gated repo (requires HF authentication).\n"
-                " - You are offline and the model isn't cached locally.\n\n"
+                " - You are offline and the model isn't cached locally.\n"
+                " - The path is a Hugging Face cache directory (do not use cache paths directly).\n\n"
                 f"Online attempt error: {exc}\n"
                 f"Offline attempt error: {exc2}\n\n"
                 "Suggested fixes:\n"
-                " - If the model is on Hugging Face, authenticate with `huggingface-cli login` or `hf auth login` and retry.\n"
-                " - Provide a local path to a directory containing the model/tokenizer files (e.g. './models/Qwen2-0.5B').\n"
+                " - Use a Hugging Face model ID (e.g., 'gpt2', 'microsoft/DialoGPT-medium').\n"
+                " - Provide a local path to a directory containing the model/tokenizer files.\n"
+                " - If using a private model, authenticate with `huggingface-cli login`.\n"
             )
 
 
@@ -105,6 +107,45 @@ def _load_model(
             continue
     assert last_error is not None
     raise last_error
+
+
+def _get_layer_module_pattern(model: AutoModelForCausalLM) -> str:
+    """Detect the layer naming pattern in the model modules."""
+    module_names = list(model.named_modules())
+    
+    # Common patterns
+    patterns = [
+        "model.layers.{layer_idx}",
+        "transformer.h.{layer_idx}",
+        "encoder.layer.{layer_idx}",
+        "bert.encoder.layer.{layer_idx}",
+    ]
+    
+    for pattern in patterns:
+        # Check if any module matches the pattern with layer_idx=0
+        test_key = pattern.format(layer_idx=0)
+        if any(test_key == name for name, _ in module_names):
+            return pattern
+    
+    # Fallback: try to find any pattern with numbers
+    import re
+    for name, _ in module_names:
+        # Look for patterns like layers.0, h.0, layer.0
+        match = re.search(r'\b(layers?|h|layer)\.(\d+)', name)
+        if match:
+            prefix = match.group(1)
+            layer_num = int(match.group(2))
+            if layer_num == 0:  # Assume layer 0 exists
+                pattern = f"{prefix}.{{layer_idx}}"
+                # Find the full path
+                parts = name.split('.')[:-2]  # Remove the last two parts (prefix.num)
+                if parts:
+                    full_pattern = '.'.join(parts) + '.' + pattern
+                else:
+                    full_pattern = pattern
+                return full_pattern
+    
+    raise ValueError("Unable to detect layer naming pattern in model modules.")
 
 
 def run_cka_analysis(
@@ -191,7 +232,8 @@ def run_cka_analysis(
     def extract_activations(model: AutoModelForCausalLM) -> Dict[int, np.ndarray]:
         activations: Dict[int, np.ndarray] = {}
         module_lookup = dict(model.named_modules())
-        layer_names = [name for name in module_lookup if name.startswith("model.layers.")]
+        layer_module_pattern = _get_layer_module_pattern(model)
+        layer_names = [name for name in module_lookup if layer_module_pattern.format(layer_idx=0) in name]
         layer_indices = sorted(int(name.rsplit(".", 1)[-1]) for name in layer_names)
 
         for layer_idx in layer_indices:
@@ -201,7 +243,8 @@ def run_cka_analysis(
                 tensor = output[0] if isinstance(output, tuple) else output
                 buffer.append(tensor[:, 0, :].float().detach().cpu().numpy())
 
-            hook_handle = module_lookup[f"model.layers.{layer_idx}"].register_forward_hook(hook)
+            layer_key = layer_module_pattern.format(layer_idx=layer_idx)
+            hook_handle = module_lookup[layer_key].register_forward_hook(hook)
             try:
                 with torch.no_grad():
                     for batch_index, batch in enumerate(loader):
