@@ -27,7 +27,6 @@ from src.copyright_detective.unlearning import (
     list_unlearning_strategies,
     build_unlearning_prompt,
     run_unlearning_detection,
-    run_membership_inference,
     list_representational_features,
     run_representational_analysis,
     is_representational_analysis_available,
@@ -1961,15 +1960,14 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         )
 
 def render_unlearning_detection_page(api_key, model_choice, provider):
-    """Render the unlearning detection page with membership inference."""
+    """Render the unlearning detection page."""
     st.markdown("### 🧽 Unlearning Detection Test")
     st.markdown(
         "Combine targeted jailbreak prompts with perplexity-based probes to uncover lingering memorisation."
     )
 
-    probe_tab, membership_tab, representational_tab = st.tabs([
+    probe_tab, representational_tab = st.tabs([
         "Prompt-Based Probes",
-        "Membership Inference",
         "Representational Analysis",
     ])
 
@@ -2107,252 +2105,7 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                                     expanded=False,
                                 )
 
-    with membership_tab:
-        st.markdown("#### 📉 Membership Inference (Perplexity Probe)")
-        st.caption(
-            "Estimate whether the reference text still lives in the model's training data by comparing perplexity against a matched control passage."
-        )
 
-        membership_reference = st.text_area(
-            "Reference text for perplexity probe",
-            height=220,
-            placeholder="Provide the original passage to test for memorisation.",
-            key="membership_reference_text",
-        )
-
-        control_text = st.text_area(
-            "Control text (public baseline)",
-            height=220,
-            placeholder="Provide a stylistically similar passage that the model definitely should not have memorised.",
-            key="membership_control_text",
-        )
-
-        membership_cols = st.columns(3)
-        with membership_cols[0]:
-            chunk_size = st.slider(
-                "Chunk size (tokens)",
-                min_value=50,
-                max_value=200,
-                value=120,
-                step=10,
-                help=(
-                    "Each passage will be evaluated in fixed-size token windows. If the tokenizer is unavailable, the app falls back to word chunks."
-                ),
-                key="membership_chunk_size",
-            )
-        with membership_cols[1]:
-            max_chunks = st.number_input(
-                "Chunks per passage",
-                min_value=1,
-                max_value=12,
-                value=4,
-                step=1,
-                help="Limit how many segments are sampled from each passage.",
-                key="membership_max_chunks",
-            )
-        with membership_cols[2]:
-            ppl_gap_threshold = st.slider(
-                "Flag gap (Δ PPL)",
-                min_value=0.0,
-                max_value=30.0,
-                value=5.0,
-                step=0.5,
-                help="Minimum perplexity gap (control minus reference) to raise an alert.",
-                key="membership_gap_threshold",
-            )
-
-        # Use the Streamlit-native accordion helper so widgets inside remain interactive and maintain keys
-        from src.components import render_streamlit_accordion
-
-        with render_streamlit_accordion("Advanced settings", key="membership_advanced_settings", expanded=False, help="Tune confidence reporting and sampling depth"):
-            st.caption("Tune confidence reporting and sampling depth for the perplexity probe.")
-            bootstrap_samples = st.slider(
-                "Bootstrap iterations",
-                min_value=0,
-                max_value=2000,
-                value=500,
-                step=50,
-                help="Number of bootstrap resamples to estimate a confidence interval for the perplexity gap.",
-                key="membership_bootstrap_samples",
-            )
-            confidence_level = st.slider(
-                "Confidence level",
-                min_value=0.5,
-                max_value=0.99,
-                value=0.9,
-                step=0.01,
-                help="Confidence level for the bootstrap interval.",
-                key="membership_confidence_level",
-            )
-
-        st.markdown("---")
-        run_membership = st.button(
-            "🧮 Run Membership Inference",
-            width='stretch',
-            key="run_membership_inference_button",
-        )
-
-        if run_membership:
-            if not api_key:
-                st.error("⚠️ Please enter your API key in the sidebar.")
-            elif not model_choice:
-                st.error("⚠️ Please select a model in the sidebar.")
-            elif provider != "OpenAI":
-                st.error("⚠️ Perplexity-based membership inference currently supports OpenAI models only.")
-            elif not membership_reference.strip():
-                st.warning("⚠️ Provide the reference text before running membership inference.")
-            elif not control_text.strip():
-                st.warning("⚠️ Provide a control passage to compare against.")
-            else:
-                with st.spinner(f"📉 Sampling log probabilities with {model_choice}..."):
-                    try:
-                        membership_summary = run_membership_inference(
-                            api_key,
-                            model_choice,
-                            provider,
-                            reference_text=membership_reference,
-                            control_text=control_text,
-                            chunk_size=int(chunk_size),
-                            max_chunks=int(max_chunks),
-                            ppl_gap_threshold=ppl_gap_threshold,
-                            bootstrap_samples=int(bootstrap_samples),
-                            confidence_level=float(confidence_level),
-                        )
-                    except ValueError as exc:
-                        st.error(f"❌ {exc}")
-                        membership_summary = None
-                    except Exception as exc:  # pragma: no cover - network/SDK errors
-                        st.error(f"❌ Membership inference failed: {exc}")
-                        membership_summary = None
-
-                if membership_summary:
-                    st.markdown("---")
-                    if membership_summary.flagged:
-                        st.error(
-                            "🚨 The reference passages show significantly lower perplexity than the control, indicating possible memorisation."
-                        )
-                    else:
-                        st.success("✅ No significant perplexity gap detected between reference and control passages.")
-
-                    mean_ref = "—" if math.isinf(membership_summary.mean_target_ppl) else f"{membership_summary.mean_target_ppl:.2f}"
-                    mean_ctrl = "—" if math.isinf(membership_summary.mean_control_ppl) else f"{membership_summary.mean_control_ppl:.2f}"
-                    gap = "—" if math.isnan(membership_summary.ppl_gap) else f"{membership_summary.ppl_gap:.2f}"
-
-                    metric_col1, metric_col2, metric_col3 = st.columns(3)
-                    metric_col1.metric("Mean PPL · Reference", mean_ref)
-                    metric_col2.metric("Mean PPL · Control", mean_ctrl)
-                    metric_col3.metric("Δ PPL", gap)
-
-                    median_col1, median_col2, effect_col = st.columns(3)
-                    median_col1.metric(
-                        "Median PPL · Reference",
-                        "—" if math.isinf(membership_summary.median_target_ppl) else f"{membership_summary.median_target_ppl:.2f}",
-                    )
-                    median_col2.metric(
-                        "Median PPL · Control",
-                        "—" if math.isinf(membership_summary.median_control_ppl) else f"{membership_summary.median_control_ppl:.2f}",
-                    )
-                    effect_display = "—" if membership_summary.effect_size is None else f"g = {membership_summary.effect_size:.2f}"
-                    effect_col.metric("Effect Size", effect_display)
-
-                    if membership_summary.bootstrap_iterations:
-                        if membership_summary.ppl_gap_ci:
-                            lower, upper = membership_summary.ppl_gap_ci
-                            if any(math.isnan(val) for val in (lower, upper)):
-                                st.caption("Bootstrap confidence interval unavailable.")
-                            else:
-                                confidence_pct = int(round(confidence_level * 100))
-                                st.caption(f"Bootstrap Δ PPL {confidence_pct}% CI · [{lower:.2f}, {upper:.2f}]")
-                        else:
-                            st.caption("Bootstrap confidence interval could not be computed with the collected samples.")
-
-                        ref_samples, ctrl_samples = membership_summary.sample_sizes
-                        st.caption(
-                            f"Valid perplexity samples · Reference: {ref_samples} · Control: {ctrl_samples}"
-                        )
-
-                        if membership_summary.statistical_tests:
-                            st.markdown("#### Statistical comparison")
-                            for outcome in membership_summary.statistical_tests:
-                                cols = st.columns([2, 1, 2])
-                                with cols[0]:
-                                    st.markdown(f"**{outcome.name}**")
-                                with cols[1]:
-                                    stat_display = "—" if outcome.statistic is None else f"{outcome.statistic:.4f}"
-                                    st.markdown(f"Stat: {stat_display}")
-                                with cols[2]:
-                                    p_display = "—" if outcome.pvalue is None else f"p = {outcome.pvalue:.4f}"
-                                    st.markdown(p_display)
-                                if outcome.detail:
-                                    st.caption(outcome.detail)
-
-                        if membership_summary.errors:
-                            st.warning("; ".join(membership_summary.errors))
-
-                    table_rows = []
-                    for result in membership_summary.target_results + membership_summary.control_results:
-                        status = "Error" if result.error else "Flagged" if (
-                            membership_summary.flagged and result.label == "reference" and not math.isinf(result.perplexity)
-                        ) else "OK"
-                        snippet_preview = result.snippet.strip()
-                        if len(snippet_preview) > 180:
-                            snippet_preview = snippet_preview[:177] + "…"
-                        delta_display = None if result.relative_perplexity is None else round(result.relative_perplexity, 3)
-                        z_score_display = None if result.z_score is None else round(result.z_score, 2)
-                        table_rows.append(
-                            {
-                                "Group": "Reference" if result.label == "reference" else "Control",
-                                "Tokens": result.token_count,
-                                "Avg LogProb": None if math.isnan(result.avg_logprob) else round(result.avg_logprob, 4),
-                                "Perplexity": None if math.isinf(result.perplexity) else round(result.perplexity, 3),
-                                "Δ vs Ctrl Mean": delta_display,
-                                "Z-score": z_score_display,
-                                "Trace Score": round(result.training_trace_score, 4),
-                                "Status": status,
-                                "Snippet": snippet_preview,
-                            }
-                        )
-
-                    if table_rows:
-                        st.dataframe(pd.DataFrame(table_rows), width='stretch')
-
-                    for group_name, results in (
-                        ("Reference", membership_summary.target_results),
-                        ("Control", membership_summary.control_results),
-                    ):
-                        for idx, result in enumerate(results, start=1):
-                            if result.error:
-                                sections = [
-                                    ("Snippet", result.snippet, None),
-                                    ("Error", result.error, None),
-                                ]
-                                meta = "Error"
-                            else:
-                                delta_display = "—" if result.relative_perplexity is None else f"{result.relative_perplexity:.3f}"
-                                z_score_display = "—" if result.z_score is None else f"{result.z_score:.2f}"
-                                sections = [
-                                    ("Snippet", result.snippet, None),
-                                    (
-                                        "Metrics",
-                                        (
-                                            f"Tokens: {result.token_count}\n"
-                                            f"Avg logprob: {result.avg_logprob:.4f}\n"
-                                            f"Perplexity: {result.perplexity:.3f}\n"
-                                            f"Trace score: {result.training_trace_score:.4f}\n"
-                                            f"Δ vs control mean: {delta_display}\n"
-                                            f"Z-score: {z_score_display}"
-                                        ),
-                                        None,
-                                    ),
-                                ]
-                                meta = "Flagged" if membership_summary.flagged and result.label == "reference" else "OK"
-
-                            render_collapsible_panel(
-                                title=f"{group_name} chunk {idx}",
-                                sections=sections,
-                                meta=meta,
-                                expanded=membership_summary.flagged and result.label == "reference",
-                            )
 
     with representational_tab:
         st.markdown("#### 🧬 Representational Analysis")
@@ -2416,11 +2169,19 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                 query_text = st.text_area(
                     "Evaluation prompts",
                     height=180,
-                    placeholder="Enter one query per line that probes the model's behaviour post-unlearning.",
-                    help="Each non-empty line is passed as an element of the `query` list.",
+                    placeholder="Enter one query per line that probes the model's behaviour post-unlearning.\n\nExample:\nThe quick brown fox jumps over the lazy dog.\nUnlearning LLMs is an active area of research.\nWhat is the capital of France?",
+                    help="Each non-empty line is passed as an element of the `query` list. Enter multiple queries (one per line) to test different prompts.",
                     key="representational_query_text",
                 )
                 query_preview = [line.strip() for line in query_text.splitlines() if line.strip()]
+                
+                # Display query count and preview
+                if query_preview:
+                    st.caption(f"📝 **{len(query_preview)} query(ies) will be processed:**")
+                    for i, query in enumerate(query_preview, 1):
+                        st.caption(f"{i}. {query}")
+                else:
+                    st.caption("📝 No queries entered yet. Add at least one query above.")
 
                 recommended_output = ""
                 output_path = st.text_input(
@@ -2616,20 +2377,48 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
 
                 if rep_result.inline_artifacts:
                     st.markdown("##### Visualisations")
-                    for inline_idx, artifact in enumerate(rep_result.inline_artifacts, start=1):
-                        caption = artifact.title or f"Visualisation {inline_idx}"
-                        if artifact.mime_type.startswith("image/"):
-                            st.image(artifact.data, caption=caption, use_container_width=True)
-                        else:
-                            st.download_button(
-                                label=f"⬇️ Download {caption}",
-                                data=artifact.data,
-                                file_name=f"representational_artifact_{inline_idx}",
-                                mime=artifact.mime_type,
-                                key=f"representational_inline_{inline_idx}",
-                            )
-                        if artifact.description:
-                            st.caption(artifact.description)
+
+                    # Group visualizations in columns for better layout
+                    num_artifacts = len(rep_result.inline_artifacts)
+                    if num_artifacts <= 3:
+                        # For few artifacts, show in a single row
+                        cols = st.columns(num_artifacts)
+                        for idx, artifact in enumerate(rep_result.inline_artifacts):
+                            with cols[idx]:
+                                caption = artifact.title or f"Visualisation {idx + 1}"
+                                if artifact.mime_type.startswith("image/"):
+                                    st.image(artifact.data, caption=caption, use_container_width=False, width='content')
+                                else:
+                                    st.download_button(
+                                        label=f"⬇️ Download {caption}",
+                                        data=artifact.data,
+                                        file_name=f"representational_artifact_{idx + 1}",
+                                        mime=artifact.mime_type,
+                                        key=f"representational_inline_{idx + 1}",
+                                    )
+                                if artifact.description:
+                                    st.caption(artifact.description)
+                    else:
+                        # For many artifacts, show in a grid
+                        cols_per_row = 3
+                        for i in range(0, num_artifacts, cols_per_row):
+                            row_artifacts = rep_result.inline_artifacts[i:i + cols_per_row]
+                            cols = st.columns(len(row_artifacts))
+                            for j, artifact in enumerate(row_artifacts):
+                                with cols[j]:
+                                    caption = artifact.title or f"Visualisation {i + j + 1}"
+                                    if artifact.mime_type.startswith("image/"):
+                                        st.image(artifact.data, caption=caption, use_container_width=False, width='content')
+                                    else:
+                                        st.download_button(
+                                            label=f"⬇️ Download {caption}",
+                                            data=artifact.data,
+                                            file_name=f"representational_artifact_{i + j + 1}",
+                                            mime=artifact.mime_type,
+                                            key=f"representational_inline_{i + j + 1}",
+                                        )
+                                    if artifact.description:
+                                        st.caption(artifact.description)
 
                 if rep_result.generated_artifacts:
                     st.markdown("##### Generated artifacts")

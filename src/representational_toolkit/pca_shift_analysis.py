@@ -49,9 +49,11 @@ def _ensure_tokenizer_has_pad(tokenizer: AutoTokenizer) -> bool:
         return False
     if tokenizer.eos_token is not None:
         tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
         return False
     if tokenizer.bos_token is not None:
         tokenizer.pad_token = tokenizer.bos_token
+        tokenizer.pad_token_id = tokenizer.bos_token_id
         return False
     tokenizer.add_special_tokens({"pad_token": "[PAD]"})
     return True
@@ -164,8 +166,15 @@ def run_pca_shift(
         hidden_states = outputs.hidden_states
         if hidden_states is None:
             raise RuntimeError("Model did not return hidden states; enable output_hidden_states support.")
-        selected = hidden_states[layer_idx].float().cpu().numpy()
-        return selected.mean(axis=1)
+        selected = hidden_states[layer_idx].float().detach().cpu()
+        try:
+            selected_np = selected.numpy()
+        except RuntimeError as e:
+            if "Numpy is not available" in str(e):
+                selected_np = np.array(selected.tolist())
+            else:
+                raise
+        return selected_np.mean(axis=1)
 
     cfg = model_ref.config
     num_layers = getattr(cfg, "num_hidden_layers", None) or getattr(cfg, "n_layer", None)

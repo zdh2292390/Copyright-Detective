@@ -48,9 +48,11 @@ def _ensure_tokenizer_has_pad(tokenizer: AutoTokenizer) -> bool:
         return False
     if tokenizer.eos_token is not None:
         tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
         return False
     if tokenizer.bos_token is not None:
         tokenizer.pad_token = tokenizer.bos_token
+        tokenizer.pad_token_id = tokenizer.bos_token_id
         return False
     tokenizer.add_special_tokens({"pad_token": "[PAD]"})
     return True
@@ -163,7 +165,14 @@ def run_pca_similarity(
         hidden_states = outputs.hidden_states
         if hidden_states is None:
             raise RuntimeError("Model did not return hidden states; enable output_hidden_states support.")
-        layer_hidden = hidden_states[layer_idx].float().cpu().numpy()
+        layer_hidden_tensor = hidden_states[layer_idx].float().detach().cpu()
+        try:
+            layer_hidden = layer_hidden_tensor.numpy()
+        except RuntimeError as e:
+            if "Numpy is not available" in str(e):
+                layer_hidden = np.array(layer_hidden_tensor.tolist())
+            else:
+                raise
         return layer_hidden.mean(axis=1)
 
     cfg = model_ref.config

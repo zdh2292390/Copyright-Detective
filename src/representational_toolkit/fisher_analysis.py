@@ -62,9 +62,11 @@ def _ensure_tokenizer_has_pad(tokenizer: AutoTokenizer) -> bool:
         return False
     if tokenizer.eos_token is not None:
         tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
         return False
     if tokenizer.bos_token is not None:
         tokenizer.pad_token = tokenizer.bos_token
+        tokenizer.pad_token_id = tokenizer.bos_token_id
         return False
     tokenizer.add_special_tokens({"pad_token": "[PAD]"})
     return True
@@ -274,7 +276,15 @@ def run_fim_analysis(
 
         denom = max(1, min(len(loader), num_batches, effective_batches))
         fim_values = torch.cat([accumulator / denom for accumulator in accumulators])
-        return fim_values.numpy()
+        # Convert to numpy array safely
+        try:
+            return fim_values.detach().cpu().numpy()
+        except RuntimeError as e:
+            if "Numpy is not available" in str(e):
+                # Fallback: convert to list and then to numpy array
+                return np.array(fim_values.detach().cpu().tolist())
+            else:
+                raise
 
     with contextlib.suppress(Exception):
         config = AutoConfig.from_pretrained(model_reference_path)
@@ -313,17 +323,17 @@ def run_fim_analysis(
     mpl.rcParams.update({
         "font.family": "sans-serif",
         "font.sans-serif": ["DejaVu Serif"],
-        "font.size": 18,
-        "axes.titlesize": 20,
-        "axes.labelsize": 16,
-        "xtick.labelsize": 16,
-        "ytick.labelsize": 16,
-        "legend.fontsize": 16,
-        "figure.dpi": 300,
+        "font.size": 12,
+        "axes.titlesize": 14,
+        "axes.labelsize": 12,
+        "xtick.labelsize": 10,
+        "ytick.labelsize": 10,
+        "legend.fontsize": 10,
+        "figure.dpi": 150,
         "axes.grid": True,
         "grid.linestyle": "--",
-        "grid.linewidth": 0.6,
-        "grid.alpha": 0.6,
+        "grid.linewidth": 0.4,
+        "grid.alpha": 0.5,
     })
 
     plot_colors = {"Reference": "#d62728", "Updated": "#1f77b4"}
@@ -335,7 +345,7 @@ def run_fim_analysis(
         fim_ref = fim_reference[layer_idx]
         fim_upd = fim_updated[layer_idx]
 
-        fig, ax = plt.subplots(figsize=(5, 3))
+        fig, ax = plt.subplots(figsize=(3.5, 2.5))
         for tag, values in (("Reference", fim_ref), ("Updated", fim_upd)):
             ax.hist(
                 values,
@@ -350,7 +360,7 @@ def run_fim_analysis(
         ax.set_xscale("log")
         ax.set_xlabel("FIM diagonal values (log scale)")
         ax.set_ylabel("Frequency")
-        ax.set_title(f"FIM Histogram @ Layer {layer_idx}", pad=12)
+        ax.set_title(f"FIM Histogram @ Layer {layer_idx}", pad=8)
 
         ymax = 0
         for values in (fim_ref, fim_upd):
@@ -375,14 +385,14 @@ def run_fim_analysis(
 
         fig.tight_layout()
         image_buffer = io.BytesIO()
-        fig.savefig(image_buffer, dpi=300, bbox_inches="tight", format="png")
+        fig.savefig(image_buffer, dpi=100, bbox_inches="tight", format="png")
         plt.close(fig)
 
         visualizations.append(
             VisualizationItem(
-                title=f"FIM Histogram – Layer {layer_idx}",
+                title=f"Layer {layer_idx}",
                 data=image_buffer.getvalue(),
-                description="Histogram comparison of Fisher Information diagonals for reference vs updated model.",
+                description="Fisher Information diagonals: Reference vs Updated model" if layer_idx == target_layers[0] else None,
             )
         )
 

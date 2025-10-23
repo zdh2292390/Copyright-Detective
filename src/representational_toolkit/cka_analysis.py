@@ -48,9 +48,11 @@ def _ensure_tokenizer_has_pad(tokenizer: AutoTokenizer) -> bool:
         return False
     if tokenizer.eos_token is not None:
         tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
         return False
     if tokenizer.bos_token is not None:
         tokenizer.pad_token = tokenizer.bos_token
+        tokenizer.pad_token_id = tokenizer.bos_token_id
         return False
     tokenizer.add_special_tokens({"pad_token": "[PAD]"})
     return True
@@ -241,7 +243,15 @@ def run_cka_analysis(
 
             def hook(_, __, output):
                 tensor = output[0] if isinstance(output, tuple) else output
-                buffer.append(tensor[:, 0, :].float().detach().cpu().numpy())
+                tensor_cpu = tensor[:, 0, :].float().detach().cpu()
+                try:
+                    arr = tensor_cpu.numpy()
+                except RuntimeError as e:
+                    if "Numpy is not available" in str(e):
+                        arr = np.array(tensor_cpu.tolist())
+                    else:
+                        raise
+                buffer.append(arr)
 
             layer_key = layer_module_pattern.format(layer_idx=layer_idx)
             hook_handle = module_lookup[layer_key].register_forward_hook(hook)
