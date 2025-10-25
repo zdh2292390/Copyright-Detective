@@ -2183,16 +2183,6 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                 else:
                     st.caption("📝 No queries entered yet. Add at least one query above.")
 
-                recommended_output = ""
-                output_path = st.text_input(
-                    "Output location (optional)",
-                    value=recommended_output,
-                    help=(
-                        "Optional legacy output path. Visualisations now render directly in the app; specify a path only if you need the underlying modules to persist files."
-                    ),
-                    key="representational_output_path",
-                )
-
                 st.markdown("##### Runtime parameters")
                 st.caption("Device is set to `cuda` (GPU enabled).")
                 device = "cuda"
@@ -2238,7 +2228,6 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                         model_reference_path="{reference_model_path.strip() or '<reference_model>'}",
                         model_path="{updated_model_path.strip() or '<updated_model>'}",
                         query=[{query_list_preview}],
-                        output_path="{output_path.strip() or recommended_output}",
                         device="{device}",
                         batch_size={int(batch_size)},
                         num_batches={int(num_batches)},
@@ -2264,8 +2253,6 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                 st.warning("⚠️ Provide the updated model path before running representational analysis.")
             elif not queries:
                 st.warning("⚠️ Enter at least one non-empty query prompt.")
-            elif not output_path.strip():
-                st.warning("⚠️ Specify an output location for analysis artifacts.")
             else:
                 # Validate model paths
                 import os
@@ -2297,7 +2284,6 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                         "model_reference_path": ref_path,
                         "model_path": upd_path,
                         "query": queries,
-                        "output_path": output_path.strip(),
                         "device": device,
                         "batch_size": int(batch_size),
                         "num_batches": int(num_batches),
@@ -2387,7 +2373,7 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                             with cols[idx]:
                                 caption = artifact.title or f"Visualisation {idx + 1}"
                                 if artifact.mime_type.startswith("image/"):
-                                    st.image(artifact.data, caption=caption, use_container_width=False, width='content')
+                                    st.image(artifact.data, caption=caption, width='content')
                                 else:
                                     st.download_button(
                                         label=f"⬇️ Download {caption}",
@@ -2408,7 +2394,7 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                                 with cols[j]:
                                     caption = artifact.title or f"Visualisation {i + j + 1}"
                                     if artifact.mime_type.startswith("image/"):
-                                        st.image(artifact.data, caption=caption, use_container_width=False, width='content')
+                                        st.image(artifact.data, caption=caption, width='content')
                                     else:
                                         st.download_button(
                                             label=f"⬇️ Download {caption}",

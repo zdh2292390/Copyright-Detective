@@ -236,7 +236,15 @@ def run_cka_analysis(
         module_lookup = dict(model.named_modules())
         layer_module_pattern = _get_layer_module_pattern(model)
         layer_names = [name for name in module_lookup if layer_module_pattern.format(layer_idx=0) in name]
-        layer_indices = sorted(int(name.rsplit(".", 1)[-1]) for name in layer_names)
+        # Filter to only numeric layer indices
+        layer_indices = []
+        for name in layer_names:
+            try:
+                idx = int(name.rsplit(".", 1)[-1])
+                layer_indices.append(idx)
+            except ValueError:
+                continue  # Skip non-numeric layer names like 'ln_1'
+        layer_indices = sorted(set(layer_indices))  # Remove duplicates and sort
 
         for layer_idx in layer_indices:
             buffer: List[np.ndarray] = []
@@ -276,15 +284,15 @@ def run_cka_analysis(
     cka_scores = {layer: linear_cka(ref_acts[layer], upd_acts[layer]) for layer in ref_acts}
 
     mpl.rcParams.update({
-        "font.family": "sans-serif",
-        "font.sans-serif": ["DejaVu Serif"],
-        "font.size": 18,
-        "axes.titlesize": 22,
-        "axes.labelsize": 18,
-        "xtick.labelsize": 16,
-        "ytick.labelsize": 16,
+        "font.family": "serif",
+        "font.serif": ["DejaVu Serif"],
+        "font.size": 10,
+        "axes.titlesize": 12,
+        "axes.labelsize": 8,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
         "lines.linewidth": 2,
-        "lines.markersize": 8,
+        "lines.markersize": 6,
         "axes.linewidth": 1.2,
         "axes.spines.top": False,
         "axes.spines.right": False,
@@ -293,8 +301,9 @@ def run_cka_analysis(
         "grid.linewidth": 0.6,
         "grid.alpha": 0.6,
         "legend.frameon": True,
-        "legend.fontsize": 16,
-        "legend.title_fontsize": 16,
+        "legend.fontsize": 8,
+        "legend.title_fontsize": 8,
+        "axes.prop_cycle": mpl.cycler("color", ["#0072B2", "#D55E00", "#009E73"]),
     })
 
     layers = list(cka_scores.keys())

@@ -191,7 +191,7 @@ def run_representational_analysis(
     model_reference_path: str,
     model_path: str,
     query: Union[str, Sequence[str]],
-    output_path: str,
+    output_path: str = "",
     device: str = "cuda",
     batch_size: int = 4,
     num_batches: int = 10,

@@ -228,13 +228,13 @@ def run_pca_shift(
     mpl.rcParams.update({
         "font.family": "serif",
         "font.serif": ["DejaVu Serif"],
-        "font.size": 18,
-        "axes.titlesize": 20,
-        "axes.labelsize": 18,
-        "xtick.labelsize": 16,
-        "ytick.labelsize": 16,
+        "font.size": 10,
+        "axes.titlesize": 12,
+        "axes.labelsize": 8,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
         "lines.linewidth": 2,
-        "lines.markersize": 8,
+        "lines.markersize": 6,
         "axes.linewidth": 1.2,
         "axes.spines.top": False,
         "axes.spines.right": False,
@@ -243,12 +243,12 @@ def run_pca_shift(
         "grid.linewidth": 0.6,
         "grid.alpha": 0.6,
         "legend.frameon": True,
-        "legend.fontsize": 16,
-        "legend.title_fontsize": 16,
+        "legend.fontsize": 8,
+        "legend.title_fontsize": 8,
         "axes.prop_cycle": mpl.cycler("color", ["#0072B2", "#D55E00", "#009E73"]),
     })
 
-    fig, ax = plt.subplots(figsize=(5, 3))
+    fig, ax = plt.subplots(figsize=(3.5, 2.5))
 
     for layer in df["layer"].unique():
         subset = df[df["layer"] == layer].sort_values("state")
@@ -275,7 +275,7 @@ def run_pca_shift(
 
     ax.set_xlabel("Δ PC1")
     ax.set_ylabel("PC2")
-    ax.set_title("PCA Shift", pad=12)
+    ax.set_title("PCA Shift", pad=20)
 
     x_min, x_max = df["shift"].min(), df["shift"].max()
     y_min, y_max = df["principal"].min(), df["principal"].max()
