@@ -788,12 +788,6 @@ def _build_template_library() -> Dict[str, str]:
     external_templates = _load_external_template_library()
     if external_templates:
         library.update(external_templates)
-    else:
-        warnings.warn(
-            "Using built-in persuasion templates; JSON export not found or could not be parsed.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
     return library
 
 

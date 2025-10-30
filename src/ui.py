@@ -1949,15 +1949,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         df_stage2 = pd.DataFrame(stage2_results)
         st.markdown("**Stage 2 Summary**")
         st.dataframe(df_stage2, width='stretch')
-        
-        # Download CSV
-        csv_stage2 = df_stage2.to_csv(index=False)
-        st.download_button(
-            label="📥 Download Stage 2 Results (CSV)",
-            data=csv_stage2,
-            file_name="1_all_few_shots.csv",
-            mime="text/csv",
-        )
 
 def render_unlearning_detection_page(api_key, model_choice, provider):
     """Render the unlearning detection page."""

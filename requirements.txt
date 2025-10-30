@@ -11,7 +11,7 @@ anthropic
 google-generativeai
 representational-analysis
 matplotlib
-torch
+torch>=2.1.0
 transformers
 scikit-learn
 representational-analysis
