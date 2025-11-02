@@ -24,9 +24,6 @@ from src.copyright_detective.jailbreak_probe import (
     run_persuasion_probe,
 )
 from src.copyright_detective.unlearning import (
-    list_unlearning_strategies,
-    build_unlearning_prompt,
-    run_unlearning_detection,
     list_representational_features,
     run_representational_analysis,
     is_representational_analysis_available,
@@ -1919,292 +1916,143 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         st.dataframe(df_stage2, width='stretch')
 
 def render_unlearning_detection_page(api_key, model_choice, provider):
-    """Render the unlearning detection page."""
-    st.markdown("### 🧽 Unlearning Detection Test")
+    """Render the representational analysis experience."""
+    st.markdown("### 🧬 Representational Analysis")
     st.markdown(
-        "Combine targeted jailbreak prompts with perplexity-based probes to uncover lingering memorisation."
+        "Run Fisher Information, PCA shift/sim, and layer-wise CKA probes to quantify how unlearning reshapes the reference versus adapted model across every layer."
     )
 
-    probe_tab, representational_tab = st.tabs([
-        "Prompt-Based Probes",
-        "Representational Analysis",
-    ])
+    st.warning(
+        "⚠️ **Important Notes:**\n\n"
+        "- **Memory Requirements**: Large models (>7B parameters) may cause crashes due to insufficient RAM/VRAM\n"
+        "- **Network**: First-time use requires internet to download models from HuggingFace\n"
+        "- **Recommendation**: Start with small models (≤1B parameters) like `Qwen/Qwen2-0.5B` or `gpt2`\n"
+        "- **Offline Mode**: Pre-download models using `huggingface-cli` for offline use"
+    )
 
-    with probe_tab:
-        target_description = st.text_area(
-            "Target knowledge or passage",
-            height=140,
-            placeholder="Describe the copyrighted passage or knowledge that should have been unlearned.",
-            key="unlearning_target_description",
-        )
-
-        strategies = list_unlearning_strategies()
-        strategy_lookup = {strategy.id: strategy for strategy in strategies}
-        strategy_options = [strategy.id for strategy in strategies]
-        default_options = strategy_options[:2] if len(strategy_options) >= 2 else strategy_options
-
-        strategy_selection = st.multiselect(
-            "Probe strategies",
-            options=strategy_options,
-            default=default_options,
-            format_func=lambda strategy_id: f"{strategy_lookup[strategy_id].name} — {strategy_lookup[strategy_id].description}",
-            help="Select the prompt framings that will be used to probe the model.",
-            key="unlearning_strategy_selection",
-        )
-
-        custom_prompt_enabled = st.checkbox("Add custom probe prompt", key="unlearning_use_custom_prompt")
-        custom_prompt = ""
-        if custom_prompt_enabled:
-            custom_prompt = st.text_area(
-                "Custom prompt template",
-                height=160,
-                placeholder="Provide the exact instructions. Use {target_description} where the description should appear.",
-                key="unlearning_custom_prompt",
-            )
-
-        if strategy_selection:
-            st.markdown("#### Prompt previews")
-            for strategy_id in strategy_selection:
-                preview_prompt = build_unlearning_prompt(strategy_id, target_description or "the withheld passage")
-                render_prompt_preview(preview_prompt, expanded=False)
-
-        if custom_prompt_enabled and custom_prompt.strip():
-            st.markdown("#### Custom prompt preview")
-            sample_prompt = build_unlearning_prompt("custom", target_description or "the withheld passage", custom_prompt=custom_prompt)
-            render_prompt_preview(sample_prompt, expanded=False)
-
-        st.markdown("---")
-        ctrl_col1, ctrl_col2 = st.columns(2)
-        with ctrl_col1:
-            temperature = st.slider(
-                "Temperature",
-                min_value=0.0,
-                max_value=2.0,
-                value=0.3,
-                step=0.01,
-                help="Lower temperatures encourage deterministic echoes of memorised content.",
-                key="unlearning_temperature",
-            )
-        with ctrl_col2:
-            top_p = st.slider(
-                "Top-P",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.9,
-                step=0.01,
-                help="Restrict sampling to the most likely tokens to surface memorisation.",
-                key="unlearning_top_p",
-            )
-
-        st.markdown("---")
-        run_prompt_probe = st.button(
-            "🚀 Run Prompt-Based Probes",
-            width='stretch',
-            key="run_unlearning_prompt_button",
-        )
-
-        if run_prompt_probe:
-            if not api_key:
-                st.error("⚠️ Please enter your API key in the sidebar.")
-            elif not model_choice:
-                st.error("⚠️ Please select a model in the sidebar.")
-            elif not target_description.strip():
-                st.warning("⚠️ Provide a target description before running detection.")
-            else:
-                selected_ids = list(strategy_selection)
-                custom_prompt_value = custom_prompt.strip() if custom_prompt_enabled else None
-                if custom_prompt_enabled and not custom_prompt_value:
-                    st.warning("⚠️ Enter a custom prompt or disable the custom prompt option.")
-                else:
-                    if custom_prompt_value:
-                        selected_ids.append("custom")
-                    if not selected_ids:
-                        st.warning("⚠️ Select at least one probe strategy or add a custom prompt.")
-                    else:
-                        with st.spinner(f"🔍 Evaluating memorisation with {model_choice}..."):
-                            try:
-                                summary = run_unlearning_detection(
-                                    api_key,
-                                    model_choice,
-                                    provider,
-                                    target_description=target_description,
-                                    strategy_ids=selected_ids,
-                                    temperature=temperature,
-                                    top_p=top_p,
-                                    custom_prompt=custom_prompt_value,
-                                )
-                            except ValueError as exc:
-                                st.error(f"❌ {exc}")
-                                summary = None
-                            except Exception as exc:  # pragma: no cover - runtime/SDK errors
-                                st.error(f"❌ Detection failed: {exc}")
-                                summary = None
-
-                        if summary:
-                            st.markdown("---")
-                            st.success("Prompt probes completed. Review the model responses below.")
-
-                            for result in summary.results:
-                                if result.error:
-                                    sections = [
-                                        ("Status", "Error while generating response.", None),
-                                        ("Details", result.error, None),
-                                    ]
-                                    meta = "Error"
-                                else:
-                                    sections = [
-                                        ("Model Response", result.response, "generated"),
-                                    ]
-                                    meta = "Response"
-
-                                render_prompt_style_panel(
-                                    title=f"Strategy · {result.strategy_name}",
-                                    sections=sections,
-                                    meta=meta,
-                                    expanded=False,
-                                )
-
-
-
-    with representational_tab:
-        st.markdown("#### 🧬 Representational Analysis")
-        st.caption(
-            "Run Fisher Information, PCA shift/sim, and layer-wise CKA probes to quantify how unlearning reshapes the reference versus adapted model across every layer."
-        )
-        
-        # Memory warning
+    dependencies_available = is_representational_analysis_available()
+    if not dependencies_available:
         st.warning(
-            "⚠️ **Important Notes:**\n\n"
-            "- **Memory Requirements**: Large models (>7B parameters) may cause crashes due to insufficient RAM/VRAM\n"
-            "- **Network**: First-time use requires internet to download models from HuggingFace\n"
-            "- **Recommendation**: Start with small models (≤1B parameters) like `Qwen/Qwen2-0.5B` or `gpt2`\n"
-            "- **Offline Mode**: Pre-download models using `huggingface-cli` for offline use"
+            "Representational analysis requires optional dependencies (PyTorch, Transformers, scikit-learn, matplotlib). Install the GPU toolkit extras before using this feature."
         )
 
-        dependencies_available = is_representational_analysis_available()
-        if not dependencies_available:
-            st.warning(
-                "Representational analysis requires optional dependencies (PyTorch, Transformers, scikit-learn, matplotlib). Install the GPU toolkit extras before using this feature."
+    features = list_representational_features()
+    if not features:
+        st.info("No representational analysis features are currently available.")
+        return
+
+    feature_lookup = {feature.id: feature for feature in features}
+
+    with st.form("representational_analysis_form"):
+        selected_feature_id = st.selectbox(
+            "Select representational probe",
+            options=[feature.id for feature in features],
+            index=0,
+            format_func=lambda feature_id: f"{feature_lookup[feature_id].name} — {feature_lookup[feature_id].description}",
+            key="representational_feature_selection",
+            help="Maps directly to the `feature` argument of `run_feature_analysis`.",
+        )
+
+        selected_feature = feature_lookup[selected_feature_id]
+
+        st.markdown("##### Model checkpoints")
+        st.info("💡 **Model Path Format**: Use Hugging Face model IDs (e.g., 'gpt2', 'microsoft/DialoGPT-medium') or absolute paths to local directories containing `config.json` and model files. Do not use Hugging Face cache paths directly.")
+        col_ref, col_upd = st.columns(2)
+        with col_ref:
+            reference_model_path = st.text_input(
+                "Reference model (baseline)",
+                placeholder="e.g. gpt2, Qwen/Qwen2.5-7B, or /path/to/local/model",
+                help="Hugging Face model ID (e.g., 'gpt2') or absolute path to local model directory containing config.json",
+                key="representational_reference_model",
+            )
+        with col_upd:
+            updated_model_path = st.text_input(
+                "Updated / deployed model",
+                placeholder="Path or HF repo ID for the model under audit",
+                help="Hugging Face model ID (e.g., 'microsoft/DialoGPT-medium') or absolute path to local model directory",
+                key="representational_updated_model",
             )
 
-        features = list_representational_features()
-        if not features:
-            st.info("No representational analysis features are currently available.")
-            return
+        st.markdown("##### Evaluation prompts")
+        query_text = st.text_area(
+            "Evaluation prompts",
+            height=180,
+            placeholder="Enter one query per line that probes the model's behaviour post-unlearning.\n\nExample:\nThe quick brown fox jumps over the lazy dog.\nUnlearning LLMs is an active area of research.\nWhat is the capital of France?",
+            help="Each non-empty line is passed as an element of the `query` list. Enter multiple queries (one per line) to test different prompts.",
+            key="representational_query_text",
+        )
+        query_preview = [line.strip() for line in query_text.splitlines() if line.strip()]
 
-        feature_lookup = {feature.id: feature for feature in features}
+        if query_preview:
+            st.caption(f"📝 **{len(query_preview)} query(ies) will be processed:**")
+            for i, query in enumerate(query_preview, 1):
+                st.caption(f"{i}. {query}")
+        else:
+            st.caption("📝 No queries entered yet. Add at least one query above.")
 
-        with st.form("representational_analysis_form"):
-                selected_feature_id = st.selectbox(
-                    "Select representational probe",
-                    options=[feature.id for feature in features],
-                    index=0,
-                    format_func=lambda feature_id: f"{feature_lookup[feature_id].name} — {feature_lookup[feature_id].description}",
-                    key="representational_feature_selection",
-                    help="Maps directly to the `feature` argument of `run_feature_analysis`.",
-                )
+        st.markdown("##### Runtime parameters")
+        st.caption("Device is set to `cuda` (GPU enabled).")
+        device = "cuda"
 
-                selected_feature = feature_lookup[selected_feature_id]
+        col_batch, col_batches, col_length = st.columns([1, 1, 1])
+        with col_batch:
+            batch_size = st.number_input(
+                "Batch size",
+                min_value=1,
+                max_value=128,
+                value=4,
+                step=1,
+                help="Mini-batch size for analyses that stream batches (FIM, CKA).",
+                key="representational_batch_size",
+            )
+        with col_batches:
+            num_batches = st.number_input(
+                "Batches",
+                min_value=1,
+                max_value=200,
+                value=10,
+                step=1,
+                help="Number of dataloader batches to use when estimating statistics (FIM, CKA).",
+                key="representational_num_batches",
+            )
+        with col_length:
+            max_length = st.number_input(
+                "Max length",
+                min_value=16,
+                max_value=4096,
+                value=128,
+                step=16,
+                help="Maximum sequence length for tokenization.",
+                key="representational_max_length",
+            )
 
-                st.markdown("##### Model checkpoints")
-                st.info("💡 **Model Path Format**: Use Hugging Face model IDs (e.g., 'gpt2', 'microsoft/DialoGPT-medium') or absolute paths to local directories containing `config.json` and model files. Do not use Hugging Face cache paths directly.")
-                col_ref, col_upd = st.columns(2)
-                with col_ref:
-                    reference_model_path = st.text_input(
-                        "Reference model (baseline)",
-                        placeholder="e.g. gpt2, Qwen/Qwen2.5-7B, or /path/to/local/model",
-                        help="Hugging Face model ID (e.g., 'gpt2') or absolute path to local model directory containing config.json",
-                        key="representational_reference_model",
-                    )
-                with col_upd:
-                    updated_model_path = st.text_input(
-                        "Updated / deployed model",
-                        placeholder="Path or HF repo ID for the model under audit",
-                        help="Hugging Face model ID (e.g., 'microsoft/DialoGPT-medium') or absolute path to local model directory",
-                        key="representational_updated_model",
-                    )
+        st.caption("Preview of the backend call that will be executed with your settings:")
+        query_list_preview = ", ".join(f'"{q}"' for q in query_preview) or '"<enter at least one query>"'
+        call_preview = textwrap.dedent(
+            f"""
+            run_feature_analysis(
+                feature="{selected_feature.id}",
+                model_reference_path="{reference_model_path.strip() or '<reference_model>'}",
+                model_path="{updated_model_path.strip() or '<updated_model>'}",
+                query=[{query_list_preview}],
+                device="{device}",
+                batch_size={int(batch_size)},
+                num_batches={int(num_batches)},
+                max_length={int(max_length)},
+            )
+            """.strip()
+        )
+        st.code(call_preview, language="python")
 
-                st.markdown("##### Evaluation prompts")
-                query_text = st.text_area(
-                    "Evaluation prompts",
-                    height=180,
-                    placeholder="Enter one query per line that probes the model's behaviour post-unlearning.\n\nExample:\nThe quick brown fox jumps over the lazy dog.\nUnlearning LLMs is an active area of research.\nWhat is the capital of France?",
-                    help="Each non-empty line is passed as an element of the `query` list. Enter multiple queries (one per line) to test different prompts.",
-                    key="representational_query_text",
-                )
-                query_preview = [line.strip() for line in query_text.splitlines() if line.strip()]
-                
-                # Display query count and preview
-                if query_preview:
-                    st.caption(f"📝 **{len(query_preview)} query(ies) will be processed:**")
-                    for i, query in enumerate(query_preview, 1):
-                        st.caption(f"{i}. {query}")
-                else:
-                    st.caption("📝 No queries entered yet. Add at least one query above.")
+        submit_run = st.form_submit_button(
+            "🧬 Run Representational Analysis",
+            width='stretch',
+            help="Submit the parameters above and execute the representational probe on the backend.",
+        )
 
-                st.markdown("##### Runtime parameters")
-                st.caption("Device is set to `cuda` (GPU enabled).")
-                device = "cuda"
-
-                col_batch, col_batches, col_length = st.columns([1, 1, 1])
-                with col_batch:
-                    batch_size = st.number_input(
-                        "Batch size",
-                        min_value=1,
-                        max_value=128,
-                        value=4,
-                        step=1,
-                        help="Mini-batch size for analyses that stream batches (FIM, CKA).",
-                        key="representational_batch_size",
-                    )
-                with col_batches:
-                    num_batches = st.number_input(
-                        "Batches",
-                        min_value=1,
-                        max_value=200,
-                        value=10,
-                        step=1,
-                        help="Number of dataloader batches to use when estimating statistics (FIM, CKA).",
-                        key="representational_num_batches",
-                    )
-                with col_length:
-                    max_length = st.number_input(
-                        "Max length",
-                        min_value=16,
-                        max_value=4096,
-                        value=128,
-                        step=16,
-                        help="Maximum sequence length for tokenization.",
-                        key="representational_max_length",
-                    )
-
-                st.caption("Preview of the backend call that will be executed with your settings:")
-                query_list_preview = ", ".join(f'"{q}"' for q in query_preview) or '"<enter at least one query>"'
-                call_preview = textwrap.dedent(
-                    f"""
-                    run_feature_analysis(
-                        feature="{selected_feature.id}",
-                        model_reference_path="{reference_model_path.strip() or '<reference_model>'}",
-                        model_path="{updated_model_path.strip() or '<updated_model>'}",
-                        query=[{query_list_preview}],
-                        device="{device}",
-                        batch_size={int(batch_size)},
-                        num_batches={int(num_batches)},
-                        max_length={int(max_length)},
-                    )
-                    """.strip()
-                )
-                st.code(call_preview, language="python")
-
-                submit_run = st.form_submit_button(
-                    "🧬 Run Representational Analysis",
-                    width='stretch',
-                    help="Submit the parameters above and execute the representational probe on the backend.",
-                )
-
-        rep_result = None
-        analysis_request = None
-        if submit_run:
+    rep_result = None
+    analysis_request = None
+    if submit_run:
             queries = query_preview
             if not reference_model_path.strip():
                 st.warning("⚠️ Provide the reference model path before running representational analysis.")
