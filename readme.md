@@ -56,9 +56,9 @@ The primary workspace now bundles both the snippet evaluator and the PDF sweeps 
 
 ### Custom continuation prompts
 
-Inside the **Text Snippet Analysis** tab you can choose **Custom Prompt** from the continuation method selector. This lets you paste a full instruction template tailored to your experiment. Use the `{input_text}` placeholder wherever the user-supplied snippet should appear. You can also optionally reference `{word_count}` or `{char_count}` to mirror the target length derived from your ground truth. The preview panel will render the final prompt with any available values filled in so you can double-check the framing before running inference.
+Inside the **Text Detection** tab you can choose **Custom Prompt** from the continuation method selector. This lets you paste a full instruction template tailored to your experiment. Use the `{input_text}` placeholder wherever the user-supplied snippet should appear. You can also optionally reference `{word_count}` or `{char_count}` to mirror the target length derived from your ground truth. The preview panel will render the final prompt with any available values filled in so you can double-check the framing before running inference.
 
-The same **Custom Prompt** option is available on the **Whole PDF Analysis** tab. Whatever template you supply is injected into every chunk before the model is asked to continue it, so you can drive consistent jailbreak persuasion experiments across long-form documents without losing control over the framing.
+The same **Custom Prompt** option is available on the **Document Detection** tab. Whatever template you supply is injected into every chunk before the model is asked to continue it, so you can drive consistent jailbreak persuasion experiments across long-form documents without losing control over the framing.
 
 ### Multi-run diversity diagnostics
 
@@ -158,10 +158,10 @@ If problems persist, check the exact exception printed to the console for hints 
 
 To run the perplexity probe, supply both the reference text and an equivalent-length control passage. You can adjust token window size, number of sampled windows, and the perplexity gap required to flag memorisation. When SciPy is unavailable the statistical tests degrade gracefully to analytical approximations, and the UI will annotate any fallbacks or tokenizer limitations.
 
-### Whole PDF Analysis Notes
+### Document Detection Notes
 
-- Chunk size is specified in words. During Whole PDF Analysis, the Generated Text produced for each chunk is enforced to be exactly the same number of words as the selected chunk size. This ensures fair, length-controlled comparisons across chunks.
-- You can optionally select a persuasion framing (e.g., Role-Playing or Lost Manuscript) when running Whole PDF Analysis. The app will use that strategy for every chunk, mirroring the Text Snippet workflows and making it easier to probe jailbreak-style continuations.
+- Chunk size is specified in words. During Document Detection, the Generated Text produced for each chunk is enforced to be exactly the same number of words as the selected chunk size. This ensures fair, length-controlled comparisons across chunks.
+- You can optionally select a persuasion framing (e.g., Role-Playing or Lost Manuscript) when running Document Detection. The app will use that strategy for every chunk, mirroring the Text Detection workflows and making it easier to probe jailbreak-style continuations.
 - If you pick **Custom Prompt**, the PDF analyzer will apply your template to every chunk. Ensure you include `{input_text}` (and optionally `{word_count}` or `{char_count}`) so the chunk content and length guidance are inserted automatically.
 - Temperature and Top-P controls are now available for PDF runs so you can match the sampling behaviour to your text experiments.
 - Use the **Ranks to Display** control to decide how many of the highest-scoring chunks are surfaced in the final summary.

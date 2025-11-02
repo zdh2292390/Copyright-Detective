@@ -173,8 +173,8 @@ def render_snippet_to_document_page(api_key, model_choice, provider):
     )
 
     snippet_tab, pdf_tab = st.tabs([
-        "Text Snippet Analysis",
-        "Whole PDF Analysis",
+        "Text Detection",
+        "Document Detection",
     ])
 
     with snippet_tab:
@@ -185,10 +185,10 @@ def render_snippet_to_document_page(api_key, model_choice, provider):
 
 
 def render_text_analysis_page(api_key, model_choice, provider, *, show_page_header: bool = True):
-    """Render the text snippet analysis workflow."""
+    """Render the text detection workflow."""
 
     if show_page_header:
-        st.markdown("### 📝 Text Snippet Analysis")
+        st.markdown("### 📝 Text Detection")
         st.markdown(
             "Analyze text snippets to detect potential copyright infringement by comparing generated text with ground truth."
         )
@@ -216,7 +216,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             "Prior-Context Reconstruction",
             "Title Prediction",
         ],
-        help="Select the type of prompt to guide the Text Snippet Analysis. (Choose only; typing custom values is not allowed.)",
+        help="Select the type of prompt to guide the Text Detection. (Choose only; typing custom values is not allowed.)",
     )
     st.caption("This selection controls how the model will be instructed during comparison.")
 
@@ -243,38 +243,6 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     ground_word_count = len(text2.split()) if text2 else 0
     input_char_count = len(text1) if text1 else 0
     ground_char_count = len(text2) if text2 else 0
-
-    if text1 or text2:
-        delta_words = ground_word_count - input_word_count
-        delta_chars = ground_char_count - input_char_count
-
-        def _format_delta(value: int) -> str:
-            if value > 0:
-                return f"+{value}"
-            if value < 0:
-                return str(value)
-            return "0"
-
-        stats_html = f"""
-            <div class=\"analysis-quick-stats\">
-                <div class=\"analysis-stat\">
-                    <div class=\"analysis-stat__label\">Input snippet</div>
-                    <div class=\"analysis-stat__value\">{input_word_count} words</div>
-                    <div class=\"analysis-stat__hint\">{input_char_count} characters</div>
-                </div>
-                <div class=\"analysis-stat\">
-                    <div class=\"analysis-stat__label\">Ground truth</div>
-                    <div class=\"analysis-stat__value\">{ground_word_count} words</div>
-                    <div class=\"analysis-stat__hint\">{ground_char_count} characters</div>
-                </div>
-                <div class=\"analysis-stat\">
-                    <div class=\"analysis-stat__label\">Length delta</div>
-                    <div class=\"analysis-stat__value\">{_format_delta(delta_words)} words</div>
-                    <div class=\"analysis-stat__hint\">{_format_delta(delta_chars)} characters</div>
-                </div>
-            </div>
-        """
-        st.markdown(stats_html, unsafe_allow_html=True)
 
     # Explanatory notes for each prompt type
     if prompt_type == "Next-Passage Prediction":
@@ -776,7 +744,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
     """Render the document-scale PDF analysis workflow."""
 
     if show_page_header:
-        st.markdown("### 📄 Whole PDF Analysis")
+        st.markdown("### 📄 Document Detection")
         st.markdown(
             "Upload a whole PDF document to automatically analyze text chunks for potential copyright infringement."
         )
