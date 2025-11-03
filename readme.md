@@ -11,7 +11,7 @@ It is highly recommended to use a Conda environment to manage project dependenci
 Open your terminal and run the following command in the project's root directory to create a new environment named `copyright-detective`:
 
 ```bash
-conda create --name copyright-detective python=3.9 -y
+conda create --name copyright-detective python=3.12 -y
 ```
 
 This will create a new Conda environment with Python 3.9.
