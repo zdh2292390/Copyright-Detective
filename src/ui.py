@@ -1103,11 +1103,12 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     with spacer_col:
         st.write("")
     with button_col:
-        if st.button("🗑️ Clear Cache", key="clear_stage1_cache_top", help="Remove cached Step 1 results and reference excerpts"):
+        if st.button("🗑️ Clear Cache", key="clear_stage1_cache_top", help="Remove cached Step 1/2 results and reference excerpts"):
             st.session_state.pop("generated_persuasion_mutations", None)
             st.session_state.pop("stage1_reference_texts", None)
             st.session_state.pop("stage1_results_prompt_selector", None)
             st.session_state.pop("last_stage1_prompt", None)
+            st.session_state.pop("stage2_results", None)
             rerun_fn = getattr(st, "rerun", None)
             if callable(rerun_fn):
                 rerun_fn()
@@ -1608,11 +1609,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     # LLM Response
                     if llm_response:
                         sections.append(("🧪 Evaluation Model Response", llm_response, "generated"))
-                    
-                    # Mutation template output
-                    mutation_response = evaluation.mutation.response or ""
-                    if mutation_response:
-                        sections.append(("🧰 Mutation Template Output", mutation_response, "generated"))
                     
                     # Intention judging results
                     if judged_flag:
