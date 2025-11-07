@@ -564,7 +564,8 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     )
                     for i, text in enumerate(generated_texts):
                         metrics_for_run = similarity_scores[i] if i < len(similarity_scores) else {}
-                        render_direct_recall_diff(text2, text, title=f"Run {i+1}", metrics=metrics_for_run)
+                        with st.expander(f"Run {i+1}", expanded=False):
+                            render_direct_recall_diff(text2, text, title=f"Run {i+1}", metrics=metrics_for_run)
 
                     metrics_df = pd.DataFrame(similarity_scores).apply(pd.to_numeric, errors="coerce")
 
