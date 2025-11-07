@@ -1021,7 +1021,6 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                     f"Rank {rank}",
                     key=f"pdf_top_section_{rank}",
                     expanded=False,
-                    help=f"ROUGE-L {rouge_l:.3f} · Jaccard {jaccard:.3f} · Lev {levenshtein_val}",
                 ):
                     st.markdown("**📝 Prefix Context**")
                     st.markdown(
