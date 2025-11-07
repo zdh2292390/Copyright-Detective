@@ -781,33 +781,171 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
     """Render the document-scale PDF analysis workflow."""
 
     if show_page_header:
-        st.markdown("### 📄 Document Detection")
-        st.markdown(
-            "Upload a whole PDF document to automatically analyze text chunks for potential copyright infringement."
+        # Page header with clear cache button
+        header_col, button_col = st.columns([4, 1])
+        with header_col:
+            st.markdown("### 📄 Document Detection")
+            st.markdown(
+                "Upload a whole PDF document to automatically analyze text chunks for potential copyright infringement."
+            )
+        with button_col:
+            if st.button("🗑️ Clear Cache", key="clear_pdf_cache", help="Remove cached PDF analysis results"):
+                st.session_state.pop("pdf_analysis_results", None)
+                st.session_state.pop("pdf_analysis_score_type", None)
+                st.session_state.pop("pdf_analysis_top_k", None)
+                st.session_state.pop("pdf_analysis_continuation_method", None)
+                st.session_state.pop("pdf_analysis_temperature", None)
+                st.session_state.pop("pdf_analysis_top_p", None)
+                rerun_fn = getattr(st, "rerun", None)
+                if callable(rerun_fn):
+                    rerun_fn()
+                else:
+                    experimental_rerun = getattr(st, "experimental_rerun", None)
+                    if callable(experimental_rerun):
+                        experimental_rerun()
+
+    # Initialize variables to avoid UnboundLocalError
+    score_type = None
+    top_k = None
+    chunk_size = None
+    continuation_method = None
+    temperature = None
+    top_p = None
+    custom_pdf_prompt = None
+
+    def render_pdf_results_section(
+        results_data: List[Tuple[str, str, str, Dict[str, float]]],
+        *,
+        default_score_type: str,
+        default_top_k: int,
+        continuation_method: str,
+        temperature: float,
+        top_p: float,
+    ) -> None:
+        """Render ranked PDF chunk results with adjustable controls."""
+
+        if not results_data:
+            st.info("No comparable chunks were produced for ranking.")
+            return
+
+        metrics_options = [
+            "ROUGE-L",
+            "ROUGE-1",
+            "Jaccard Index",
+            "LCS (Character)",
+            "LCS (Word)",
+            "ACS (Word)",
+            "Semantic Similarity",
+            "MinHash Similarity",
+            "Levenshtein Distance",
+        ]
+
+        # Seed widget defaults from session state when available
+        current_score_type = st.session_state.get("pdf_analysis_score_type", default_score_type) or default_score_type
+        if current_score_type not in metrics_options:
+            current_score_type = metrics_options[0]
+
+        current_top_k = st.session_state.get("pdf_analysis_top_k", default_top_k)
+        if not isinstance(current_top_k, int) or current_top_k < 1:
+            current_top_k = max(1, int(default_top_k or 5))
+
+        st.markdown("---")
+        col_rank1, col_rank2 = st.columns(2)
+        with col_rank1:
+            display_score_type = st.selectbox(
+                "Ranking Metric",
+                metrics_options,
+                index=metrics_options.index(current_score_type),
+                help="Choose how to rank the most similar sections",
+                key="display_score_type",
+            )
+            st.session_state["pdf_analysis_score_type"] = display_score_type
+
+        with col_rank2:
+            display_top_k = st.number_input(
+                "Display Count",
+                min_value=1,
+                max_value=20,
+                value=min(max(current_top_k, 1), 20),
+                step=1,
+                help="Select how many of the highest scoring chunks to show",
+                key="display_top_k",
+            )
+            st.session_state["pdf_analysis_top_k"] = int(display_top_k)
+
+        score_mapping = {
+            "ROUGE-L": ("rouge_l", True),
+            "ROUGE-1": ("rouge_1", True),
+            "Jaccard Index": ("jaccard_index", True),
+            "LCS (Character)": ("lcs_char_ratio", True),
+            "LCS (Word)": ("lcs_word_ratio", True),
+            "ACS (Word)": ("acs_word", True),
+            "Semantic Similarity": ("semantic_similarity", True),
+            "MinHash Similarity": ("minhash_similarity", True),
+            "Levenshtein Distance": ("levenshtein", False),
+        }
+        metric_key, descending = score_mapping.get(display_score_type, ("rouge_l", True))
+
+        # Work on a copy to avoid mutating session state accidentally
+        sorted_results = sorted(
+            results_data,
+            key=lambda entry: float(entry[3].get(metric_key, float("-inf") if descending else float("inf"))),
+            reverse=descending,
         )
+
+        final_display_limit = min(int(display_top_k), len(sorted_results))
+
+        st.markdown(f"#### 🏆 Top {final_display_limit} Most Similar Sections")
+        st.caption(
+            f"Ranking by {display_score_type}. Showing top {final_display_limit} of {len(sorted_results)} chunks. "
+            f"Generation strategy: {continuation_method} · Temperature {temperature:.2f} · Top-P {top_p:.2f}.\n"
+            "Metrics tracked: ROUGE-1, ROUGE-L, LCS (character/word), ACS (word), Levenshtein distance, semantic similarity, MinHash similarity, and Jaccard index."
+        )
+
+        for rank, (upper, lower, gen, metric_values) in enumerate(sorted_results[:final_display_limit], start=1):
+            metrics_for_display = metric_values or {}
+            rouge_l = float(metrics_for_display.get("rouge_l", 0.0) or 0.0)
+            jaccard = float(metrics_for_display.get("jaccard_index", 0.0) or 0.0)
+            levenshtein_val = int(metrics_for_display.get("levenshtein", 0.0) or 0.0)
+            with render_streamlit_accordion(
+                f"Rank {rank}",
+                key=f"pdf_top_section_{rank}",
+                expanded=False,
+            ):
+                st.markdown("**📝 Prefix Context**")
+                st.markdown(
+                    f"""
+                    <div style="
+                        background: rgba(255, 255, 255, 0.85);
+                        border: 1px solid rgba(191, 219, 254, 0.6);
+                        border-left: 4px solid #2563eb;
+                        border-radius: 12px;
+                        padding: 0.65rem 0.75rem;
+                        font-size: 0.9rem;
+                        line-height: 1.7;
+                        color: #1f2937;
+                        white-space: pre-wrap;
+                        word-break: break-word;
+                        margin: 0.5rem 0;
+                    ">
+                    {html.escape(upper)}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                st.markdown("**🧠 Direct Recall Alignment**")
+                render_direct_recall_diff(
+                    lower,
+                    gen,
+                    title="Ground Truth vs. Generated Output",
+                    metrics=metrics_for_display,
+                )
 
     uploaded_file = st.file_uploader("📎 Choose a PDF file", type="pdf", help="Select a PDF document to analyze")
     if uploaded_file is not None:
         st.markdown('<h3 class="section-header sm">⚙️ Analysis Configuration</h3>', unsafe_allow_html=True)
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            score_type = st.selectbox(
-                'Change Ranking Metric',
-                [
-                    "ROUGE-L",
-                    "ROUGE-1",
-                    "Jaccard Index",
-                    "LCS (Character)",
-                    "LCS (Word)",
-                    "ACS (Word)",
-                    "Semantic Similarity",
-                    "MinHash Similarity",
-                    "Levenshtein Distance",
-                ],
-                index=0,
-                help='Choose how to rank the most similar sections'
-            )
-        with col2:
+        config_col1, config_col2 = st.columns(2)
+        with config_col1:
             chunk_size = st.number_input(
                 'Change Chunk Size (words)',
                 min_value=50,
@@ -816,26 +954,16 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                 step=25,
                 help='Number of words per text chunk'
             )
-        with col3:
-            top_k = st.number_input(
-                'Ranks to Display',
-                min_value=1,
-                max_value=20,
-                value=5,
-                step=1,
-                help='Select how many of the highest scoring chunks to show after analysis'
+        with config_col2:
+            continuation_method = st.selectbox(
+                'Choose a continuation method',
+                CONTINUATION_STRATEGIES,
+                index=0,
+                help='Pick how the model should be nudged when generating chunk continuations. "Normal Continuation" keeps the default behaviour.',
+                key='pdf_continuation_method'
             )
 
-        st.markdown('<h3 class="section-header sm">🎭 Continuation Strategy</h3>', unsafe_allow_html=True)
-        continuation_method = st.selectbox(
-            'Choose a continuation method',
-            CONTINUATION_STRATEGIES,
-            index=0,
-            help='Pick how the model should be nudged when generating chunk continuations. "Normal Continuation" keeps the default behaviour.',
-            key='pdf_continuation_method'
-        )
-
-        custom_pdf_prompt: Optional[str] = None
+        custom_pdf_prompt = None
         if continuation_method == "Custom Prompt":
             custom_pdf_prompt = st.text_area(
                 "Custom prompt template",
@@ -888,12 +1016,12 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
             )
 
     else:
-        score_type = None
+        score_type = "ROUGE-L"  # Default ranking metric
         chunk_size = None
         continuation_method = "Normal Continuation"
         temperature = 0.7
         top_p = 1.0
-        top_k = 5
+        top_k = 5  # Default number of ranks to display
         custom_pdf_prompt = ""
 
     if uploaded_file is not None:
@@ -917,6 +1045,12 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         analyze_pdf = False
 
     if analyze_pdf:
+        # Set default values for ranking parameters
+        if score_type is None:
+            score_type = "ROUGE-L"
+        if top_k is None:
+            top_k = 5
+            
         if not api_key:
             st.error("⚠️ Please enter your API key in the sidebar.")
             return
@@ -978,82 +1112,45 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                 results.append((upper, lower, generated_text, dict(metrics_map)))
                 progress_bar.progress((i + 1)/total, text=f"🔄 Processing chunk {i+1}/{total} · {continuation_method}")
 
-            # Sort
-            score_mapping = {
-                "ROUGE-L": ("rouge_l", True),
-                "ROUGE-1": ("rouge_1", True),
-                "Jaccard Index": ("jaccard_index", True),
-                "LCS (Character)": ("lcs_char_ratio", True),
-                "LCS (Word)": ("lcs_word_ratio", True),
-                "ACS (Word)": ("acs_word", True),
-                "Semantic Similarity": ("semantic_similarity", True),
-                "MinHash Similarity": ("minhash_similarity", True),
-                "Levenshtein Distance": ("levenshtein", False),
-            }
-            metric_key, descending = score_mapping.get(score_type, ("rouge_l", True))
+            # Store results in session state for post-analysis adjustment and subsequent reruns
+            st.session_state["pdf_analysis_results"] = list(results)
+            st.session_state["pdf_analysis_score_type"] = score_type
+            st.session_state["pdf_analysis_top_k"] = top_k
+            st.session_state["pdf_analysis_continuation_method"] = continuation_method
+            st.session_state["pdf_analysis_temperature"] = temperature
+            st.session_state["pdf_analysis_top_p"] = top_p
 
-            def _sort_key(entry: Tuple[str, str, str, Dict[str, float]]) -> float:
-                metric_dict = entry[3]
-                value = metric_dict.get(metric_key)
-                if value is None:
-                    return float("-inf") if descending else float("inf")
-                return float(value)
-
-            results.sort(key=_sort_key, reverse=descending)
-
-            display_limit = min(top_k, len(results)) if results else 0
-            if display_limit == 0:
-                st.info("No comparable chunks were produced for ranking.")
-                return
-
-            st.markdown(f"#### 🏆 Top {display_limit} Most Similar Sections")
-            st.caption(
-                f"Ranking by {score_type}. Showing top {display_limit} of {len(results)} chunks. "
-                f"Generation strategy: {continuation_method} · Temperature {temperature:.2f} · Top-P {top_p:.2f}.\n"
-                "Metrics tracked: ROUGE-1, ROUGE-L, LCS (character/word), ACS (word), Levenshtein distance, semantic similarity, MinHash similarity, and Jaccard index."
+            render_pdf_results_section(
+                results,
+                default_score_type=score_type,
+                default_top_k=top_k,
+                continuation_method=continuation_method,
+                temperature=temperature,
+                top_p=top_p,
             )
-            for rank, (upper, lower, gen, metric_values) in enumerate(results[:display_limit], start=1):
-                metrics_for_display = metric_values or {}
-                rouge_l = float(metrics_for_display.get("rouge_l", 0.0) or 0.0)
-                jaccard = float(metrics_for_display.get("jaccard_index", 0.0) or 0.0)
-                levenshtein_val = int(metrics_for_display.get("levenshtein", 0.0) or 0.0)
-                with render_streamlit_accordion(
-                    f"Rank {rank}",
-                    key=f"pdf_top_section_{rank}",
-                    expanded=False,
-                ):
-                    st.markdown("**📝 Prefix Context**")
-                    st.markdown(
-                        f"""
-                        <div style="
-                            background: rgba(255, 255, 255, 0.85);
-                            border: 1px solid rgba(191, 219, 254, 0.6);
-                            border-left: 4px solid #2563eb;
-                            border-radius: 12px;
-                            padding: 0.65rem 0.75rem;
-                            font-size: 0.9rem;
-                            line-height: 1.7;
-                            color: #1f2937;
-                            white-space: pre-wrap;
-                            word-break: break-word;
-                            margin: 0.5rem 0;
-                        ">
-                        {html.escape(upper)}
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-                    st.markdown("**🧠 Direct Recall Alignment**")
-                    render_direct_recall_diff(
-                        lower,
-                        gen,
-                        title="Ground Truth vs. Generated Output",
-                        metrics=metrics_for_display,
-                    )
 
             progress_bar.progress(1.0, text=f"✅ Completed analysis with {model_choice}. Processed {total} chunks.")
         except Exception as e:
             st.error(f"❌ Error during analysis: {e}")
+
+    elif st.session_state.get("pdf_analysis_results"):
+        cached_results = st.session_state.get("pdf_analysis_results") or []
+        cached_score_type = st.session_state.get("pdf_analysis_score_type", "ROUGE-L")
+        cached_top_k = st.session_state.get("pdf_analysis_top_k", 5)
+        cached_continuation_method = st.session_state.get("pdf_analysis_continuation_method", "Normal Continuation")
+        cached_temperature = st.session_state.get("pdf_analysis_temperature", 0.7)
+        cached_top_p = st.session_state.get("pdf_analysis_top_p", 1.0)
+
+        render_pdf_results_section(
+            cached_results,
+            default_score_type=cached_score_type,
+            default_top_k=cached_top_k,
+            continuation_method=cached_continuation_method,
+            temperature=cached_temperature,
+            top_p=cached_top_p,
+        )
+
+
 
 
 def render_adversarial_persuasion_page(api_key, model_choice, provider):
