@@ -1,12 +1,17 @@
+import hashlib
 import openai
-from rouge_score import rouge_scorer
-from Levenshtein import distance
-import anthropic
-import google.generativeai as genai
+import random
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Dict, List, Optional
+
+import anthropic
+import google.generativeai as genai
+from Levenshtein import distance
+from rouge_score import rouge_scorer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 from src.prompt_utils import get_full_prompt
 from src.copyright_detective.progress import (
@@ -22,6 +27,20 @@ def _normalize_spaces(s: str) -> str:
 
 _TOKEN_SPLIT_RE = re.compile(r"\w+|\s+|[^\w\s]", flags=re.UNICODE)
 
+_ROUGE_SCORER = rouge_scorer.RougeScorer(["rouge1", "rougeL"], use_stemmer=True)
+
+_MINHASH_PERMUTATIONS = 128
+_MINHASH_SHINGLE_SIZE = 3
+_MINHASH_PRIME = 4_294_967_311
+_MINHASH_RANDOM = random.Random(314159)
+_MINHASH_COEFFICIENTS = [
+    (
+        _MINHASH_RANDOM.randint(1, _MINHASH_PRIME - 1),
+        _MINHASH_RANDOM.randint(0, _MINHASH_PRIME - 1),
+    )
+    for _ in range(_MINHASH_PERMUTATIONS)
+]
+
 
 @dataclass(frozen=True)
 class DiffToken:
@@ -33,6 +52,89 @@ def _tokenize_for_diff(text: Optional[str]) -> List[str]:
     if not text:
         return []
     return _TOKEN_SPLIT_RE.findall(text)
+
+
+def _lcs_length(seq1: List[str], seq2: List[str]) -> int:
+    if not seq1 or not seq2:
+        return 0
+
+    len1, len2 = len(seq1), len(seq2)
+    previous = [0] * (len2 + 1)
+    current = [0] * (len2 + 1)
+
+    for i in range(1, len1 + 1):
+        for j in range(1, len2 + 1):
+            if seq1[i - 1] == seq2[j - 1]:
+                current[j] = previous[j - 1] + 1
+            else:
+                current[j] = max(previous[j], current[j - 1])
+        previous, current = current, [0] * (len2 + 1)
+
+    return previous[-1]
+
+
+def _compute_semantic_similarity(text1: str, text2: str) -> float:
+    stripped_1 = text1.strip()
+    stripped_2 = text2.strip()
+    if not stripped_1 and not stripped_2:
+        return 1.0
+    if not stripped_1 or not stripped_2:
+        return 0.0
+
+    vectorizer = TfidfVectorizer()
+    try:
+        matrix = vectorizer.fit_transform([text1, text2])
+    except ValueError:
+        # Empty vocabulary or other tokenization issues
+        return 0.0
+
+    if matrix.nnz == 0:
+        return 0.0
+
+    similarity = cosine_similarity(matrix[0], matrix[1])[0][0]
+    # Clamp to [0, 1] to guard against floating point drift
+    return float(max(0.0, min(1.0, similarity)))
+
+
+def _generate_word_shingles(text: str, size: int = _MINHASH_SHINGLE_SIZE) -> List[str]:
+    tokens = text.lower().split()
+    if not tokens:
+        return []
+    if len(tokens) <= size:
+        return [" ".join(tokens)]
+    return [" ".join(tokens[i : i + size]) for i in range(len(tokens) - size + 1)]
+
+
+def _hash_shingle(shingle: str) -> int:
+    digest = hashlib.sha1(shingle.encode("utf-8")).hexdigest()
+    return int(digest, 16) % _MINHASH_PRIME
+
+
+def _compute_minhash_signature(shingles: List[str]) -> List[int]:
+    if not shingles:
+        return [_MINHASH_PRIME] * _MINHASH_PERMUTATIONS
+
+    shingle_hashes = [_hash_shingle(shingle) for shingle in shingles]
+    signature: List[int] = []
+    for a, b in _MINHASH_COEFFICIENTS:
+        min_value = min(((a * value) + b) % _MINHASH_PRIME for value in shingle_hashes)
+        signature.append(min_value)
+    return signature
+
+
+def _compute_minhash_similarity(text1: str, text2: str) -> float:
+    shingles1 = _generate_word_shingles(text1)
+    shingles2 = _generate_word_shingles(text2)
+
+    if not shingles1 and not shingles2:
+        return 1.0
+    if not shingles1 or not shingles2:
+        return 0.0
+
+    signature1 = _compute_minhash_signature(shingles1)
+    signature2 = _compute_minhash_signature(shingles2)
+    matches = sum(1 for h1, h2 in zip(signature1, signature2) if h1 == h2)
+    return matches / _MINHASH_PERMUTATIONS
 
 
 def compute_direct_recall_alignment(
@@ -230,8 +332,7 @@ def calculate_rouge_score(text1, text2):
     """
     Calculates the ROUGE-L score between two texts.
     """
-    scorer = rouge_scorer.RougeScorer(['rougeL'], use_stemmer=True)
-    scores = scorer.score(text1, text2)
+    scores = _ROUGE_SCORER.score(text1, text2)
     return scores['rougeL'].fmeasure
 
 def calculate_jaccard_index(text1, text2):
@@ -245,6 +346,43 @@ def calculate_jaccard_index(text1, text2):
     if not union:
         return 0.0
     return len(intersection) / len(union)
+
+
+def calculate_similarity_metrics(reference_text: str, candidate_text: str) -> Dict[str, float]:
+    """Calculate a bundle of overlap and distance metrics between two texts."""
+
+    rouge_scores = _ROUGE_SCORER.score(reference_text, candidate_text)
+
+    # Character-level LCS
+    lcs_char_length = _lcs_length(list(reference_text), list(candidate_text))
+    max_char_length = max(len(reference_text), len(candidate_text))
+    lcs_char_ratio = (lcs_char_length / max_char_length) if max_char_length else 0.0
+
+    # Word-level LCS and derived ACS
+    ref_words = reference_text.split()
+    cand_words = candidate_text.split()
+    lcs_word_length = _lcs_length(ref_words, cand_words)
+    max_word_length = max(len(ref_words), len(cand_words))
+    lcs_word_ratio = (lcs_word_length / max_word_length) if max_word_length else 0.0
+    recall = (lcs_word_length / len(ref_words)) if ref_words else 0.0
+    precision = (lcs_word_length / len(cand_words)) if cand_words else 0.0
+    acs_word = (recall + precision) / 2 if (ref_words or cand_words) else 0.0
+
+    metrics: Dict[str, float] = {
+        "rouge_1": rouge_scores["rouge1"].fmeasure,
+        "rouge_l": rouge_scores["rougeL"].fmeasure,
+        "lcs_char_length": float(lcs_char_length),
+        "lcs_char_ratio": lcs_char_ratio,
+        "lcs_word_length": float(lcs_word_length),
+        "lcs_word_ratio": lcs_word_ratio,
+        "acs_word": acs_word,
+        "jaccard_index": calculate_jaccard_index(reference_text, candidate_text),
+        "levenshtein": float(distance(reference_text, candidate_text)),
+        "semantic_similarity": _compute_semantic_similarity(reference_text, candidate_text),
+        "minhash_similarity": _compute_minhash_similarity(reference_text, candidate_text),
+    }
+
+    return metrics
 
 def compare_texts(
     input_text,
@@ -266,6 +404,11 @@ def compare_texts(
       - "Prior-Context Reconstruction": infer the preceding sentence given a continuation (input_text)
       - "Title Prediction": infer a likely title/attribution from the snippet (input_text)
         continuation_method selects the strategy template for reconstruction prompts.
+
+        Returns a tuple ``(generated_text, metrics)`` where ``metrics`` is a dictionary containing
+        ROUGE-1, ROUGE-L, character/word LCS (length + ratio), ACS (word), Levenshtein distance,
+        semantic similarity, MinHash similarity, and the Jaccard index. If no reference text is
+        supplied the metrics entry is ``None``.
     """
     # Determine target length for generation
     if reference_text and prompt_type != "Title Prediction":
@@ -322,13 +465,10 @@ def compare_texts(
     )
 
     # If a reference/target text is provided, compute similarity metrics; otherwise return zeros.
-    if reference_text:
-        rouge_score = calculate_rouge_score(reference_text, generated_text)
-        jaccard_index = calculate_jaccard_index(reference_text, generated_text)
-        levenshtein_dist = distance(reference_text, generated_text)
-    else:
-        rouge_score = 0.0
-        jaccard_index = 0.0
-        levenshtein_dist = 0
+    metrics = (
+        calculate_similarity_metrics(reference_text, generated_text)
+        if reference_text
+        else None
+    )
 
-    return generated_text, rouge_score, jaccard_index, levenshtein_dist
+    return generated_text, metrics

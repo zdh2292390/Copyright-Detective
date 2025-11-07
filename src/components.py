@@ -300,6 +300,14 @@ _DIRECT_RECALL_DIFF_STYLE = """
         color: #0f172a;
         font-size: 0.82rem;
     }
+    .dr-diff-metric-detail {
+        display: block;
+        margin-top: 0.18rem;
+        font-size: 0.7rem;
+        color: #64748b;
+        font-weight: 500;
+        letter-spacing: 0.25px;
+    }
     @media (max-width: 820px) {
         .dr-diff-wrapper { padding: 0.95rem; }
         .dr-diff-column { min-width: 100%; }
@@ -337,6 +345,7 @@ def render_direct_recall_diff(
     generated_text: str,
     *,
     title: Optional[str] = None,
+    metrics: Optional[Dict[str, float]] = None,
     rouge_score: Optional[float] = None,
     jaccard_index: Optional[float] = None,
     levenshtein_dist: Optional[int] = None,
@@ -369,21 +378,61 @@ def render_direct_recall_diff(
         f"</div>"
     )
 
-    if rouge_score is not None and jaccard_index is not None and levenshtein_dist is not None:
-        metrics_html = (
-            f'<div class="dr-diff-metrics">'
-            f'<div class="dr-diff-metric">ROUGE-L: <strong>{rouge_score:.4f}</strong></div>'
-            f'<div class="dr-diff-metric">Jaccard: <strong>{jaccard_index:.4f}</strong></div>'
-            f'<div class="dr-diff-metric">Levenshtein: <strong>{levenshtein_dist}</strong></div>'
-            f'</div>'
+    metrics_data: Dict[str, float] = {}
+    if metrics:
+        metrics_data = {k: v for k, v in metrics.items() if v is not None}
+    elif any(value is not None for value in (rouge_score, jaccard_index, levenshtein_dist)):
+        if rouge_score is not None:
+            metrics_data["rouge_l"] = rouge_score
+        if jaccard_index is not None:
+            metrics_data["jaccard_index"] = jaccard_index
+        if levenshtein_dist is not None:
+            metrics_data["levenshtein"] = float(levenshtein_dist)
+
+    # Ensure numeric conversion for consistent formatting
+    metrics_data = {
+        key: float(value)
+        for key, value in metrics_data.items()
+        if isinstance(value, (int, float))
+    }
+
+    metric_entries: List[str] = []
+    metric_spec = [
+        ("rouge_1", "ROUGE-1", "{:.4f}", None),
+        ("rouge_l", "ROUGE-L", "{:.4f}", None),
+        ("lcs_char_ratio", "LCS (Character)", "{:.4f}", ("lcs_char_length", "len: {:.0f}")),
+        ("lcs_word_ratio", "LCS (Word)", "{:.4f}", ("lcs_word_length", "len: {:.0f}")),
+        ("acs_word", "ACS (Word)", "{:.4f}", None),
+        ("jaccard_index", "Jaccard", "{:.4f}", None),
+        ("levenshtein", "Levenshtein", "{:.0f}", None),
+        ("semantic_similarity", "Semantic Similarity", "{:.4f}", None),
+        ("minhash_similarity", "MinHash Similarity", "{:.4f}", None),
+    ]
+
+    for key, label, fmt, detail in metric_spec:
+        value = metrics_data.get(key)
+        if value is None:
+            continue
+        try:
+            formatted_value = fmt.format(value)
+        except (ValueError, TypeError):
+            continue
+        detail_html = ""
+        if detail and detail[0] in metrics_data:
+            detail_value = metrics_data[detail[0]]
+            detail_html = f'<span class="dr-diff-metric-detail">{detail[1].format(detail_value)}</span>'
+        metric_entries.append(
+            f'<div class="dr-diff-metric">{label}: <strong>{formatted_value}</strong>{detail_html}</div>'
         )
-    else:
-        metrics_html = (
-            f'<div class="dr-diff-metrics">'
-            f'<div class="dr-diff-metric">Recall Coverage: <strong>{recall_pct}</strong></div>'
-            f'<div class="dr-diff-metric">Precision: <strong>{precision_pct}</strong></div>'
-            f'</div>'
-        )
+
+    metric_entries.append(
+        f'<div class="dr-diff-metric">Recall Coverage: <strong>{recall_pct}</strong></div>'
+    )
+    metric_entries.append(
+        f'<div class="dr-diff-metric">Precision: <strong>{precision_pct}</strong></div>'
+    )
+
+    metrics_html = f'<div class="dr-diff-metrics">{"".join(metric_entries)}</div>'
 
     section_title = title or "Direct Recall Comparison"
 

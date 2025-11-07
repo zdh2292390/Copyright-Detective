@@ -5,6 +5,7 @@ from .comparison import (
     get_llm_completion,
     calculate_rouge_score,
     calculate_jaccard_index,
+    calculate_similarity_metrics,
     enforce_exact_char_count,
 )
 from Levenshtein import distance
@@ -247,9 +248,13 @@ def run_persuasion_probe(
     temperature: float = 0.7,
     top_p: float = 1.0,
     custom_template: Optional[str] = None,
-) -> tuple:
+) -> tuple | str:
     """
     Runs the persuasion probe, gets the LLM completion, and compares it with the ground truth.
+
+    Returns either an error string (prefixed with ``"Error"``) or a tuple containing the
+    generated text and the full similarity metrics dictionary returned by
+    :func:`calculate_similarity_metrics`.
     """
     char_count = len(ground_truth_text) if ground_truth_text else None
     prompt = get_full_prompt(
@@ -263,13 +268,10 @@ def run_persuasion_probe(
     generated_text = get_llm_completion(prompt, api_key, model_name, provider, temperature=temperature, top_p=top_p)
 
     if isinstance(generated_text, str) and generated_text.startswith("Error"):
-        return generated_text, 0, 0, 0
+        return generated_text
 
     generated_text = enforce_exact_char_count(generated_text, char_count)
 
-    # Calculate similarity scores
-    rouge_score = calculate_rouge_score(ground_truth_text, generated_text)
-    jaccard_index = calculate_jaccard_index(ground_truth_text, generated_text)
-    levenshtein_dist = distance(ground_truth_text, generated_text)
+    metrics = calculate_similarity_metrics(ground_truth_text, generated_text)
 
-    return generated_text, rouge_score, jaccard_index, levenshtein_dist
+    return generated_text, metrics

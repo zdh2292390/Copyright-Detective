@@ -470,23 +470,25 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     if isinstance(result, str) and result.startswith("Error"):
                         st.error(f"❌ {result}")
                         error_occurred = True
-                    # run_persuasion_probe returns a tuple
-                    elif isinstance(result, tuple) and isinstance(result[0], str) and result[0].startswith("Error"):
-                        st.error(f"❌ {result[0]}")
-                        error_occurred = True
 
                     if not error_occurred:
-                        generated_text, rouge_score, jaccard_index, levenshtein_dist = result
+                        generated_text, metrics = result
+                        metrics_map = metrics or {}
+                        rouge_score = float(metrics_map.get("rouge_l", 0.0) or 0.0)
+                        jaccard_index = float(metrics_map.get("jaccard_index", 0.0) or 0.0)
                         generated_text = enforce_exact_char_count(generated_text, target_char_count)
 
                         # Results section
                         st.divider()
                         st.markdown('<p class="analysis-step-label">Results</p>', unsafe_allow_html=True)
                         st.markdown("### 📊 Analysis Results")
+                        st.caption(
+                            "Metrics reported: ROUGE-1, ROUGE-L, LCS (character/word), ACS (word), Levenshtein distance, semantic similarity, MinHash similarity, and Jaccard index."
+                        )
 
                         # Highlighted alignment view
                         st.markdown("**🧠 Direct Recall Alignment**")
-                        render_direct_recall_diff(text2, generated_text, rouge_score=rouge_score, jaccard_index=jaccard_index, levenshtein_dist=levenshtein_dist)
+                        render_direct_recall_diff(text2, generated_text, metrics=metrics_map)
 
                         # Conclusion
                         if rouge_score > 0.5 or jaccard_index > 0.5:
@@ -544,21 +546,12 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                         st.error(f"❌ {result}")
                         error_occurred = True
                         break
-                    elif isinstance(result, tuple) and isinstance(result[0], str) and result[0].startswith("Error"):
-                        st.error(f"❌ {result[0]}")
-                        error_occurred = True
-                        break
-                        
+                    
                     if not error_occurred:
-                        generated_text, rouge_score, jaccard_index, levenshtein_dist = result
+                        generated_text, metrics = result
+                        metrics_map = metrics or {}
                         generated_text = enforce_exact_char_count(generated_text, target_char_count)
-                        similarity_scores.append(
-                            {
-                                "rouge": rouge_score,
-                                "jaccard": jaccard_index,
-                                "levenshtein": levenshtein_dist,
-                            }
-                        )
+                        similarity_scores.append(dict(metrics_map))
                         generated_texts.append(generated_text)
                 
                 progress_bar.progress(1.0, text="✅ All runs completed!")
@@ -566,61 +559,107 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 if similarity_scores:
                     # Display generated texts for each run
                     st.markdown('<h3 class="section-header sm">🤖 Generated Texts for Each Run</h3>', unsafe_allow_html=True)
+                    st.caption(
+                        "Each run reports ROUGE-1, ROUGE-L, LCS (character/word), ACS (word), Levenshtein distance, semantic similarity, MinHash similarity, and Jaccard index."
+                    )
                     for i, text in enumerate(generated_texts):
-                        render_direct_recall_diff(text2, text, title=f"Run {i+1}", rouge_score=similarity_scores[i]['rouge'], jaccard_index=similarity_scores[i]['jaccard'], levenshtein_dist=similarity_scores[i]['levenshtein'])
+                        metrics_for_run = similarity_scores[i] if i < len(similarity_scores) else {}
+                        render_direct_recall_diff(text2, text, title=f"Run {i+1}", metrics=metrics_for_run)
 
-                    # Calculate statistics
-                    rouge_scores = [score["rouge"] for score in similarity_scores]
-                    jaccard_scores = [score["jaccard"] for score in similarity_scores]
-                    levenshtein_scores = [score["levenshtein"] for score in similarity_scores]
+                    metrics_df = pd.DataFrame(similarity_scores).apply(pd.to_numeric, errors="coerce")
 
-                    stats = {
-                        "rouge": {
-                            "max": max(rouge_scores),
-                            "min": min(rouge_scores),
-                            "avg": sum(rouge_scores) / len(rouge_scores),
-                        },
-                        "jaccard": {
-                            "max": max(jaccard_scores),
-                            "min": min(jaccard_scores),
-                            "avg": sum(jaccard_scores) / len(jaccard_scores),
-                        },
-                        "levenshtein": {
-                            "max": max(levenshtein_scores),
-                            "min": min(levenshtein_scores),
-                            "avg": sum(levenshtein_scores) / len(levenshtein_scores),
-                        },
-                    }
+                    if not metrics_df.empty:
+                        st.markdown('<h4 class="section-header sm">📄 Run Metrics Overview</h4>', unsafe_allow_html=True)
+                        column_order = [
+                            "rouge_l",
+                            "rouge_1",
+                            "jaccard_index",
+                            "lcs_char_ratio",
+                            "lcs_char_length",
+                            "lcs_word_ratio",
+                            "lcs_word_length",
+                            "acs_word",
+                            "semantic_similarity",
+                            "minhash_similarity",
+                            "levenshtein",
+                        ]
+                        available_columns = [col for col in column_order if col in metrics_df.columns]
+                        if available_columns:
+                            st.dataframe(metrics_df[available_columns].round(4))
+                        else:
+                            st.dataframe(metrics_df.round(4))
 
-                    st.markdown("---")
-                    st.markdown('<h3 class="section-header sm">📊 Statistical Results</h3>', unsafe_allow_html=True)
-                    st.write(stats)
+                        summary_labels = [
+                            ("rouge_l", "ROUGE-L"),
+                            ("rouge_1", "ROUGE-1"),
+                            ("jaccard_index", "Jaccard"),
+                            ("lcs_char_ratio", "LCS (Character)"),
+                            ("lcs_word_ratio", "LCS (Word)"),
+                            ("acs_word", "ACS (Word)"),
+                            ("levenshtein", "Levenshtein"),
+                            ("semantic_similarity", "Semantic Similarity"),
+                            ("minhash_similarity", "MinHash Similarity"),
+                        ]
 
-                    # Plot statistical graph
-                    fig, ax = plt.subplots(1, 3, figsize=(15, 5))
+                        summary_rows = []
+                        for key, label in summary_labels:
+                            if key not in metrics_df.columns:
+                                continue
+                            series = metrics_df[key].dropna()
+                            if series.empty:
+                                continue
+                            summary_rows.append(
+                                {
+                                    "Metric": label,
+                                    "Min": float(series.min()),
+                                    "Max": float(series.max()),
+                                    "Avg": float(series.mean()),
+                                }
+                            )
 
-                    # ROUGE-L Scores
-                    ax[0].plot(rouge_scores, marker='o', label='ROUGE-L')
-                    ax[0].set_title('ROUGE-L Scores')
-                    ax[0].set_xlabel('Run')
-                    ax[0].set_ylabel('Score')
-                    ax[0].legend()
+                        st.markdown("---")
+                        st.markdown('<h3 class="section-header sm">📊 Statistical Results</h3>', unsafe_allow_html=True)
+                        if summary_rows:
+                            summary_df = pd.DataFrame(summary_rows).set_index("Metric")
+                            st.dataframe(summary_df.round(4))
+                        else:
+                            st.info("No similarity statistics could be computed for the current runs.")
 
-                    # Jaccard Index
-                    ax[1].plot(jaccard_scores, marker='o', label='Jaccard Index', color='orange')
-                    ax[1].set_title('Jaccard Index')
-                    ax[1].set_xlabel('Run')
-                    ax[1].set_ylabel('Score')
-                    ax[1].legend()
+                        plot_df = metrics_df.fillna(0.0)
+                        rouge_scores = plot_df.get("rouge_l", pd.Series([0.0] * len(plot_df))).tolist()
+                        jaccard_scores = plot_df.get("jaccard_index", pd.Series([0.0] * len(plot_df))).tolist()
+                        levenshtein_scores = plot_df.get("levenshtein", pd.Series([0.0] * len(plot_df))).tolist()
 
-                    # Levenshtein Distance
-                    ax[2].plot(levenshtein_scores, marker='o', label='Levenshtein Distance', color='green')
-                    ax[2].set_title('Levenshtein Distance')
-                    ax[2].set_xlabel('Run')
-                    ax[2].set_ylabel('Distance')
-                    ax[2].legend()
+                        fig, ax = plt.subplots(1, 3, figsize=(15, 5))
 
-                    st.pyplot(fig)
+                        ax[0].plot(rouge_scores, marker='o', label='ROUGE-L')
+                        ax[0].set_title('ROUGE-L Scores')
+                        ax[0].set_xlabel('Run')
+                        ax[0].set_ylabel('Score')
+                        ax[0].legend()
+
+                        ax[1].plot(jaccard_scores, marker='o', label='Jaccard Index', color='orange')
+                        ax[1].set_title('Jaccard Index')
+                        ax[1].set_xlabel('Run')
+                        ax[1].set_ylabel('Score')
+                        ax[1].legend()
+
+                        ax[2].plot(levenshtein_scores, marker='o', label='Levenshtein Distance', color='green')
+                        ax[2].set_title('Levenshtein Distance')
+                        ax[2].set_xlabel('Run')
+                        ax[2].set_ylabel('Distance')
+                        ax[2].legend()
+
+                        st.pyplot(fig)
+
+                        additional_cols = [
+                            column
+                            for column in ["semantic_similarity", "minhash_similarity", "acs_word", "lcs_word_ratio"]
+                            if column in plot_df.columns
+                        ]
+                        if additional_cols:
+                            st.markdown('<h4 class="section-header sm">📈 Additional Metric Trends</h4>', unsafe_allow_html=True)
+                            st.line_chart(plot_df[additional_cols])
 
                     # Output stability metrics
                     st.markdown("---")
@@ -753,7 +792,17 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         with col1:
             score_type = st.selectbox(
                 'Change Ranking Metric',
-                ["ROUGE-L", "Jaccard Index", "Levenshtein Distance"],
+                [
+                    "ROUGE-L",
+                    "ROUGE-1",
+                    "Jaccard Index",
+                    "LCS (Character)",
+                    "LCS (Word)",
+                    "ACS (Word)",
+                    "Semantic Similarity",
+                    "MinHash Similarity",
+                    "Levenshtein Distance",
+                ],
                 index=0,
                 help='Choose how to rank the most similar sections'
             )
@@ -906,9 +955,6 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                         top_p=top_p,
                         custom_template=custom_template,
                     )
-                    if isinstance(result[0], str) and result[0].startswith("Error"):
-                        st.error(f"❌ {result[0]}")
-                        return
                 else:
                     result = compare_texts(
                         upper,
@@ -922,21 +968,37 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                         continuation_method=continuation_method,
                         custom_template=custom_template,
                     )
-                    if isinstance(result, str) and result.startswith("Error"):
-                        st.error(f"❌ {result}")
-                        return
+                if isinstance(result, str) and result.startswith("Error"):
+                    st.error(f"❌ {result}")
+                    return
 
-                generated_text, rouge_score, jaccard_index, levenshtein_dist = result
-                results.append((upper, lower, generated_text, rouge_score, jaccard_index, levenshtein_dist))
+                generated_text, metrics = result
+                metrics_map = metrics or {}
+                results.append((upper, lower, generated_text, dict(metrics_map)))
                 progress_bar.progress((i + 1)/total, text=f"🔄 Processing chunk {i+1}/{total} · {continuation_method}")
 
             # Sort
-            if score_type == "ROUGE-L":
-                results.sort(key=lambda x: x[3], reverse=True)
-            elif score_type == "Jaccard Index":
-                results.sort(key=lambda x: x[4], reverse=True)
-            else:  # Levenshtein
-                results.sort(key=lambda x: x[5])
+            score_mapping = {
+                "ROUGE-L": ("rouge_l", True),
+                "ROUGE-1": ("rouge_1", True),
+                "Jaccard Index": ("jaccard_index", True),
+                "LCS (Character)": ("lcs_char_ratio", True),
+                "LCS (Word)": ("lcs_word_ratio", True),
+                "ACS (Word)": ("acs_word", True),
+                "Semantic Similarity": ("semantic_similarity", True),
+                "MinHash Similarity": ("minhash_similarity", True),
+                "Levenshtein Distance": ("levenshtein", False),
+            }
+            metric_key, descending = score_mapping.get(score_type, ("rouge_l", True))
+
+            def _sort_key(entry: Tuple[str, str, str, Dict[str, float]]) -> float:
+                metric_dict = entry[3]
+                value = metric_dict.get(metric_key)
+                if value is None:
+                    return float("-inf") if descending else float("inf")
+                return float(value)
+
+            results.sort(key=_sort_key, reverse=descending)
 
             display_limit = min(top_k, len(results)) if results else 0
             if display_limit == 0:
@@ -946,14 +1008,19 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
             st.markdown(f"#### 🏆 Top {display_limit} Most Similar Sections")
             st.caption(
                 f"Ranking by {score_type}. Showing top {display_limit} of {len(results)} chunks. "
-                f"Generation strategy: {continuation_method} · Temperature {temperature:.2f} · Top-P {top_p:.2f}"
+                f"Generation strategy: {continuation_method} · Temperature {temperature:.2f} · Top-P {top_p:.2f}.\n"
+                "Metrics tracked: ROUGE-1, ROUGE-L, LCS (character/word), ACS (word), Levenshtein distance, semantic similarity, MinHash similarity, and Jaccard index."
             )
-            for rank, (upper, lower, gen, r, j, l) in enumerate(results[:display_limit], start=1):
+            for rank, (upper, lower, gen, metric_values) in enumerate(results[:display_limit], start=1):
+                metrics_for_display = metric_values or {}
+                rouge_l = float(metrics_for_display.get("rouge_l", 0.0) or 0.0)
+                jaccard = float(metrics_for_display.get("jaccard_index", 0.0) or 0.0)
+                levenshtein_val = int(metrics_for_display.get("levenshtein", 0.0) or 0.0)
                 with render_streamlit_accordion(
                     f"Rank {rank}",
                     key=f"pdf_top_section_{rank}",
                     expanded=False,
-                    help=f"ROUGE-L {r:.3f} · Jaccard {j:.3f} · Lev {l}",
+                    help=f"ROUGE-L {rouge_l:.3f} · Jaccard {jaccard:.3f} · Lev {levenshtein_val}",
                 ):
                     st.markdown("**📝 Prefix Context**")
                     st.markdown(
@@ -981,9 +1048,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                         lower,
                         gen,
                         title="Ground Truth vs. Generated Output",
-                        rouge_score=r,
-                        jaccard_index=j,
-                        levenshtein_dist=l,
+                        metrics=metrics_for_display,
                     )
 
             progress_bar.progress(1.0, text=f"✅ Completed analysis with {model_choice}. Processed {total} chunks.")
@@ -2335,8 +2400,18 @@ def render_jailbreak_persuasion_probe_section(api_key, model_choice, provider):
                     chunk_size=chunk_size,
                 )
 
-                if isinstance(result[0], str) and result[0].startswith("Error"):
-                    st.error(f"❌ {result[0]}")
+                if isinstance(result, str) and result.startswith("Error"):
+                    st.error(f"❌ {result}")
+                else:
+                    generated_text, metrics = result
+                    metrics_map = metrics or {}
+                    st.success("✅ Probe completed. Review the alignment below.")
+                    render_direct_recall_diff(
+                        ground_truth_probe,
+                        generated_text,
+                        title="Ground Truth vs. Probe Output",
+                        metrics=metrics_map,
+                    )
 
 def render_footer():
     """Renders a footer section."""
