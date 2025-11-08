@@ -67,6 +67,9 @@ CONTINUATION_STRATEGIES = [
     "Creative Writing Exercise",
     "Translation and Back-Translation",
     "Tom and Jerry Game",
+    "literal.format1",
+    "literal.format2",
+    "literal.format3",
     "Custom Prompt",
 ]
 
@@ -254,6 +257,13 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             key="continuation_method_selector",
         )
 
+        prompt_mode = st.selectbox(
+            "Choose a prompt mode:",
+            ["Zero-Shot", "Few-Shot"],
+            help="Select 'Zero-Shot' for no examples or 'Few-Shot' for including example demonstrations in the prompt.",
+            key="prompt_mode_selector",
+        )
+
         custom_continuation_prompt: Optional[str] = None
         if continuation_method == "Custom Prompt":
             custom_continuation_prompt = st.text_area(
@@ -278,6 +288,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             continuation_method=continuation_method,
             char_count=char_count_preview,
             custom_template=custom_continuation_prompt if continuation_method == "Custom Prompt" else None,
+            mode=prompt_mode,
         )
         st.markdown(
             "ℹ️ The length of the generated text will be adjusted to match the character count of your **Ground Truth** input."
@@ -425,6 +436,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     if continuation_method == "Custom Prompt"
                     else None
                 )
+            prompt_mode = st.session_state.get("prompt_mode_selector", "Zero-Shot")
             target_char_count = len(text2)
             chunk_size = len(text2.split())
 
@@ -449,6 +461,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                             temperature=temperature,
                             top_p=top_p,
                             custom_template=custom_template,
+                            mode=prompt_mode,
                         )
                     else:
                         result = compare_texts(
@@ -463,6 +476,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                             top_p=top_p,
                             continuation_method=continuation_method,
                             custom_template=custom_template,
+                            mode=prompt_mode,
                         )
                     
                     # Handle potential errors from both functions
@@ -524,6 +538,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                             temperature=temperature,
                             top_p=top_p,
                             custom_template=custom_template,
+                            mode=prompt_mode,
                         )
                     else:
                         result = compare_texts(
@@ -538,6 +553,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                             top_p=top_p,
                             continuation_method=continuation_method,
                             custom_template=custom_template,
+                            mode=prompt_mode,
                         )
 
                     # Handle potential errors from both functions

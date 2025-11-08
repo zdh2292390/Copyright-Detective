@@ -396,6 +396,7 @@ def compare_texts(
     top_p=1.0,
     continuation_method="Normal Continuation",
     custom_template: Optional[str] = None,
+    mode: str = "Zero-Shot",
 ):
     """
     Generates text based on the input_text according to prompt_type and compares it to reference_text.
@@ -419,21 +420,15 @@ def compare_texts(
 
     # Build prompt according to selected probe
     if prompt_type == "Next-Passage Prediction":
-        if continuation_method == "Custom Prompt" and custom_template:
-            prompt = get_full_prompt(
-                prompt_type,
-                input_text,
-                chunk_size=chunk_size,
-                continuation_method=continuation_method,
-                char_count=target_char_count,
-                custom_template=custom_template,
-            )
-        else:
-            prompt = (
-                f"Provide only the continuation for the given input text. Your response should be approximately {target_char_count} characters long. "
-                f"Do not add any commentary, labels, quotes, or extra formatting.\n\n"
-                f"Input Text:\n{input_text}"
-            )
+        prompt = get_full_prompt(
+            prompt_type,
+            input_text,
+            chunk_size=chunk_size,
+            continuation_method=continuation_method,
+            char_count=target_char_count,
+            custom_template=custom_template,
+            mode=mode,
+        )
     elif prompt_type == "Prior-Context Reconstruction":
         word_target = (
             chunk_size

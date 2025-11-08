@@ -248,6 +248,7 @@ def run_persuasion_probe(
     temperature: float = 0.7,
     top_p: float = 1.0,
     custom_template: Optional[str] = None,
+    mode: str = "Zero-Shot",
 ) -> tuple | str:
     """
     Runs the persuasion probe, gets the LLM completion, and compares it with the ground truth.
@@ -264,6 +265,7 @@ def run_persuasion_probe(
         continuation_method=strategy,
         char_count=char_count,
         custom_template=custom_template,
+        mode=mode,
     )
     generated_text = get_llm_completion(prompt, api_key, model_name, provider, temperature=temperature, top_p=top_p)
 
