@@ -210,7 +210,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
 
     st.markdown('<p class="analysis-step-label">Step 1 · Choose recall framing</p>', unsafe_allow_html=True)
     prompt_type = st.selectbox(
-        "🎛️ Choose the Prompt Type:",
+        "🎛️ Choose the Recall Type:",
         [
             "Next-Passage Prediction",
             "Prior-Context Reconstruction",
@@ -251,14 +251,14 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         )
         
         continuation_method = st.selectbox(
-            "Choose a continuation method:",
+            "Choose a prompting method:",
             CONTINUATION_STRATEGIES,
             help="Select 'Normal Continuation' for a direct prompt or a persuasion strategy to frame the request differently.",
             key="continuation_method_selector",
         )
 
         prompt_mode = st.selectbox(
-            "Choose a prompt mode:",
+            "choose zero-shot/few-shot",
             ["Zero-Shot", "Few-Shot"],
             help="Select 'Zero-Shot' for no examples or 'Few-Shot' for including example demonstrations in the prompt.",
             key="prompt_mode_selector",
@@ -301,7 +301,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             "_Prior-Context Reconstruction: Provide the continuation or subsequent passage and ask the model to recreate the most likely preceding context. This helps reveal whether the model can recover earlier text from memory._"
         )
         preceding_method = st.selectbox(
-            "Choose a continuation method:",
+            "Choose a prompting method:",
             CONTINUATION_STRATEGIES,
             help="Select a reconstruction framing. Each strategy nudges the model toward recreating the missing preceding context.",
             key="preceding_method_selector",
@@ -972,7 +972,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
             )
         with config_col2:
             continuation_method = st.selectbox(
-                'Choose a continuation method',
+                'Choose a prompting method',
                 CONTINUATION_STRATEGIES,
                 index=0,
                 help='Pick how the model should be nudged when generating chunk continuations. "Normal Continuation" keeps the default behaviour.',
