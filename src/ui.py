@@ -271,6 +271,14 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         }
     }
 
+    # Adjust examples based on prompt type for Prior-Context Reconstruction
+    adjusted_examples = {}
+    for key, val in examples.items():
+        if prompt_type == "Prior-Context Reconstruction":
+            adjusted_examples[key] = {"input": val["ground_truth"], "ground_truth": val["input"]}
+        else:
+            adjusted_examples[key] = val
+
     if input_method == "Custom Input":
         col1, col2 = st.columns(2)
         with col1:
@@ -290,7 +298,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 label_visibility="collapsed",
             )
     else:
-        example = examples[input_method]
+        example = adjusted_examples[input_method]
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("**Input Text**")
