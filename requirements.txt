@@ -9,10 +9,8 @@ ghostscript
 requests
 anthropic
 google-generativeai
-representational-analysis
 matplotlib
 torch==2.0.1
 transformers==4.35.0
 scikit-learn
-representational-analysis
 accelerate
