@@ -137,11 +137,11 @@ def _compute_minhash_similarity(text1: str, text2: str) -> float:
     return matches / _MINHASH_PERMUTATIONS
 
 
-def compute_direct_recall_alignment(
+def compute_direct_recall_overlap(
     reference_text: str,
     candidate_text: str,
 ) -> Dict[str, object]:
-    """Compute token-level alignment between ground truth and generated text.
+    """Compute token-level overlap between ground truth and generated text.
 
     Returns a mapping containing token sequences for both texts with highlight labels
     and aggregate counts for match/miss/extra tokens. Whitespace-only tokens are

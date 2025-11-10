@@ -11,7 +11,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from src.copyright_detective.comparison import compute_direct_recall_alignment, DiffToken
+from src.copyright_detective.comparison import compute_direct_recall_overlap, DiffToken
 
 
 _COLLAPSIBLE_COMPONENT_STYLE = """
@@ -352,13 +352,13 @@ def render_direct_recall_diff(
 ) -> Dict[str, int]:
     """Render a side-by-side comparison highlighting token-level matches and errors."""
 
-    alignment = compute_direct_recall_alignment(ground_truth or "", generated_text or "")
-    ground_html = _build_diff_html(alignment["ground_tokens"])
-    generated_html = _build_diff_html(alignment["generated_tokens"])
-    counts = alignment["counts"]
+    overlap = compute_direct_recall_overlap(ground_truth or "", generated_text or "")
+    ground_html = _build_diff_html(overlap["ground_tokens"])
+    generated_html = _build_diff_html(overlap["generated_tokens"])
+    counts = overlap["counts"]
 
-    ground_total = alignment["ground_non_whitespace"] or 0
-    generated_total = alignment["generated_non_whitespace"] or 0
+    ground_total = overlap["ground_non_whitespace"] or 0
+    generated_total = overlap["generated_non_whitespace"] or 0
     recall_pct = (
         f"{(counts['match'] / ground_total) * 100:.1f}%"
         if ground_total

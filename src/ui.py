@@ -80,7 +80,7 @@ def render_header():
         """
         <div class="app-header">
             <div class="title">🕵️‍♂️ Copyright Detective</div>
-            <div class="subtitle">Analyze potential text copyright infringement in LLM application</div>
+            <div class="subtitle" style="font-size: 1.1em;">Analyze and find evidence for potential text copyright infringement in LLM application</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -169,7 +169,7 @@ def render_snippet_to_document_page(api_key, model_choice, provider):
 
     st.markdown("### 🔎 Direct Recall Test")
     st.markdown(
-        "Investigate potential copyright issues from a single excerpt through to an entire document."
+        "Probe AI models for copyright infringement by testing recall of text excerpts. Analyze snippets or documents using various strategies and compare outputs against ground truth with similarity metrics."
     )
 
     snippet_tab, pdf_tab = st.tabs([
@@ -201,7 +201,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             <ul class=\"analysis-callout__list\">
                 <li>Provide an input snippet and the expected ground-truth passage.</li>
                 <li>Select a prompting strategy to probe potential memorization.</li>
-                <li>Run inference and inspect alignment metrics with side-by-side diffs.</li>
+                <li>Run inference and inspect overlap metrics with side-by-side diffs.</li>
             </ul>
         </div>
         """,
@@ -413,7 +413,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         width='stretch',
         key="run_snippet_analysis_button",
     )
-    st.caption("Provide both snippets and an API key, then launch the run to view alignment diagnostics.")
+    st.caption("Provide both snippets and an API key, then launch the run to view overlap diagnostics.")
 
     if run_analysis:
         if not api_key:
@@ -500,8 +500,8 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                             "Metrics reported: ROUGE-1, ROUGE-L, LCS (character/word), ACS (word), Levenshtein distance, semantic similarity, MinHash similarity, and Jaccard index."
                         )
 
-                        # Highlighted alignment view
-                        st.markdown("**🧠 Direct Recall Alignment**")
+                        # Highlighted overlap view
+                        st.markdown("**🧠 Direct Recall Overlap**")
                         render_direct_recall_diff(text2, generated_text, metrics=metrics_map)
 
                         # Conclusion
@@ -949,7 +949,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                     """,
                     unsafe_allow_html=True,
                 )
-                st.markdown("**🧠 Direct Recall Alignment**")
+                st.markdown("**🧠 Direct Recall Overlap**")
                 render_direct_recall_diff(
                     lower,
                     gen,
@@ -2518,7 +2518,7 @@ def render_jailbreak_persuasion_probe_section(api_key, model_choice, provider):
                 else:
                     generated_text, metrics = result
                     metrics_map = metrics or {}
-                    st.success("✅ Probe completed. Review the alignment below.")
+                    st.success("✅ Probe completed. Review the overlap below.")
                     render_direct_recall_diff(
                         ground_truth_probe,
                         generated_text,
