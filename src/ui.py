@@ -250,8 +250,8 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             "ground_truth": "They were the last people you’d expect to be involved in anything strange or mysterious, because they just didn’t hold with such nonsense."
         },
         "Example: Pride and Prejudice": {
-            "input": "It is a truth universally acknowledged, that a single man in possession of a good fortune, must be in want of a wife.",
-            "ground_truth": "However little known the feelings or views of such a man may be on his first entering a neighbourhood, this truth is so well fixed in the minds of the surrounding families that he is considered as the rightful property of some one or other of their daughters."
+            "input": "It is a truth universally acknowledged, that a single man in possession of a good fortune, must be in want of a wife. However little known the feelings or views of such a man may be on his",
+            "ground_truth": "first entering a neighbourhood, this truth is so well fixed in the minds of the surrounding families that he is considered as the rightful property of some one or other of their daughters."
         },
         "Example: 1984": {
             "input": "It was a bright cold day in April, and the clocks were striking thirteen. Winston Smith, his chin nuzzled into his breast in an effort to escape the vile wind,",
