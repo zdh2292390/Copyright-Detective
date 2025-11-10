@@ -246,28 +246,28 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             "ground_truth": "it was the age of foolishness, it was the epoch of belief,"
         },
         "Example: Harry Potter": {
-            "input": "Mr. and Mrs. Dursley, of number four, Privet Drive, were proud to say that they were perfectly normal,",
-            "ground_truth": "thank you very much. They were the last people you'd expect to be involved in anything strange or mysterious,"
+            "input": "Mr and Mrs Dursley, of number four, Privet Drive, were proud to say that they were perfectly normal, thank you very much.",
+            "ground_truth": "They were the last people you’d expect to be involved in anything strange or mysterious, because they just didn’t hold with such nonsense."
         },
         "Example: Pride and Prejudice": {
-            "input": "It is a truth universally acknowledged, that a single man in possession of a good fortune,",
-            "ground_truth": "must be in want of a wife. However little known the feelings or views of such a man may be on his first entering a neighbourhood,"
+            "input": "It is a truth universally acknowledged, that a single man in possession of a good fortune, must be in want of a wife.",
+            "ground_truth": "However little known the feelings or views of such a man may be on his first entering a neighbourhood, this truth is so well fixed in the minds of the surrounding families that he is considered as the rightful property of some one or other of their daughters."
         },
         "Example: 1984": {
             "input": "It was a bright cold day in April, and the clocks were striking thirteen. Winston Smith, his chin nuzzled into his breast in an effort to escape the vile wind,",
             "ground_truth": "slipped quickly through the glass doors of Victory Mansions, though not quickly enough to prevent a swirl of gritty dust from entering along with him."
         },
         "Example: To Kill a Mockingbird": {
-            "input": "When he was nearly thirteen, my brother Jem got his arm badly broken at the elbow. When it healed, and Jem's fears of never being able to play football were assuaged,",
-            "ground_truth": "he was seldom self-conscious about his injury. His left arm was somewhat shorter than his right; when he stood or walked, the back of his hand was at right angles to his body,"
+            "input": "When he was nearly thirteen, my brother Jem got his arm badly broken at the elbow. When it healed, and Jem's fears of never being able to play football were assuaged, he was seldom self-conscious about his injury.",
+            "ground_truth": "His left arm was somewhat shorter than his right; when he stood or walked, the back of his hand was at right angles to his body, his thumb parallel to his thigh. He couldn't have cared less, so long as he could pass and punt."
         },
         "Example: The Great Gatsby": {
-            "input": "In my younger and more vulnerable years my father gave me some advice that I've been turning over in my mind ever since. Whenever you feel like criticizing anyone,",
-            "ground_truth": "he told me, just remember that all the people in this world haven't had the advantages that you've had. He didn't say any more,"
+            "input": "Only Gatsby, the man who gives his name to this book, was exempt from my reaction—Gatsby, who represented everything for which I have an unaffected scorn. If personality is an unbroken series of successful gestures,",
+            "ground_truth": "then there was something gorgeous about him, some heightened sensitivity to the promises of life, as if he were related to one of those intricate machines that register earthquakes ten thousand miles away."
         },
         "Example: The Catcher in the Rye": {
-            "input": "If you really want to hear about it, the first thing you'll probably want to know is where I was born, and what my lousy childhood was like, and how my parents were occupied and all before they had me, and all that David Copperfield kind of crap, but I don't feel like going into it,",
-            "ground_truth": "if you want to know the truth. In the first place, that stuff bores me, and in the second place, my parents would have about two hemorrhages apiece if I told anything pretty personal about them."
+            "input": "If you really want to hear about it, the first thing you'll probably want to know is where I was born, and what my lousy childhood was like,",
+            "ground_truth": "and how my parents were occupied and all before they had me, and all that David Copperfield kind of crap, but I don't feel like going into it, if you want to know the truth."
         }
     }
 
