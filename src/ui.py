@@ -234,23 +234,80 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         )
 
     st.markdown('<p class="analysis-step-label">Step 2 · Provide comparison texts</p>', unsafe_allow_html=True)
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("**Input Text**")
-        text1 = st.text_area(
-            "Input Text",
-            height=150,
-            placeholder="Enter the input snippet (e.g., a previous sentence, a continuation, or an excerpt). The role of this field depends on the selected prompt type.",
-            label_visibility="collapsed",
-        )
-    with col2:
-        st.markdown("**Ground Truth**")
-        text2 = st.text_area(
-            "Ground Truth",
-            height=150,
-            placeholder="Enter the ground truth text or expected target to compare against (e.g., the known reference or target continuation). Leave blank if not applicable.",
-            label_visibility="collapsed",
-        )
+    input_method = st.selectbox(
+        "Select input content:",
+        ["Custom Input", "Example: A Tale of Two Cities", "Example: Harry Potter", "Example: Pride and Prejudice", "Example: 1984", "Example: To Kill a Mockingbird", "Example: The Great Gatsby", "Example: The Catcher in the Rye"],
+        help="Select custom input or choose from examples."
+    )
+
+    examples = {
+        "Example: A Tale of Two Cities": {
+            "input": "It was the best of times, it was the worst of times,",
+            "ground_truth": "it was the age of wisdom,"
+        },
+        "Example: Harry Potter": {
+            "input": "Mr. and Mrs. Dursley, of number four, Privet Drive, were proud to say",
+            "ground_truth": "that they were perfectly normal, thank you very much."
+        },
+        "Example: Pride and Prejudice": {
+            "input": "It is a truth universally acknowledged, that a single man in possession",
+            "ground_truth": "of a good fortune, must be in want of a wife."
+        },
+        "Example: 1984": {
+            "input": "It was a bright cold day in April, and the clocks were striking thirteen. Winston Smith,",
+            "ground_truth": "his chin nuzzled into his breast in an effort to escape the vile wind."
+        },
+        "Example: To Kill a Mockingbird": {
+            "input": "When he was nearly thirteen, my brother Jem got his arm badly broken at the elbow. When it healed,",
+            "ground_truth": "and Jem's fears of never being able to play football were assuaged."
+        },
+        "Example: The Great Gatsby": {
+            "input": "In my younger and more vulnerable years my father gave me some advice that I've been turning over in my mind ever since. Whenever you feel like criticizing anyone,",
+            "ground_truth": "he told me, just remember that all the people in this world haven't had the advantages that you've had."
+        },
+        "Example: The Catcher in the Rye": {
+            "input": "If you really want to hear about it, the first thing you'll probably want to know is where I was born, and what my lousy childhood was like, and how my parents were occupied and all before they had me, and all that David Copperfield kind of crap, but I don't feel like going into it,",
+            "ground_truth": "if you want to know the truth. In the first place, that stuff bores me."
+        }
+    }
+
+    if input_method == "Custom Input":
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**Input Text**")
+            text1 = st.text_area(
+                "Input Text",
+                height=150,
+                placeholder="Enter the input snippet (e.g., a previous sentence, a continuation, or an excerpt). The role of this field depends on the selected prompt type.",
+                label_visibility="collapsed",
+            )
+        with col2:
+            st.markdown("**Ground Truth**")
+            text2 = st.text_area(
+                "Ground Truth",
+                height=150,
+                placeholder="Enter the ground truth text or expected target to compare against (e.g., the known reference or target continuation). Leave blank if not applicable.",
+                label_visibility="collapsed",
+            )
+    else:
+        example = examples[input_method]
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**Input Text**")
+            text1 = st.text_area(
+                "Input Text",
+                value=example["input"],
+                height=150,
+                label_visibility="collapsed",
+            )
+        with col2:
+            st.markdown("**Ground Truth**")
+            text2 = st.text_area(
+                "Ground Truth",
+                value=example["ground_truth"],
+                height=150,
+                label_visibility="collapsed",
+            )
 
     input_word_count = len(text1.split()) if text1 else 0
     ground_word_count = len(text2.split()) if text2 else 0
