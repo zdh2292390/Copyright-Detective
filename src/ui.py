@@ -218,7 +218,20 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         ],
         help="Select the type of prompt to guide the Text Detection. (Choose only; typing custom values is not allowed.)",
     )
-    st.caption("This selection controls how the model will be instructed during comparison.")
+
+    # Explanatory notes for each prompt type
+    if prompt_type == "Next-Passage Prediction":
+        st.markdown(
+            "_Next-Passage Prediction: Provide the current excerpt and ask the model to generate the following passage. This surfaces whether the model recalls memorized continuations from source texts._"
+        )
+    elif prompt_type == "Prior-Context Reconstruction":
+        st.markdown(
+            "_Prior-Context Reconstruction: Provide the continuation or subsequent passage and ask the model to recreate the most likely preceding context. This helps reveal whether the model can recover earlier text from memory._"
+        )
+    elif prompt_type == "Title Prediction":
+        st.markdown(
+            "_Title Prediction: Based on the provided snippet, ask the model to infer the most likely title or attribution for the work. This can surface potential source identification signals._"
+        )
 
     st.markdown('<p class="analysis-step-label">Step 2 · Provide comparison texts</p>', unsafe_allow_html=True)
     col1, col2 = st.columns(2)
@@ -246,23 +259,22 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
 
     # Explanatory notes for each prompt type
     if prompt_type == "Next-Passage Prediction":
-        st.markdown(
-            "_Next-Passage Prediction: Provide the current excerpt and ask the model to generate the following passage. This surfaces whether the model recalls memorized continuations from source texts._"
-        )
         
-        continuation_method = st.selectbox(
-            "Choose a prompting method:",
-            CONTINUATION_STRATEGIES,
-            help="Select 'Normal Continuation' for a direct prompt or a persuasion strategy to frame the request differently.",
-            key="continuation_method_selector",
-        )
-
-        prompt_mode = st.selectbox(
-            "choose zero-shot/few-shot",
-            ["Zero-Shot", "Few-Shot"],
-            help="Select 'Zero-Shot' for no examples or 'Few-Shot' for including example demonstrations in the prompt.",
-            key="prompt_mode_selector",
-        )
+        col1, col2 = st.columns(2)
+        with col1:
+            continuation_method = st.selectbox(
+                "Choose a Prompting Method:",
+                CONTINUATION_STRATEGIES,
+                help="Select 'Normal Continuation' for a direct prompt or a persuasion strategy to frame the request differently.",
+                key="continuation_method_selector",
+            )
+        with col2:
+            prompt_mode = st.selectbox(
+                "Choose Zero-Shot/Few-Shot:",
+                ["Zero-Shot", "Few-Shot"],
+                help="Select 'Zero-Shot' for no examples or 'Few-Shot' for including example demonstrations in the prompt.",
+                key="prompt_mode_selector",
+            )
 
         custom_continuation_prompt: Optional[str] = None
         if continuation_method == "Custom Prompt":
@@ -297,9 +309,6 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         render_prompt_preview(prompt_to_preview)
         
     elif prompt_type == "Prior-Context Reconstruction":
-        st.markdown(
-            "_Prior-Context Reconstruction: Provide the continuation or subsequent passage and ask the model to recreate the most likely preceding context. This helps reveal whether the model can recover earlier text from memory._"
-        )
         preceding_method = st.selectbox(
             "Choose a prompting method:",
             CONTINUATION_STRATEGIES,
@@ -336,9 +345,6 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         render_prompt_preview(prompt_to_preview)
 
     elif prompt_type == "Title Prediction":
-        st.markdown(
-            "_Title Prediction: Based on the provided snippet, ask the model to infer the most likely title or attribution for the work. This can surface potential source identification signals._"
-        )
         chunk_size_preview = len(text2.split()) if text2 else None
         char_count_preview = len(text2) if text2 else None
         prompt_to_preview = get_full_prompt(
@@ -368,44 +374,38 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     st.divider()
     st.markdown('<p class="analysis-step-label">Step 3 · Configure generation</p>', unsafe_allow_html=True)
 
-    with render_streamlit_accordion(
-        "⚙️ Generation controls",
-        key="dr_generation_controls",
-        expanded=True,
-        help="Tune run counts and sampling before launching the recall probe.",
-    ):
-        st.markdown(
-            '<p class="analysis-step-caption">Adjust the number of inference passes and how exploratory the sampling should be.</p>',
-            unsafe_allow_html=True,
+    st.markdown(
+        '<p class="analysis-step-caption">Adjust the number of inference passes and how exploratory the sampling should be.</p>',
+        unsafe_allow_html=True,
+    )
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        inference_runs = st.number_input(
+            "Number of Inference Runs",
+            min_value=1,
+            max_value=100,
+            value=1,
+            step=1,
+            help="Specify how many times to run the inference for statistical analysis.",
         )
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            inference_runs = st.number_input(
-                "Number of Inference Runs",
-                min_value=1,
-                max_value=100,
-                value=1,
-                step=1,
-                help="Specify how many times to run the inference for statistical analysis.",
-            )
-        with col2:
-            temperature = st.slider(
-                "Temperature",
-                min_value=0.0,
-                max_value=2.0,
-                value=0.7,
-                step=0.01,
-                help="Controls randomness. Lower values make the model more deterministic.",
-            )
-        with col3:
-            top_p = st.slider(
-                "Top-P",
-                min_value=0.0,
-                max_value=1.0,
-                value=1.0,
-                step=0.01,
-                help="Controls diversity via nucleus sampling. 0.5 means half of all likelihood-weighted options are considered.",
-            )
+    with col2:
+        temperature = st.slider(
+            "Temperature",
+            min_value=0.0,
+            max_value=2.0,
+            value=0.7,
+            step=0.01,
+            help="Controls randomness. Lower values make the model more deterministic.",
+        )
+    with col3:
+        top_p = st.slider(
+            "Top-P",
+            min_value=0.0,
+            max_value=1.0,
+            value=1.0,
+            step=0.01,
+            help="Controls diversity via nucleus sampling. 0.5 means half of all likelihood-weighted options are considered.",
+        )
 
     st.markdown('<p class="analysis-step-label">Step 4 · Launch comparison</p>', unsafe_allow_html=True)
     run_analysis = st.button(
