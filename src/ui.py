@@ -558,7 +558,8 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                         metrics_map = metrics or {}
                         rouge_score = float(metrics_map.get("rouge_l", 0.0) or 0.0)
                         jaccard_index = float(metrics_map.get("jaccard_index", 0.0) or 0.0)
-                        generated_text = enforce_exact_char_count(generated_text, target_char_count)
+                        if prompt_type != "Title Prediction":
+                            generated_text = enforce_exact_char_count(generated_text, target_char_count)
 
                         # Results section
                         st.divider()
@@ -634,7 +635,8 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     if not error_occurred:
                         generated_text, metrics = result
                         metrics_map = metrics or {}
-                        generated_text = enforce_exact_char_count(generated_text, target_char_count)
+                        if prompt_type != "Title Prediction":
+                            generated_text = enforce_exact_char_count(generated_text, target_char_count)
                         similarity_scores.append(dict(metrics_map))
                         generated_texts.append(generated_text)
                 
