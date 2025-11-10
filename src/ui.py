@@ -271,11 +271,14 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         }
     }
 
-    # Adjust examples based on prompt type for Prior-Context Reconstruction
+    # Adjust examples based on prompt type for Prior-Context Reconstruction and Title Prediction
     adjusted_examples = {}
     for key, val in examples.items():
         if prompt_type == "Prior-Context Reconstruction":
             adjusted_examples[key] = {"input": val["ground_truth"], "ground_truth": val["input"]}
+        elif prompt_type == "Title Prediction":
+            title = key.split(": ", 1)[1] if ": " in key else key
+            adjusted_examples[key] = {"input": val["input"], "ground_truth": title}
         else:
             adjusted_examples[key] = val
 
