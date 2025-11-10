@@ -14,7 +14,7 @@ Open your terminal and run the following command in the project's root directory
 conda create --name copyright-detective python=3.12 -y
 ```
 
-This will create a new Conda environment with Python 3.9.
+This will create a new Conda environment with Python 3.12.
 
 ## 2. Activate the Conda Environment
 

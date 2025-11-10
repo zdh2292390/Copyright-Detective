@@ -957,13 +957,13 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                     metrics=metrics_for_display,
                 )
 
-    uploaded_file = st.file_uploader("📎 Choose a PDF file", type="pdf", help="Select a PDF document to analyze")
+    uploaded_file = st.file_uploader("📎 Choose a PDF file:", type="pdf", help="Select a PDF document to analyze")
     if uploaded_file is not None:
         st.markdown('<h3 class="section-header sm">⚙️ Analysis Configuration</h3>', unsafe_allow_html=True)
         config_col1, config_col2 = st.columns(2)
         with config_col1:
             chunk_size = st.number_input(
-                'Change Chunk Size (words)',
+                'Change Chunk Size (words):',
                 min_value=50,
                 max_value=2000,
                 value=200,
@@ -972,7 +972,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
             )
         with config_col2:
             continuation_method = st.selectbox(
-                'Choose a prompting method',
+                'Choose a Prompting Method:',
                 CONTINUATION_STRATEGIES,
                 index=0,
                 help='Pick how the model should be nudged when generating chunk continuations. "Normal Continuation" keeps the default behaviour.',
