@@ -1320,9 +1320,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     reference_text = st.session_state.get("reference_text", "")
     reference_excerpt = reference_text.strip() if reference_text else ""
 
-    if not api_key or not model_choice:
-        st.info("Enter an API key and choose a model in the sidebar to run live evaluations.")
-
     st.divider()
     st.markdown("### 🧪 Evaluation Experiments")
     st.markdown(
