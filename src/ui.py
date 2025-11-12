@@ -88,6 +88,50 @@ QA_ICL_SESSION_KEY = "qa_icl_examples"
 QA_MUSE_SAMPLE_KEY_PREFIX = "qa_muse_sample_indices"
 QA_EVAL_QUEUE_KEY = "qa_eval_examples"
 
+# Predefined QA examples for few-shot selection
+PREDEFINED_QA_EXAMPLES = [
+    {
+        "question": "What is the capital of France?",
+        "answer": "Paris"
+    },
+    {
+        "question": "Who wrote Romeo and Juliet?",
+        "answer": "William Shakespeare"
+    },
+    {
+        "question": "What is the largest planet in our solar system?",
+        "answer": "Jupiter"
+    },
+    {
+        "question": "What is the chemical symbol for water?",
+        "answer": "H2O"
+    },
+    {
+        "question": "In what year did World War II end?",
+        "answer": "1945"
+    },
+    {
+        "question": "What is the square root of 16?",
+        "answer": "4"
+    },
+    {
+        "question": "Who painted the Mona Lisa?",
+        "answer": "Leonardo da Vinci"
+    },
+    {
+        "question": "What is the longest river in the world?",
+        "answer": "The Nile River"
+    },
+    {
+        "question": "What is the currency used in Japan?",
+        "answer": "Japanese Yen"
+    },
+    {
+        "question": "What is the boiling point of water in Celsius?",
+        "answer": "100 degrees Celsius"
+    }
+]
+
 
 def _resolve_dataset_column(columns: List[str], candidates: List[str], fallback_keyword: str) -> Optional[str]:
     lowered_map = {column.lower(): column for column in columns}
@@ -172,6 +216,8 @@ def ensure_qa_session_defaults() -> None:
     st.session_state.setdefault("qa_knowmem_device", "cpu")
     st.session_state.setdefault("qa_knowmem_max_new_tokens", 64)
     st.session_state.setdefault("qa_eval_scope_radio", "Current QA pair")
+    st.session_state.setdefault("qa_prompt_mode", "Zero-Shot")
+    st.session_state.setdefault("qa_selected_few_shot_examples", [])
 
 
 KNOWMEM_STOP_SEQUENCES: List[str] = ["\n\n", "\nQuestion", "Question:"]
@@ -329,9 +375,15 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
         logger = RougeEvalLogger()
         general_prompt: str = ""
 
-        # Few-shot prompting
-        for question, answer in zip(icl_qs, icl_as):
-            general_prompt += f"Question: {question}\nAnswer: {answer}\n\n"
+        # Determine if few-shot based on mode
+        qa_prompt_mode = st.session_state.get("qa_prompt_mode", "Zero-Shot")
+        if qa_prompt_mode == "Few-Shot":
+            # Use all predefined examples for few-shot prompting
+            few_shot_examples = PREDEFINED_QA_EXAMPLES
+            
+            # Build few-shot prompt with all examples
+            for example in few_shot_examples:
+                general_prompt += f"Question: {example['question']}\nAnswer: {example['answer']}\n\n"
 
         progress_text.text("Running evaluation...")
         progress_bar.progress(0.3)
@@ -835,6 +887,17 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
 
         text1 = st.session_state[QA_INPUT_SESSION_KEY]
         text2 = st.session_state[QA_GROUND_SESSION_KEY]
+        
+        # Add zero-shot/few-shot selector
+        qa_prompt_mode = st.selectbox(
+            "Choose Zero-Shot/Few-Shot:",
+            ["Zero-Shot", "Few-Shot"],
+            index=["Zero-Shot", "Few-Shot"].index(st.session_state.get("qa_prompt_mode", "Zero-Shot")),
+            help="Select 'Zero-Shot' for no examples or 'Few-Shot' for including example demonstrations in the prompt.",
+            key="qa_prompt_mode_selector",
+        )
+        st.session_state["qa_prompt_mode"] = qa_prompt_mode
+
         render_selected_icl_examples()
         render_evaluation_queue(api_key, model_choice, provider)
 
@@ -984,7 +1047,17 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         render_prompt_preview(prompt_to_preview)
 
     elif prompt_type == "QA":
-        prompt_to_preview = f"Question: {text1}\nAnswer:"
+        # Check if few-shot mode is selected
+        qa_prompt_mode = st.session_state.get("qa_prompt_mode", "Zero-Shot")
+        if qa_prompt_mode == "Few-Shot":
+            # Build few-shot prompt preview with all predefined examples
+            prompt_to_preview = ""
+            for example in PREDEFINED_QA_EXAMPLES:
+                prompt_to_preview += f"Question: {example['question']}\nAnswer: {example['answer']}\n\n"
+            prompt_to_preview += f"Question: {text1}\nAnswer:"
+        else:
+            prompt_to_preview = f"Question: {text1}\nAnswer:"
+        
         st.markdown(
             "ℹ️ The model will generate an answer to the question and it will be compared against the ground truth answer."
         )
@@ -1079,8 +1152,20 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     f"🔄 Generating text with {model_choice} and calculating scores..."
                 ):
                     if prompt_type == "QA":
-                        # For API-based models, we need to adapt using the comparison pipeline
-                        prompt = f"Question: {text1}\nAnswer:"
+                        # Check if few-shot mode is selected for QA
+                        qa_prompt_mode = st.session_state.get("qa_prompt_mode", "Zero-Shot")
+                        if qa_prompt_mode == "Few-Shot":
+                            # Use all predefined examples for few-shot prompting
+                            few_shot_examples = PREDEFINED_QA_EXAMPLES
+                            
+                            # Build few-shot prompt with all examples
+                            general_prompt = ""
+                            for example in few_shot_examples:
+                                general_prompt += f"Question: {example['question']}\nAnswer: {example['answer']}\n\n"
+                            
+                            prompt = general_prompt + f"Question: {text1}\nAnswer:"
+                        else:
+                            prompt = f"Question: {text1}\nAnswer:"
                         generated_text = get_llm_completion(
                             prompt,
                             api_key,
