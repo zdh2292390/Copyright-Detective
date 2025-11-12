@@ -227,6 +227,8 @@ def get_llm_completion(
     top_p=1.0,
     *,
     progress_message: Optional[str] = None,
+    max_output_tokens: Optional[int] = None,
+    stop_sequences: Optional[List[str]] = None,
 ):
     """
     Gets a completion from the specified LLM.
@@ -243,12 +245,17 @@ def get_llm_completion(
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": prompt}
             ]
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                temperature=temperature,
-                top_p=top_p,
-            )
+            request_kwargs = {
+                "model": model_name,
+                "messages": messages,
+                "temperature": temperature,
+                "top_p": top_p,
+            }
+            if max_output_tokens is not None:
+                request_kwargs["max_tokens"] = max_output_tokens
+            if stop_sequences:
+                request_kwargs["stop"] = stop_sequences
+            response = client.chat.completions.create(**request_kwargs)
             result_text = response.choices[0].message.content.strip()
         
         elif provider == "OpenRouter":
@@ -260,38 +267,51 @@ def get_llm_completion(
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": prompt}
             ]
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                temperature=temperature,
-                top_p=top_p,
-                extra_headers={
+            request_kwargs = {
+                "model": model_name,
+                "messages": messages,
+                "temperature": temperature,
+                "top_p": top_p,
+                "extra_headers": {
                     "HTTP-Referer": "http://localhost",
                     "X-Title": "Copyright Detective"
-                }
-            )
+                },
+            }
+            if max_output_tokens is not None:
+                request_kwargs["max_tokens"] = max_output_tokens
+            if stop_sequences:
+                request_kwargs["stop"] = stop_sequences
+            response = client.chat.completions.create(**request_kwargs)
             result_text = response.choices[0].message.content.strip()
         
         elif provider == "Anthropic":
             client = anthropic.Anthropic(api_key=api_key)
-            response = client.messages.create(
-                model=model_name,
-                max_tokens=1000,
-                messages=[
+            request_kwargs = {
+                "model": model_name,
+                "max_tokens": max_output_tokens or 1000,
+                "messages": [
                     {"role": "user", "content": prompt}
                 ],
-                temperature=temperature,
-                top_p=top_p,
-            )
+                "temperature": temperature,
+                "top_p": top_p,
+            }
+            if stop_sequences:
+                request_kwargs["stop_sequences"] = stop_sequences
+            response = client.messages.create(**request_kwargs)
             result_text = response.content[0].text.strip()
         
         elif provider == "Google Gemini":
             genai.configure(api_key=api_key)
             model = genai.GenerativeModel(model_name)
-            generation_config = genai.types.GenerationConfig(
-                temperature=temperature,
-                top_p=top_p,
-            )
+            generation_config_kwargs = {
+                "temperature": temperature,
+                "top_p": top_p,
+            }
+            if max_output_tokens is not None:
+                generation_config_kwargs["max_output_tokens"] = max_output_tokens
+            if stop_sequences:
+                generation_config_kwargs["stop_sequences"] = stop_sequences
+            generation_config = genai.types.GenerationConfig(**generation_config_kwargs)
             response = model.generate_content(prompt, generation_config=generation_config)
             result_text = response.text.strip()
         

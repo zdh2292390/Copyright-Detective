@@ -1,5 +1,6 @@
 import io
 import math
+import random
 import textwrap
 from collections import Counter
 from pathlib import Path
@@ -9,6 +10,7 @@ import streamlit as st
 import pandas as pd
 from Levenshtein import distance
 import html
+from datasets import load_dataset, concatenate_datasets
 from src.copyright_detective.comparison import (
     compare_texts,
     enforce_exact_char_count,
@@ -44,7 +46,8 @@ from src.copyright_detective.adversarial_prompting import (
     MutationEvaluation,
     SimilarityMetrics,
 )
-from src.prompt_utils import get_full_prompt, get_persuasion_prompt, get_persuasion_template, get_prompt_template
+from src.metrics.logger import RougeEvalLogger
+from src.prompt_utils import get_full_prompt
 from src.components import (
     render_collapsible_panel,
     render_prompt_preview,
@@ -59,6 +62,484 @@ from src.components import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+
+MUSE_DATASET_ID = "muse-bench/MUSE-Books"
+MUSE_DATASET_CONFIG = "knowmem"
+PREFERRED_QUESTION_FIELDS = [
+    "question",
+    "prompt",
+    "query",
+    "input",
+    "qa_question",
+    "question_text",
+]
+PREFERRED_ANSWER_FIELDS = [
+    "answer",
+    "response",
+    "target",
+    "qa_answer",
+    "output",
+    "completion",
+]
+
+QA_INPUT_SESSION_KEY = "qa_input_text"
+QA_GROUND_SESSION_KEY = "qa_ground_truth_text"
+QA_ICL_SESSION_KEY = "qa_icl_examples"
+QA_MUSE_SAMPLE_KEY_PREFIX = "qa_muse_sample_indices"
+QA_EVAL_QUEUE_KEY = "qa_eval_examples"
+
+
+def _resolve_dataset_column(columns: List[str], candidates: List[str], fallback_keyword: str) -> Optional[str]:
+    lowered_map = {column.lower(): column for column in columns}
+    for candidate in candidates:
+        if candidate in lowered_map:
+            return lowered_map[candidate]
+    for column in columns:
+        if fallback_keyword in column.lower():
+            return column
+    return None
+
+
+def _trigger_rerun() -> None:
+    rerun_fn = getattr(st, "rerun", None)
+    if callable(rerun_fn):
+        rerun_fn()
+        return
+    experimental_rerun = getattr(st, "experimental_rerun", None)
+    if callable(experimental_rerun):
+        experimental_rerun()
+
+
+@st.cache_data(show_spinner=False)
+def load_cached_muse_knowmem() -> pd.DataFrame:
+    dataset = load_dataset(MUSE_DATASET_ID, MUSE_DATASET_CONFIG)
+    combined_dataset = concatenate_datasets([dataset[split] for split in dataset.keys()])
+    df = combined_dataset.to_pandas().reset_index(drop=True)
+
+    question_col = _resolve_dataset_column(df.columns.tolist(), PREFERRED_QUESTION_FIELDS, "question")
+    answer_col = _resolve_dataset_column(df.columns.tolist(), PREFERRED_ANSWER_FIELDS, "answer")
+    if not question_col or not answer_col:
+        raise RuntimeError("Unable to resolve question/answer columns in the MUSE knowmem dataset.")
+
+    df = df.rename(columns={question_col: "question", answer_col: "answer"})
+    df.insert(0, "row_id", df.index.astype(int))
+    ordered_columns = [
+        "row_id",
+        "question",
+        "answer",
+        *[column for column in df.columns if column not in {"row_id", "question", "answer"}],
+    ]
+    df = df[ordered_columns]
+    return df
+
+
+def generate_muse_example_options(num_examples: int = 5) -> Tuple[List[str], Dict[str, Dict[str, str]]]:
+    """Generate random MUSE knowmem example options for dropdown.
+    
+    Returns:
+        Tuple of (options_list, option_to_example_mapping)
+    """
+    try:
+        df = load_cached_muse_knowmem()
+        if len(df) == 0:
+            return [], {}
+        
+        # Sample random examples
+        sampled_indices = random.sample(range(len(df)), min(num_examples, len(df)))
+        options = []
+        option_mapping = {}
+        for i, idx in enumerate(sampled_indices, 1):
+            row = df.iloc[idx]
+            question_preview = row["question"].split("\n", 1)[0][:50]  # First 50 chars of question
+            option_text = f"Example {i}: {question_preview}..."
+            options.append(option_text)
+            option_mapping[option_text] = {
+                "question": row["question"],
+                "answer": row["answer"]
+            }
+        return options, option_mapping
+    except Exception:
+        return [], {}
+
+
+def ensure_qa_session_defaults() -> None:
+    st.session_state.setdefault(QA_INPUT_SESSION_KEY, "")
+    st.session_state.setdefault(QA_GROUND_SESSION_KEY, "")
+    st.session_state.setdefault(QA_ICL_SESSION_KEY, [])
+    st.session_state.setdefault(QA_EVAL_QUEUE_KEY, [])
+    st.session_state.setdefault("qa_knowmem_model_path", "")
+    st.session_state.setdefault("qa_knowmem_tokenizer_path", "")
+    st.session_state.setdefault("qa_knowmem_device", "cpu")
+    st.session_state.setdefault("qa_knowmem_max_new_tokens", 64)
+    st.session_state.setdefault("qa_eval_scope_radio", "Current QA pair")
+
+
+KNOWMEM_STOP_SEQUENCES: List[str] = ["\n\n", "\nQuestion", "Question:"]
+
+
+def _trim_knowmem_completion(output: Optional[str]) -> str:
+    """Trim model output to the first answer span, mirroring reference knowmem logic."""
+
+    if not output:
+        return ""
+
+    trimmed = output
+    for marker in KNOWMEM_STOP_SEQUENCES:
+        if marker in trimmed:
+            trimmed = trimmed.split(marker, 1)[0]
+
+    # Remove leading "Answer:" if included by the model.
+    lowered = trimmed.lstrip()
+    if lowered.lower().startswith("answer:"):
+        trimmed = lowered[len("answer:"):].lstrip()
+    else:
+        trimmed = trimmed.strip()
+
+    return trimmed
+
+
+def add_icl_example_from_row(row: pd.Series) -> None:
+    ensure_qa_session_defaults()
+
+    try:
+        row_id = int(row.get("row_id", 0))
+    except (TypeError, ValueError):
+        row_id = 0
+
+    signature = row_id
+    icl_examples: List[Dict[str, Any]] = st.session_state[QA_ICL_SESSION_KEY]
+    if any(example.get("signature") == signature for example in icl_examples):
+        st.info("Example already added to in-context list.")
+        return
+
+    if len(icl_examples) >= 5:
+        st.warning("You can keep up to 5 in-context QA examples. Remove one before adding more.")
+        return
+
+    metadata = {
+        column: row[column]
+        for column in row.index
+        if column not in {"row_id", "question", "answer"} and pd.notna(row[column])
+    }
+
+    icl_examples.append(
+        {
+            "question": row["question"],
+            "answer": row["answer"],
+            "signature": signature,
+            "metadata": metadata,
+        }
+    )
+
+
+def add_eval_example_from_row(row: pd.Series) -> None:
+    ensure_qa_session_defaults()
+
+    try:
+        row_id = int(row.get("row_id", 0))
+    except (TypeError, ValueError):
+        row_id = 0
+
+    signature = row_id
+    eval_examples: List[Dict[str, Any]] = st.session_state[QA_EVAL_QUEUE_KEY]
+    if any(example.get("signature") == signature for example in eval_examples):
+        st.info("Example already present in the evaluation batch.")
+        return
+
+    metadata = {
+        column: row[column]
+        for column in row.index
+        if column not in {"row_id", "question", "answer"} and pd.notna(row[column])
+    }
+
+    eval_examples.append(
+        {
+            "question": row["question"],
+            "answer": row["answer"],
+            "signature": signature,
+            "metadata": metadata,
+        }
+    )
+
+
+def render_selected_icl_examples() -> None:
+    ensure_qa_session_defaults()
+    icl_examples: List[Dict[str, Any]] = st.session_state[QA_ICL_SESSION_KEY]
+    if not icl_examples:
+        return
+
+    st.markdown("##### 📚 Selected in-context QA examples")
+    st.caption("These examples will be prepended when running knowmem-style evaluations.")
+
+    for idx, example in enumerate(list(icl_examples)):
+        question_preview = example["question"].split("\n", 1)[0]
+        header = f"ICL {idx + 1}: {question_preview[:80]}" if question_preview else f"ICL {idx + 1}"
+        with st.expander(header, expanded=False):
+            st.markdown("**Question**")
+            st.write(example["question"])
+            st.markdown("**Answer**")
+            st.write(example["answer"])
+            metadata = example.get("metadata") or {}
+            if metadata:
+                st.markdown("**Metadata**")
+                st.json(metadata)
+            if st.button("Remove", key=f"qa_remove_icl_{idx}"):
+                icl_examples.pop(idx)
+                _trigger_rerun()
+
+    if st.button("Clear all in-context examples", key="qa_clear_all_icl"):
+        st.session_state[QA_ICL_SESSION_KEY] = []
+        _trigger_rerun()
+
+
+def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
+    """Run knowmem evaluation on the queued QA examples using API."""
+    ensure_qa_session_defaults()
+    
+    eval_examples: List[Dict[str, Any]] = st.session_state[QA_EVAL_QUEUE_KEY]
+    if not eval_examples:
+        st.warning("No examples in evaluation queue.")
+        return
+    
+    if not api_key or not model_choice:
+        st.error("Please configure API key and model in the sidebar.")
+        return
+    
+    # Get ICL examples
+    icl_examples: List[Dict[str, Any]] = st.session_state[QA_ICL_SESSION_KEY]
+    icl_qs = [ex["question"] for ex in icl_examples]
+    icl_as = [ex["answer"] for ex in icl_examples]
+    
+    # Prepare evaluation data
+    questions = [ex["question"] for ex in eval_examples]
+    answers = [ex["answer"] for ex in eval_examples]
+    
+    try:
+        from src.copyright_detective.comparison import get_llm_completion, calculate_rouge_score, calculate_jaccard_index
+        from Levenshtein import distance
+        
+        st.markdown("### 🧠 Running Knowmem Evaluation")
+        progress_text = st.empty()
+        progress_bar = st.progress(0.0)
+        
+        progress_text.text("Setting up evaluation...")
+        progress_bar.progress(0.1)
+        
+        # Create logger for results
+        logger = RougeEvalLogger()
+        general_prompt: str = ""
+
+        # Few-shot prompting
+        for question, answer in zip(icl_qs, icl_as):
+            general_prompt += f"Question: {question}\nAnswer: {answer}\n\n"
+
+        progress_text.text("Running evaluation...")
+        progress_bar.progress(0.3)
+
+        max_new_tokens = int(st.session_state.get("qa_knowmem_max_new_tokens", 64) or 64)
+        
+        for i, (question, answer) in enumerate(zip(questions, answers)):
+            prompt = general_prompt + f"Question: {question}\nAnswer: "
+            
+            progress_text.text(f"Generating answer for question {i+1}/{len(questions)}...")
+            progress_bar.progress(0.3 + (i / len(questions)) * 0.6)
+            
+            # Use API to generate answer
+            generated_text = get_llm_completion(
+                prompt, 
+                api_key, 
+                model_choice, 
+                provider,
+                temperature=0.0,  # Deterministic for evaluation
+                top_p=1.0,
+                max_output_tokens=max_new_tokens,
+                stop_sequences=KNOWMEM_STOP_SEQUENCES,
+            )
+            
+            if isinstance(generated_text, str) and generated_text.startswith("Error"):
+                st.error(f"❌ API error for question {i+1}: {generated_text}")
+                continue
+            
+            trimmed_output = _trim_knowmem_completion(generated_text)
+            if not trimmed_output:
+                trimmed_output = generated_text.strip()
+            
+            # Log the result
+            logger.log(prompt, answer, trimmed_output, question=question)
+        
+        progress_bar.progress(1.0)
+        progress_text.empty()
+        progress_bar.empty()
+        
+        # Get results
+        results = logger
+        
+        # Display results
+        st.success("✅ Knowmem evaluation completed!")
+        
+        # Show summary metrics
+        st.markdown("#### 📊 Evaluation Results")
+        
+        # Get the report
+        report = results.report()
+        st.markdown("**Summary Metrics:**")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Mean ROUGE-1", f"{report.get('mean_rouge1', 0) * 100:.2f}%")
+        with col2:
+            st.metric("Mean ROUGE-2", f"{report.get('mean_rouge2', 0) * 100:.2f}%")
+        with col3:
+            st.metric("Mean ROUGE-L", f"{report.get('mean_rougeL', 0) * 100:.2f}%")
+        
+        # Display detailed results for each example
+        st.markdown("**Detailed Results:**")
+        for i, entry in enumerate(results.entries):
+            question = entry.get('question', f'Question {i+1}')
+            with st.expander(f"Example {i+1}: {question[:50]}...", expanded=False):
+                st.markdown("**Question:**")
+                st.write(entry.get('question', 'N/A'))
+                st.markdown("**Expected Answer:**")
+                st.write(entry.get('gt', 'N/A'))
+                st.markdown("**Generated Answer:**")
+                st.write(entry.get('pred', 'N/A'))
+                st.markdown("**Metrics:**")
+                st.json({
+                    'rouge1': entry.get('rouge1', 0),
+                    'rouge2': entry.get('rouge2', 0),
+                    'rougeL': entry.get('rougeL', 0)
+                })
+        
+    except Exception as e:
+        st.error(f"❌ Error during knowmem evaluation: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
+
+
+def render_evaluation_queue(api_key, model_choice, provider) -> None:
+    ensure_qa_session_defaults()
+    eval_examples: List[Dict[str, Any]] = st.session_state[QA_EVAL_QUEUE_KEY]
+    if not eval_examples:
+        return
+
+    st.markdown("##### 🧪 Evaluation batch (knowmem)")
+    st.caption("These QA pairs will be evaluated together when running the local knowmem scorer.")
+
+    for idx, example in enumerate(list(eval_examples)):
+        question_preview = example["question"].split("\n", 1)[0]
+        header = f"Eval {idx + 1}: {question_preview[:80]}" if question_preview else f"Eval {idx + 1}"
+        with st.expander(header, expanded=False):
+            st.markdown("**Question**")
+            st.write(example["question"])
+            st.markdown("**Answer**")
+            st.write(example["answer"])
+            metadata = example.get("metadata") or {}
+            if metadata:
+                st.markdown("**Metadata**")
+                st.json(metadata)
+            action_cols = st.columns((1, 1))
+            with action_cols[0]:
+                if st.button("Set as active QA", key=f"qa_eval_set_active_{idx}"):
+                    st.session_state[QA_INPUT_SESSION_KEY] = example["question"]
+                    st.session_state[QA_GROUND_SESSION_KEY] = example["answer"]
+                    _trigger_rerun()
+            with action_cols[1]:
+                if st.button("Remove", key=f"qa_eval_remove_{idx}"):
+                    eval_examples.pop(idx)
+                    _trigger_rerun()
+
+    if st.button("🚀 Run Knowmem Evaluation", key="qa_run_knowmem_eval"):
+        run_knowmem_evaluation(api_key, model_choice, provider)
+    
+    if st.button("Clear evaluation batch", key="qa_clear_eval_batch"):
+        st.session_state[QA_EVAL_QUEUE_KEY] = []
+        _trigger_rerun()
+
+
+def render_muse_examples_panel() -> None:
+    ensure_qa_session_defaults()
+    st.markdown("#### 🎓 Browse MUSE knowmem QA examples")
+
+    try:
+        df = load_cached_muse_knowmem()
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Failed to load the MUSE knowmem dataset: {exc}")
+        if not st.session_state[QA_INPUT_SESSION_KEY]:
+            st.session_state[QA_INPUT_SESSION_KEY] = "What is the capital of France?"
+        if not st.session_state[QA_GROUND_SESSION_KEY]:
+            st.session_state[QA_GROUND_SESSION_KEY] = "Paris"
+        return
+
+    active_meta_columns = [column for column in df.columns if column not in {"row_id", "question", "answer"}]
+    title_column = next((column for column in active_meta_columns if "title" in column.lower()), None)
+    if title_column:
+        title_options = ["All"] + sorted({str(value) for value in df[title_column].dropna().unique().tolist()})
+        selected_title = st.selectbox("Filter by title", title_options, index=0)
+        if selected_title != "All":
+            df = df[df[title_column].astype(str) == selected_title]
+
+    filtered_df = df
+
+    total_rows = len(filtered_df)
+    if total_rows == 0:
+        st.info("No examples match the current filters.")
+        return
+
+    max_examples = min(10, total_rows)
+    sample_count = st.slider("Examples to preview", 1, max_examples, min(3, max_examples))
+    sample_mode = st.radio("Sampling", ("Top", "Random"), horizontal=True)
+
+    sample_state_key = QA_MUSE_SAMPLE_KEY_PREFIX
+    if sample_mode == "Random":
+        refresh = st.button("🔁 Refresh random sample", key=f"qa_refresh_random")
+        if refresh or sample_state_key not in st.session_state:
+            st.session_state[sample_state_key] = random.sample(range(total_rows), k=min(sample_count, total_rows))
+    else:
+        st.session_state[sample_state_key] = list(range(min(sample_count, total_rows)))
+
+    indices: List[int] = st.session_state.get(sample_state_key, [])[:sample_count]
+    if not indices:
+        st.info("Unable to find sample rows for display.")
+        return
+
+    for display_index, row_position in enumerate(indices, start=1):
+        try:
+            row = filtered_df.iloc[row_position]
+        except IndexError:
+            continue
+
+        question_preview = row["question"].split("\n", 1)[0]
+        header = f"Example {display_index}: {question_preview[:90]}" if question_preview else f"Example {display_index}"
+        with st.expander(header, expanded=False):
+            st.markdown("**Question**")
+            st.write(row["question"])
+            st.markdown("**Answer**")
+            st.write(row["answer"])
+
+            metadata_payload = {
+                column: row[column]
+                for column in active_meta_columns
+                if column in row and pd.notna(row[column])
+            }
+            if metadata_payload:
+                st.markdown("**Metadata**")
+                st.json(metadata_payload)
+
+            button_cols = st.columns((1, 1, 1, 1))
+            with button_cols[0]:
+                if st.button("Use QA pair", key=f"qa_use_muse_{int(row['row_id'])}"):
+                    st.session_state[QA_INPUT_SESSION_KEY] = row["question"]
+                    st.session_state[QA_GROUND_SESSION_KEY] = row["answer"]
+                    _trigger_rerun()
+            with button_cols[1]:
+                if st.button("Add to ICL", key=f"qa_add_icl_{int(row['row_id'])}"):
+                    add_icl_example_from_row(row)
+                    _trigger_rerun()
+            with button_cols[2]:
+                if st.button("Queue for eval", key=f"qa_add_eval_{int(row['row_id'])}"):
+                    add_eval_example_from_row(row)
+                    _trigger_rerun()
+            with button_cols[3]:
+                st.caption(f"Row #{int(row['row_id'])}")
 
 CONTINUATION_STRATEGIES = [
     "Normal Continuation",
@@ -215,6 +696,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             "Next-Passage Prediction",
             "Prior-Context Reconstruction",
             "Title Prediction",
+            "QA",
         ],
         help="Select the type of prompt to guide the Text Detection. (Choose only; typing custom values is not allowed.)",
     )
@@ -232,11 +714,45 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         st.markdown(
             "_Title Prediction: Based on the provided snippet, ask the model to infer the most likely title or attribution for the work. This can surface potential source identification signals._"
         )
+    elif prompt_type == "QA":
+        st.markdown(
+            "_QA: Use Question-Answer pairs to evaluate knowledge memorization. Supports custom input for user-defined QA pairs._"
+        )
 
     st.markdown('<p class="analysis-step-label">Step 2 · Provide comparison texts</p>', unsafe_allow_html=True)
+    
+    input_options = [
+        "Custom Input", 
+        "Example: A Tale of Two Cities", 
+        "Example: Harry Potter", 
+        "Example: Pride and Prejudice", 
+        "Example: 1984", 
+        "Example: To Kill a Mockingbird", 
+        "Example: The Great Gatsby", 
+        "Example: The Catcher in the Rye"
+    ]
+    if prompt_type == "QA":
+        # Check if MUSE examples are already cached in session state
+        if "muse_example_options" not in st.session_state or "muse_example_mapping" not in st.session_state:
+            muse_options, muse_mapping = generate_muse_example_options(num_examples=5)
+            st.session_state["muse_example_options"] = muse_options
+            st.session_state["muse_example_mapping"] = muse_mapping
+        else:
+            muse_options = st.session_state["muse_example_options"]
+            muse_mapping = st.session_state["muse_example_mapping"]
+        
+        input_options = ["Custom Input"] + muse_options
+    
+    # Determine default index for QA mode
+    default_index = 0
+    if prompt_type == "QA" and muse_options:
+        # For QA mode, default to custom input (index 0)
+        default_index = 0
+
     input_method = st.selectbox(
         "Select input content:",
-        ["Custom Input", "Example: A Tale of Two Cities", "Example: Harry Potter", "Example: Pride and Prejudice", "Example: 1984", "Example: To Kill a Mockingbird", "Example: The Great Gatsby", "Example: The Catcher in the Rye"],
+        input_options,
+        index=default_index,
         help="Select custom input or choose from examples."
     )
 
@@ -282,43 +798,84 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         else:
             adjusted_examples[key] = val
 
-    if input_method == "Custom Input":
+    if prompt_type == "QA":
+        ensure_qa_session_defaults()
+
+        if input_method != "Custom Input" and input_method in adjusted_examples:
+            example = adjusted_examples[input_method]
+            st.session_state[QA_INPUT_SESSION_KEY] = example["input"]
+            st.session_state[QA_GROUND_SESSION_KEY] = example["ground_truth"]
+        elif input_method.startswith("Example"):
+            # Handle MUSE example selection
+            muse_mapping = st.session_state.get("muse_example_mapping", {})
+            if input_method in muse_mapping:
+                example = muse_mapping[input_method]
+                st.session_state[QA_INPUT_SESSION_KEY] = example["question"]
+                st.session_state[QA_GROUND_SESSION_KEY] = example["answer"]
+
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown("**Input Text**")
-            text1 = st.text_area(
-                "Input Text",
+            st.markdown("**Question**")
+            st.text_area(
+                "Question",
+                key=QA_INPUT_SESSION_KEY,
                 height=150,
-                placeholder="Enter the input snippet (e.g., a previous sentence, a continuation, or an excerpt). The role of this field depends on the selected prompt type.",
+                placeholder="Enter the question you want to probe.",
                 label_visibility="collapsed",
             )
         with col2:
             st.markdown("**Ground Truth**")
-            text2 = st.text_area(
-                "Ground Truth",
+            st.text_area(
+                "Answer",
+                key=QA_GROUND_SESSION_KEY,
                 height=150,
-                placeholder="Enter the ground truth text or expected target to compare against (e.g., the known reference or target continuation). Leave blank if not applicable.",
+                placeholder="Enter the expected reference answer.",
                 label_visibility="collapsed",
             )
+
+        text1 = st.session_state[QA_INPUT_SESSION_KEY]
+        text2 = st.session_state[QA_GROUND_SESSION_KEY]
+        render_selected_icl_examples()
+        render_evaluation_queue(api_key, model_choice, provider)
+
     else:
-        example = adjusted_examples[input_method]
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("**Input Text**")
-            text1 = st.text_area(
-                "Input Text",
-                value=example["input"],
-                height=150,
-                label_visibility="collapsed",
-            )
-        with col2:
-            st.markdown("**Ground Truth**")
-            text2 = st.text_area(
-                "Ground Truth",
-                value=example["ground_truth"],
-                height=150,
-                label_visibility="collapsed",
-            )
+        if input_method == "Custom Input":
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Input Text**")
+                text1 = st.text_area(
+                    "Input Text",
+                    height=150,
+                    placeholder="Enter the input snippet (e.g., a previous sentence, a continuation, or an excerpt). The role of this field depends on the selected prompt type.",
+                    label_visibility="collapsed",
+                )
+            with col2:
+                st.markdown("**Ground Truth**")
+                text2 = st.text_area(
+                    "Ground Truth",
+                    height=150,
+                    placeholder="Enter the ground truth text or expected target to compare against (e.g., the known reference or target continuation). Leave blank if not applicable.",
+                    label_visibility="collapsed",
+                )
+        else:
+            example = adjusted_examples[input_method]
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Input Text**")
+                text1 = st.text_area(
+                    "Input Text",
+                    value=example["input"],
+                    height=150,
+                    label_visibility="collapsed",
+                )
+            with col2:
+                st.markdown("**Ground Truth**")
+                text2 = st.text_area(
+                    "Ground Truth",
+                    value=example["ground_truth"],
+                    height=150,
+                    label_visibility="collapsed",
+                )
 
     input_word_count = len(text1.split()) if text1 else 0
     ground_word_count = len(text2.split()) if text2 else 0
@@ -426,6 +983,13 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         )
         render_prompt_preview(prompt_to_preview)
 
+    elif prompt_type == "QA":
+        prompt_to_preview = f"Question: {text1}\nAnswer:"
+        st.markdown(
+            "ℹ️ The model will generate an answer to the question and it will be compared against the ground truth answer."
+        )
+        render_prompt_preview(prompt_to_preview)
+
     # Prompt Preview - This is now handled within each prompt_type section
     # if text1:
     #     # Define continuation_method for the preview logic even if it's not set
@@ -475,13 +1039,10 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             help="Controls diversity via nucleus sampling. 0.5 means half of all likelihood-weighted options are considered.",
         )
 
-    st.markdown('<p class="analysis-step-label">Step 4 · Launch comparison</p>', unsafe_allow_html=True)
-    run_analysis = st.button(
-        "🚀 Run Analysis",
-        width='stretch',
-        key="run_snippet_analysis_button",
-    )
+
     st.caption("Provide both snippets and an API key, then launch the run to view overlap diagnostics.")
+
+    run_analysis = st.button("🚀 Run Analysis", key="run_snippet_analysis_button", use_container_width=True)
 
     if run_analysis:
         if not api_key:
@@ -517,7 +1078,37 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 with st.spinner(
                     f"🔄 Generating text with {model_choice} and calculating scores..."
                 ):
-                    if prompt_type == "Next-Passage Prediction" and continuation_method != "Normal Continuation":
+                    if prompt_type == "QA":
+                        # For API-based models, we need to adapt using the comparison pipeline
+                        prompt = f"Question: {text1}\nAnswer:"
+                        generated_text = get_llm_completion(
+                            prompt,
+                            api_key,
+                            model_choice,
+                            provider=provider,
+                            temperature=temperature,
+                            top_p=top_p
+                        )
+                        if isinstance(generated_text, str) and generated_text.startswith("Error"):
+                            result = generated_text
+                        else:
+                            trimmed_output = _trim_knowmem_completion(generated_text) or generated_text.strip()
+                            final_output = trimmed_output
+                            if prompt_type not in {"Title Prediction", "QA"}:
+                                final_output = enforce_exact_char_count(trimmed_output, target_char_count)
+                            # Calculate similarity metrics using RougeEvalLogger for consistency
+                            from src.metrics.logger import RougeEvalLogger
+                            logger = RougeEvalLogger()
+                            logger.log(prompt, text2, final_output, question=text1)
+                            report = logger.report()
+                            metrics_map = {
+                                "rouge_1": report.get('mean_rouge1', 0),
+                                "rouge_l": report.get('mean_rougeL', 0),
+                                "jaccard_index": calculate_jaccard_index(final_output, text2),
+                                "levenshtein": distance(final_output, text2)
+                            }
+                            result = (final_output, metrics_map)
+                    elif prompt_type == "Next-Passage Prediction" and continuation_method != "Normal Continuation":
                         result = run_persuasion_probe(
                             api_key,
                             model_choice,
@@ -558,7 +1149,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                         metrics_map = metrics or {}
                         rouge_score = float(metrics_map.get("rouge_l", 0.0) or 0.0)
                         jaccard_index = float(metrics_map.get("jaccard_index", 0.0) or 0.0)
-                        if prompt_type != "Title Prediction":
+                        if prompt_type not in {"Title Prediction", "QA"}:
                             generated_text = enforce_exact_char_count(generated_text, target_char_count)
 
                         # Results section
@@ -595,7 +1186,37 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                         (i) / inference_runs,
                         text=f"🔄 Generating text for run {i+1}/{inference_runs}...",
                     )
-                    if prompt_type == "Next-Passage Prediction" and continuation_method != "Normal Continuation":
+                    if prompt_type == "QA":
+                        # For QA, generate answer
+                        prompt = f"Question: {text1}\nAnswer:"
+                        generated_text = get_llm_completion(
+                            prompt,
+                            api_key,
+                            model_choice,
+                            provider=provider,
+                            temperature=temperature,
+                            top_p=top_p
+                        )
+                        if isinstance(generated_text, str) and generated_text.startswith("Error"):
+                            result = generated_text
+                        else:
+                            trimmed_output = _trim_knowmem_completion(generated_text) or generated_text.strip()
+                            final_output = trimmed_output
+                            if prompt_type not in {"Title Prediction", "QA"}:
+                                final_output = enforce_exact_char_count(trimmed_output, target_char_count)
+                            # Calculate metrics using RougeEvalLogger for consistency
+                            from src.metrics.logger import RougeEvalLogger
+                            logger = RougeEvalLogger()
+                            logger.log(prompt, text2, final_output, question=text1)
+                            report = logger.report()
+                            metrics_map = {
+                                "rouge_1": report.get('mean_rouge1', 0),
+                                "rouge_l": report.get('mean_rougeL', 0),
+                                "jaccard_index": calculate_jaccard_index(final_output, text2),
+                                "levenshtein": distance(final_output, text2)
+                            }
+                            result = (final_output, metrics_map)
+                    elif prompt_type == "Next-Passage Prediction" and continuation_method != "Normal Continuation":
                         result = run_persuasion_probe(
                             api_key,
                             model_choice,
@@ -635,7 +1256,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     if not error_occurred:
                         generated_text, metrics = result
                         metrics_map = metrics or {}
-                        if prompt_type != "Title Prediction":
+                        if prompt_type not in {"Title Prediction", "QA"}:
                             generated_text = enforce_exact_char_count(generated_text, target_char_count)
                         similarity_scores.append(dict(metrics_map))
                         generated_texts.append(generated_text)
@@ -656,6 +1277,8 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     metrics_df = pd.DataFrame(similarity_scores).apply(pd.to_numeric, errors="coerce")
 
                     if not metrics_df.empty:
+                        # Set index to start from 1 instead of 0
+                        metrics_df.index = range(1, len(metrics_df) + 1)
                         st.markdown('<h4 class="section-header sm">📄 Run Metrics Overview</h4>', unsafe_allow_html=True)
                         column_order = [
                             "rouge_l",
@@ -857,6 +1480,8 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                         )
 
                     st.markdown('</div>', unsafe_allow_html=True)
+
+
 
     st.markdown("---")
     # The Jailbreak Persuasion Probe section is now integrated above.
