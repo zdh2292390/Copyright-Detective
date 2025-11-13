@@ -157,7 +157,7 @@ def _trigger_rerun() -> None:
 @st.cache_data(show_spinner=False)
 def load_cached_muse_knowmem() -> pd.DataFrame:
     dataset = load_dataset(MUSE_DATASET_ID, MUSE_DATASET_CONFIG)
-    combined_dataset = concatenate_datasets([dataset[split] for split in dataset.keys()])
+    combined_dataset = concatenate_datasets([dataset[split] for split in dataset.keys()], promote_options='default')
     df = combined_dataset.to_pandas().reset_index(drop=True)
 
     question_col = _resolve_dataset_column(df.columns.tolist(), PREFERRED_QUESTION_FIELDS, "question")
@@ -702,7 +702,7 @@ def render_snippet_to_document_page(api_key, model_choice, provider):
 
     st.markdown("### 🔎 Direct Recall Test")
     st.markdown(
-        "Probe AI models for copyright infringement by testing recall of text excerpts. Analyze snippets or documents using various strategies and compare outputs against ground truth with similarity metrics."
+        "Probe AI models for copyright infringement. Analyze snippets or documents using various strategies and compare outputs against ground truth with similarity metrics."
     )
 
     snippet_tab, pdf_tab = st.tabs([
@@ -851,55 +851,57 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             adjusted_examples[key] = val
 
     if prompt_type == "QA":
-        ensure_qa_session_defaults()
+        qa_container = st.container()
+        with qa_container:
+            ensure_qa_session_defaults()
 
-        if input_method != "Custom Input" and input_method in adjusted_examples:
-            example = adjusted_examples[input_method]
-            st.session_state[QA_INPUT_SESSION_KEY] = example["input"]
-            st.session_state[QA_GROUND_SESSION_KEY] = example["ground_truth"]
-        elif input_method.startswith("Example"):
-            # Handle MUSE example selection
-            muse_mapping = st.session_state.get("muse_example_mapping", {})
-            if input_method in muse_mapping:
-                example = muse_mapping[input_method]
-                st.session_state[QA_INPUT_SESSION_KEY] = example["question"]
-                st.session_state[QA_GROUND_SESSION_KEY] = example["answer"]
+            if input_method != "Custom Input" and input_method in adjusted_examples:
+                example = adjusted_examples[input_method]
+                st.session_state[QA_INPUT_SESSION_KEY] = example["input"]
+                st.session_state[QA_GROUND_SESSION_KEY] = example["ground_truth"]
+            elif input_method.startswith("Example"):
+                # Handle MUSE example selection
+                muse_mapping = st.session_state.get("muse_example_mapping", {})
+                if input_method in muse_mapping:
+                    example = muse_mapping[input_method]
+                    st.session_state[QA_INPUT_SESSION_KEY] = example["question"]
+                    st.session_state[QA_GROUND_SESSION_KEY] = example["answer"]
 
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("**Question**")
-            st.text_area(
-                "Question",
-                key=QA_INPUT_SESSION_KEY,
-                height=150,
-                placeholder="Enter the question you want to probe.",
-                label_visibility="collapsed",
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Question**")
+                st.text_area(
+                    "Question",
+                    key=QA_INPUT_SESSION_KEY,
+                    height=150,
+                    placeholder="Enter the question you want to probe.",
+                    label_visibility="collapsed",
+                )
+            with col2:
+                st.markdown("**Ground Truth**")
+                st.text_area(
+                    "Answer",
+                    key=QA_GROUND_SESSION_KEY,
+                    height=150,
+                    placeholder="Enter the expected reference answer.",
+                    label_visibility="collapsed",
+                )
+
+            text1 = st.session_state[QA_INPUT_SESSION_KEY]
+            text2 = st.session_state[QA_GROUND_SESSION_KEY]
+            
+            # Add zero-shot/few-shot selector
+            qa_prompt_mode = st.selectbox(
+                "Choose Zero-Shot/Few-Shot:",
+                ["Zero-Shot", "Few-Shot"],
+                index=["Zero-Shot", "Few-Shot"].index(st.session_state.get("qa_prompt_mode", "Zero-Shot")),
+                help="Select 'Zero-Shot' for no examples or 'Few-Shot' for including example demonstrations in the prompt.",
+                key="qa_prompt_mode_selector",
             )
-        with col2:
-            st.markdown("**Ground Truth**")
-            st.text_area(
-                "Answer",
-                key=QA_GROUND_SESSION_KEY,
-                height=150,
-                placeholder="Enter the expected reference answer.",
-                label_visibility="collapsed",
-            )
+            st.session_state["qa_prompt_mode"] = qa_prompt_mode
 
-        text1 = st.session_state[QA_INPUT_SESSION_KEY]
-        text2 = st.session_state[QA_GROUND_SESSION_KEY]
-        
-        # Add zero-shot/few-shot selector
-        qa_prompt_mode = st.selectbox(
-            "Choose Zero-Shot/Few-Shot:",
-            ["Zero-Shot", "Few-Shot"],
-            index=["Zero-Shot", "Few-Shot"].index(st.session_state.get("qa_prompt_mode", "Zero-Shot")),
-            help="Select 'Zero-Shot' for no examples or 'Few-Shot' for including example demonstrations in the prompt.",
-            key="qa_prompt_mode_selector",
-        )
-        st.session_state["qa_prompt_mode"] = qa_prompt_mode
-
-        render_selected_icl_examples()
-        render_evaluation_queue(api_key, model_choice, provider)
+            render_selected_icl_examples()
+            render_evaluation_queue(api_key, model_choice, provider)
 
     else:
         if input_method == "Custom Input":
