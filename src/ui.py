@@ -1758,87 +1758,88 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                 )
 
     uploaded_file = st.file_uploader("📎 Choose a PDF file:", type="pdf", help="Select a PDF document to analyze")
-    if uploaded_file is not None:
-        st.markdown('<h3 class="section-header sm">⚙️ Analysis Configuration</h3>', unsafe_allow_html=True)
-        config_col1, config_col2 = st.columns(2)
-        with config_col1:
-            chunk_size = st.number_input(
-                'Change Chunk Size (words):',
-                min_value=50,
-                max_value=2000,
-                value=200,
-                step=25,
-                help='Number of words per text chunk'
-            )
-        with config_col2:
-            continuation_method = st.selectbox(
-                'Choose a Prompting Method:',
-                CONTINUATION_STRATEGIES,
-                index=0,
-                help='Pick how the model should be nudged when generating chunk continuations. "Normal Continuation" keeps the default behaviour.',
-                key='pdf_continuation_method'
-            )
 
-        custom_pdf_prompt = None
-        if continuation_method == "Custom Prompt":
-            custom_pdf_prompt = st.text_area(
-                "Custom prompt template",
-                height=180,
-                placeholder="Write the instruction to use for each PDF chunk. Include {input_text} where the chunk should appear (e.g., '[PDF chunk]'). Optional placeholders: {word_count}, {char_count}.",
-                key="pdf_custom_prompt",
-                help="This template overrides the built-in strategies when analyzing PDF chunks.",
-            )
-            st.caption("Tip: Use placeholders like {input_text}, {word_count}, or {char_count} to auto-fill chunk details.")
-            if not (custom_pdf_prompt or "").strip():
-                st.warning("Provide a custom prompt template to enable PDF analysis with the Custom Prompt option.")
-        else:
-            custom_pdf_prompt = st.session_state.get("pdf_custom_prompt", "")
+    # Initialize variables to avoid UnboundLocalError
+    score_type = None
+    top_k = None
+    chunk_size = None
+    continuation_method = None
+    temperature = None
+    top_p = None
+    custom_pdf_prompt = None
 
-        preview_custom_template = (
-            (custom_pdf_prompt or "").strip()
-            if continuation_method == "Custom Prompt" and (custom_pdf_prompt or "").strip()
-            else None
+    # Move configuration options outside the conditional block
+    st.markdown('<h3 class="section-header sm">⚙️ Analysis Configuration</h3>', unsafe_allow_html=True)
+    config_col1, config_col2 = st.columns(2)
+    with config_col1:
+        chunk_size = st.number_input(
+            'Change Chunk Size (words):',
+            min_value=50,
+            max_value=2000,
+            value=200,
+            step=25,
+            help='Number of words per text chunk'
         )
-        preview_prompt = get_full_prompt(
-            prompt_type="Next-Passage Prediction",
-            input_text="[PDF chunk]",
-            chunk_size=chunk_size,
-            continuation_method=continuation_method,
-            custom_template=preview_custom_template,
+    with config_col2:
+        continuation_method = st.selectbox(
+            'Choose a Prompting Method:',
+            CONTINUATION_STRATEGIES,
+            index=0,
+            help='Pick how the model should be nudged when generating chunk continuations. "Normal Continuation" keeps the default behaviour.',
+            key='pdf_continuation_method'
         )
-        render_prompt_preview(preview_prompt)
 
-        st.markdown('<h3 class="section-header sm">🛠️ Generation Controls</h3>', unsafe_allow_html=True)
-        ctrl_col1, ctrl_col2 = st.columns(2)
-        with ctrl_col1:
-            temperature = st.slider(
-                'Temperature',
-                min_value=0.0,
-                max_value=2.0,
-                value=0.7,
-                step=0.01,
-                help='Controls randomness. Lower values make the model more deterministic.',
-                key='pdf_temperature'
-            )
-        with ctrl_col2:
-            top_p = st.slider(
-                'Top-P',
-                min_value=0.0,
-                max_value=1.0,
-                value=1.0,
-                step=0.01,
-                help='Controls nucleus sampling diversity. 0.5 considers the top 50% probability mass.',
-                key='pdf_top_p'
-            )
-
+    custom_pdf_prompt = None
+    if continuation_method == "Custom Prompt":
+        custom_pdf_prompt = st.text_area(
+            "Custom prompt template",
+            height=180,
+            placeholder="Write the instruction to use for each PDF chunk. Include {input_text} where the chunk should appear (e.g., '[PDF chunk]'). Optional placeholders: {word_count}, {char_count}.",
+            key="pdf_custom_prompt",
+            help="This template overrides the built-in strategies when analyzing PDF chunks.",
+        )
+        st.caption("Tip: Use placeholders like {input_text}, {word_count}, or {char_count} to auto-fill chunk details.")
+        if not (custom_pdf_prompt or "").strip():
+            st.warning("Provide a custom prompt template to enable PDF analysis with the Custom Prompt option.")
     else:
-        score_type = "ROUGE-L"  # Default ranking metric
-        chunk_size = None
-        continuation_method = "Normal Continuation"
-        temperature = 0.7
-        top_p = 1.0
-        top_k = 5  # Default number of ranks to display
-        custom_pdf_prompt = ""
+        custom_pdf_prompt = st.session_state.get("pdf_custom_prompt", "")
+
+    preview_custom_template = (
+        (custom_pdf_prompt or "").strip()
+        if continuation_method == "Custom Prompt" and (custom_pdf_prompt or "").strip()
+        else None
+    )
+    preview_prompt = get_full_prompt(
+        prompt_type="Next-Passage Prediction",
+        input_text="[PDF chunk]",
+        chunk_size=chunk_size,
+        continuation_method=continuation_method,
+        custom_template=preview_custom_template,
+    )
+    render_prompt_preview(preview_prompt)
+
+    st.markdown('<h3 class="section-header sm">🛠️ Generation Controls</h3>', unsafe_allow_html=True)
+    ctrl_col1, ctrl_col2 = st.columns(2)
+    with ctrl_col1:
+        temperature = st.slider(
+            'Temperature',
+            min_value=0.0,
+            max_value=2.0,
+            value=0.7,
+            step=0.01,
+            help='Controls randomness. Lower values make the model more deterministic.',
+            key='pdf_temperature'
+        )
+    with ctrl_col2:
+        top_p = st.slider(
+            'Top-P',
+            min_value=0.0,
+            max_value=1.0,
+            value=1.0,
+            step=0.01,
+            help='Controls nucleus sampling diversity. 0.5 considers the top 50% probability mass.',
+            key='pdf_top_p'
+        )
 
     if uploaded_file is not None:
         st.markdown("---")
