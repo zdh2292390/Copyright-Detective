@@ -1450,50 +1450,52 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
     
     # Step 2: Configure First LLM for Q&A Generation
     st.markdown("---")
-    st.markdown('<p class="analysis-step-label">Step 2 · Configure LLM (for Q&A Generation)</p>', unsafe_allow_html=True)
-    st.markdown("#### 🤖 First LLM Configuration")
+    st.markdown('<p class="analysis-step-label">Step 2 · LLM Configuration (for Q&A Generation)</p>', unsafe_allow_html=True)
     
-    # Provider selection for first LLM
-    qa_gen_provider = st.selectbox(
-        "Choose a provider",
-        ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"],
-        index=0,
-        help="Select the LLM provider for Q&A generation",
-        key="qa_gen_provider"
-    )
+    # Provider and model selection side by side
+    col_provider, col_model = st.columns(2)
     
-    # Model selection based on provider
-    if qa_gen_provider == "OpenAI":
-        qa_gen_model = st.selectbox(
-            "Choose a model",
-            ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"],
-            key="qa_gen_model"
-        )
-    elif qa_gen_provider == "OpenRouter":
-        qa_gen_model = st.selectbox(
-            "Choose a model",
-            [
-                "meta-llama/llama-3.3-70b-instruct:free",
-                "qwen/qwen-2.5-72b-instruct:free",
-                "mistralai/mistral-small-24b-instruct-2501:free",
-            ],
-            key="qa_gen_model"
-        )
-    elif qa_gen_provider == "Anthropic":
-        qa_gen_model = st.selectbox(
-            "Choose a model",
-            ["claude-3-haiku-20240307", "claude-3-sonnet-20240229"],
-            key="qa_gen_model"
-        )
-    elif qa_gen_provider == "Google Gemini":
-        qa_gen_model = st.selectbox(
-            "Choose a model",
-            ["gemini-1.5-flash", "gemini-1.5-pro"],
-            key="qa_gen_model"
+    with col_provider:
+        # Provider selection for first LLM
+        qa_gen_provider = st.selectbox(
+            "Choose a provider",
+            ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"],
+            index=0,
+            help="Select the LLM provider for Q&A generation",
+            key="qa_gen_provider"
         )
     
-    # API key for first LLM
-    st.markdown("**API Key for Q&A Generation**")
+    with col_model:
+        # Model selection based on provider
+        if qa_gen_provider == "OpenAI":
+            qa_gen_model = st.selectbox(
+                "Choose a model",
+                ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"],
+                key="qa_gen_model"
+            )
+        elif qa_gen_provider == "OpenRouter":
+            qa_gen_model = st.selectbox(
+                "Choose a model",
+                [
+                    "meta-llama/llama-3.3-70b-instruct:free",
+                    "qwen/qwen-2.5-72b-instruct:free",
+                    "mistralai/mistral-small-24b-instruct-2501:free",
+                ],
+                key="qa_gen_model"
+            )
+        elif qa_gen_provider == "Anthropic":
+            qa_gen_model = st.selectbox(
+                "Choose a model",
+                ["claude-3-haiku-20240307", "claude-3-sonnet-20240229"],
+                key="qa_gen_model"
+            )
+        elif qa_gen_provider == "Google Gemini":
+            qa_gen_model = st.selectbox(
+                "Choose a model",
+                ["gemini-1.5-flash", "gemini-1.5-pro"],
+                key="qa_gen_model"
+            )
+    
     qa_gen_api_key = st.text_input(
         "API Key (First LLM)",
         type="password",
