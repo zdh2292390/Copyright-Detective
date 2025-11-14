@@ -24,6 +24,8 @@ from src.config import DEFAULT_OPENROUTER_KEY
 import matplotlib.pyplot as plt
 from src.copyright_detective.jailbreak_probe import (
     run_persuasion_probe,
+    get_persuasion_template,
+    get_persuasion_prompt,
 )
 from src.copyright_detective.unlearning import (
     list_representational_features,
@@ -757,7 +759,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             "Title Prediction",
             "QA",
         ],
-        help="Select the type of prompt to guide the Text Detection. (Choose only; typing custom values is not allowed.)",
+        help="Select the recall mode to guide the Text Detection. (Choose only; typing custom values is not allowed.)",
     )
 
     # Explanatory notes for each prompt type
@@ -2010,32 +2012,8 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         scored.sort(reverse=True, key=lambda x: x[0])
         return [text for _, text in scored[:limit]]
 
-    if strategy_count:
-        st.markdown(
-            f"Profile LLM copyright leakage using the {strategy_count} persuasion strategies and released evaluation templates."
-        )
-    else:
-        st.markdown(
-            "Profile LLM copyright leakage using the persuasion strategies and released evaluation templates."
-        )
-
-    template_coverage_bullet = (
-        f"- **Template coverage** – toggle among {strategy_count} persuasion strategies sourced from the zero-shot and few-shot JSON frameworks."
-        if strategy_count
-        else "- **Template coverage** – load persuasion strategies from the zero-shot and few-shot JSON frameworks as soon as the template exports are available."
-    )
-
-    st.markdown("#### Key capabilities")
     st.markdown(
-        "\n".join(
-            [
-                template_coverage_bullet,
-                "- **Zero-shot vs. few-shot workflows** – generate single exemplars or sweep/ rank batches to curate mutation sets.",
-                "- **Automated intention judging** – reuse your selected provider to verify the mutation preserves the original intent.",
-                "- **Inference scaling analytics** – repeat generations per strategy and inspect variance/summary statistics.",
-                "- **ROUGE, Jaccard, Levenshtein scoring** – quantify similarity against copyrighted reference excerpts on every run.",
-            ]
-        )
+        "An evaluation framework that uses persuasion techniques to assess copyright infringement risks in LLMs."
     )
 
     if not strategies:
@@ -2148,9 +2126,8 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             help="Number of mutation attempts for each strategy (more attempts = broader exploration).",
         )
 
-    st.markdown("**Reference text for scoring**")
     zero_shot_reference = st.text_area(
-        "Reference text (for ROUGE-L scoring)",
+        "Reference text",
         value=DEFAULT_HP_REFERENCE_EXCERPT,
         height=150,
         key="stage1_reference",
