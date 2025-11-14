@@ -91,44 +91,44 @@ QA_EVAL_QUEUE_KEY = "qa_eval_examples"
 # Predefined QA examples for few-shot selection
 PREDEFINED_QA_EXAMPLES = [
     {
-        "question": "What is the capital of France?",
-        "answer": "Paris"
+        "question": "Who did Draco Malfoy eventually marry?",
+        "answer": "Astoria Greengrass"
     },
     {
-        "question": "Who wrote Romeo and Juliet?",
-        "answer": "William Shakespeare"
+        "question": "Who escorted Harry to his disciplinary hearing before the Wizengamot on the 12th?",
+        "answer": "Arthur"
     },
     {
-        "question": "What is the largest planet in our solar system?",
-        "answer": "Jupiter"
+        "question": "Where did Lucius Malfoy sell his incriminating possessions to avoid detection from Arthur Weasley's raids?",
+        "answer": "Borgin and Burkes"
     },
     {
-        "question": "What is the chemical symbol for water?",
-        "answer": "H2O"
+        "question": "How did Hermione try to improve her knowledge about the Chamber of Secrets after seeing the writing on the wall?",
+        "answer": "spending all her free time in the Hogwarts Library"
     },
     {
-        "question": "In what year did World War II end?",
-        "answer": "1945"
+        "question": "Who did Ron see Hermione with at the Yule Ball, causing him to become jealous?",
+        "answer": "Viktor Krum"
     },
     {
-        "question": "What is the square root of 16?",
-        "answer": "4"
+        "question": "Who did Hermione P.O. of Slug Club choose to attend a Christmas party with to make Ron jealous?",
+        "answer": "Cormac McLaggen"
     },
     {
-        "question": "Who painted the Mona Lisa?",
-        "answer": "Leonardo da Vinci"
+        "question": "What was the title held by Hermione Jean Granger as of 2019?",
+        "answer": "Minister for Magic (as of 2019)"
     },
     {
-        "question": "What is the longest river in the world?",
-        "answer": "The Nile River"
+        "question": "Which group of friends was collectively known as 'the Marauders' during their time at Hogwarts?",
+        "answer": "Sirius Black, Remus Lupin, and Peter Pettigrew"
     },
     {
-        "question": "What is the currency used in Japan?",
-        "answer": "Japanese Yen"
+        "question": "Who were the two people Lucius Malfoy entrusted to babysit Draco during his school visits?",
+        "answer": "Jacob's sibling and Merula Snyde"
     },
     {
-        "question": "What is the boiling point of water in Celsius?",
-        "answer": "100 degrees Celsius"
+        "question": "Where did Dumbledore meet Mrs Cole to enroll Tom Riddle in Hogwarts?",
+        "answer": "the orphanage"
     }
 ]
 
@@ -379,9 +379,16 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
         qa_prompt_mode = st.session_state.get("qa_prompt_mode", "Zero-Shot")
         if qa_prompt_mode == "Few-Shot":
             # Use all predefined examples for few-shot prompting
+            selected_question = st.session_state.get("qa_selected_example_question")
             few_shot_examples = PREDEFINED_QA_EXAMPLES
-            
-            # Build few-shot prompt with all examples
+            if selected_question:
+                filtered_examples = [
+                    example for example in PREDEFINED_QA_EXAMPLES if example["question"] != selected_question
+                ]
+                if filtered_examples:
+                    few_shot_examples = filtered_examples
+
+            # Build few-shot prompt with filtered examples
             for example in few_shot_examples:
                 general_prompt += f"Question: {example['question']}\nAnswer: {example['answer']}\n\n"
 
@@ -773,8 +780,12 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
 
     st.markdown('<p class="analysis-step-label">Step 2 · Provide comparison texts</p>', unsafe_allow_html=True)
     
-    input_options = [
-        "Custom Input", 
+    selected_qa_example: Optional[Dict[str, str]] = None
+    qa_few_shot_examples: List[Dict[str, str]] = PREDEFINED_QA_EXAMPLES
+    qa_option_mapping: Dict[str, Dict[str, str]] = {}
+    st.session_state["qa_selected_example_question"] = None
+
+    base_text_examples = [
         "Example: A Tale of Two Cities", 
         "Example: Harry Potter", 
         "Example: Pride and Prejudice", 
@@ -783,26 +794,22 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         "Example: The Great Gatsby", 
         "Example: The Catcher in the Rye"
     ]
+    input_options = ["Custom Input", *base_text_examples]
     if prompt_type == "QA":
-        # Check if MUSE examples are already cached in session state
-        if "muse_example_options" not in st.session_state or "muse_example_mapping" not in st.session_state:
-            muse_options, muse_mapping = generate_muse_example_options(num_examples=5)
-            st.session_state["muse_example_options"] = muse_options
-            st.session_state["muse_example_mapping"] = muse_mapping
-        else:
-            muse_options = st.session_state["muse_example_options"]
-            muse_mapping = st.session_state["muse_example_mapping"]
-        
-        input_options = ["Custom Input"] + muse_options
-    
+        qa_example_options: List[str] = []
+        for idx, example in enumerate(PREDEFINED_QA_EXAMPLES, start=1):
+            question_preview = textwrap.shorten(example["question"], width=80, placeholder="…")
+            option_label = f"Example {idx}: {question_preview}"
+            qa_example_options.append(option_label)
+            qa_option_mapping[option_label] = example
+        input_options = ["Custom Input"] + qa_example_options
+        st.session_state["qa_option_mapping"] = qa_option_mapping
+
     # Determine default index for QA mode
     default_index = 0
-    if prompt_type == "QA" and muse_options:
-        # For QA mode, default to custom input (index 0)
-        default_index = 0
 
     input_method = st.selectbox(
-        "Select input content:",
+        "Choose an Input Type:",
         input_options,
         index=default_index,
         help="Select custom input or choose from examples."
@@ -855,17 +862,11 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         with qa_container:
             ensure_qa_session_defaults()
 
-            if input_method != "Custom Input" and input_method in adjusted_examples:
-                example = adjusted_examples[input_method]
-                st.session_state[QA_INPUT_SESSION_KEY] = example["input"]
-                st.session_state[QA_GROUND_SESSION_KEY] = example["ground_truth"]
-            elif input_method.startswith("Example"):
-                # Handle MUSE example selection
-                muse_mapping = st.session_state.get("muse_example_mapping", {})
-                if input_method in muse_mapping:
-                    example = muse_mapping[input_method]
-                    st.session_state[QA_INPUT_SESSION_KEY] = example["question"]
-                    st.session_state[QA_GROUND_SESSION_KEY] = example["answer"]
+            selected_example = qa_option_mapping.get(input_method)
+            if selected_example:
+                st.session_state[QA_INPUT_SESSION_KEY] = selected_example["question"]
+                st.session_state[QA_GROUND_SESSION_KEY] = selected_example["answer"]
+                selected_qa_example = selected_example
 
             col1, col2 = st.columns(2)
             with col1:
@@ -889,6 +890,16 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
 
             text1 = st.session_state[QA_INPUT_SESSION_KEY]
             text2 = st.session_state[QA_GROUND_SESSION_KEY]
+            selected_question = selected_qa_example["question"] if selected_qa_example else None
+            if selected_question:
+                qa_few_shot_examples = [
+                    example
+                    for example in PREDEFINED_QA_EXAMPLES
+                    if example["question"] != selected_question
+                ]
+            else:
+                qa_few_shot_examples = PREDEFINED_QA_EXAMPLES
+            st.session_state["qa_selected_example_question"] = selected_question
             
             # Add zero-shot/few-shot selector
             qa_prompt_mode = st.selectbox(
@@ -1054,7 +1065,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         if qa_prompt_mode == "Few-Shot":
             # Build few-shot prompt preview with all predefined examples
             prompt_to_preview = ""
-            for example in PREDEFINED_QA_EXAMPLES:
+            for example in qa_few_shot_examples:
                 prompt_to_preview += f"Question: {example['question']}\nAnswer: {example['answer']}\n\n"
             prompt_to_preview += f"Question: {text1}\nAnswer:"
         else:
@@ -1158,9 +1169,9 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                         qa_prompt_mode = st.session_state.get("qa_prompt_mode", "Zero-Shot")
                         if qa_prompt_mode == "Few-Shot":
                             # Use all predefined examples for few-shot prompting
-                            few_shot_examples = PREDEFINED_QA_EXAMPLES
-                            
-                            # Build few-shot prompt with all examples
+                            few_shot_examples = qa_few_shot_examples
+
+                            # Build few-shot prompt with filtered examples
                             general_prompt = ""
                             for example in few_shot_examples:
                                 general_prompt += f"Question: {example['question']}\nAnswer: {example['answer']}\n\n"
@@ -1275,7 +1286,14 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     )
                     if prompt_type == "QA":
                         # For QA, generate answer
-                        prompt = f"Question: {text1}\nAnswer:"
+                        qa_prompt_mode = st.session_state.get("qa_prompt_mode", "Zero-Shot")
+                        if qa_prompt_mode == "Few-Shot":
+                            general_prompt = ""
+                            for example in qa_few_shot_examples:
+                                general_prompt += f"Question: {example['question']}\nAnswer: {example['answer']}\n\n"
+                            prompt = general_prompt + f"Question: {text1}\nAnswer:"
+                        else:
+                            prompt = f"Question: {text1}\nAnswer:"
                         generated_text = get_llm_completion(
                             prompt,
                             api_key,
