@@ -1426,20 +1426,20 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
     st.markdown(
         """
         <div class=\"analysis-callout\">
-            <div class=\"analysis-callout__title\">How Knowledge Memorization Detection works</div>
+            <div class=\"analysis-callout__title\">Four-step knowledge memorization detection workflow</div>
             <ul class=\"analysis-callout__list\">
-                <li><strong>Step 1:</strong> Upload a PDF document and select the first LLM to extract knowledge and generate Q&A pairs.</li>
-                <li><strong>Step 2:</strong> Use a second LLM (from sidebar) to answer the generated questions.</li>
-                <li><strong>Step 3:</strong> Compare the answers and evaluate memorization through similarity metrics.</li>
-                <li><strong>Optional:</strong> Run multiple evaluations to assess consistency across different inference passes.</li>
+                <li><strong>Step 1:</strong> Upload a PDF document containing the knowledge to be tested.</li>
+                <li><strong>Step 2:</strong> Configure the first LLM to extract knowledge and generate Q&A pairs from the PDF.</li>
+                <li><strong>Step 3:</strong> Generate question-answer pairs from the uploaded PDF using the configured LLM.</li>
+                <li><strong>Step 4:</strong> Use a second LLM to answer the generated questions and evaluate memorization through similarity metrics.</li>
             </ul>
         </div>
         """,
         unsafe_allow_html=True,
     )
     
-    # Step 1: PDF Upload and Q&A Generation
-    st.markdown('<p class="analysis-step-label">Step 1 · Upload PDF and Generate Q&A Pairs</p>', unsafe_allow_html=True)
+    # Step 1: PDF Upload
+    st.markdown('<p class="analysis-step-label">Step 1 · Upload PDF</p>', unsafe_allow_html=True)
     
     uploaded_pdf = st.file_uploader(
         "📎 Choose a PDF file:",
@@ -1448,48 +1448,49 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
         key="knowledge_qa_pdf_upload"
     )
     
-    st.markdown("#### ⚙️ First LLM Configuration (for Q&A Generation)")
-    st.caption("Select the LLM to use for extracting knowledge and generating Q&A pairs from the PDF.")
+    # Step 2: Configure First LLM for Q&A Generation
+    st.markdown("---")
+    st.markdown('<p class="analysis-step-label">Step 2 · Configure LLM (for Q&A Generation)</p>', unsafe_allow_html=True)
+    st.markdown("#### 🤖 First LLM Configuration")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        qa_gen_provider = st.selectbox(
-            "Select Provider for Q&A Generation",
-            ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"],
-            key="qa_gen_provider",
-            help="Choose the provider for the first LLM (Q&A generation)"
+    # Provider selection for first LLM
+    qa_gen_provider = st.selectbox(
+        "Choose a provider",
+        ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"],
+        index=0,
+        help="Select the LLM provider for Q&A generation",
+        key="qa_gen_provider"
+    )
+    
+    # Model selection based on provider
+    if qa_gen_provider == "OpenAI":
+        qa_gen_model = st.selectbox(
+            "Choose a model",
+            ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"],
+            key="qa_gen_model"
         )
-    
-    with col2:
-        # Model selection based on provider
-        if qa_gen_provider == "OpenAI":
-            qa_gen_model = st.selectbox(
-                "Choose a model",
-                ["gpt-3.5-turbo", "gpt-4o", "gpt-4o-mini"],
-                key="qa_gen_model"
-            )
-        elif qa_gen_provider == "OpenRouter":
-            qa_gen_model = st.selectbox(
-                "Choose a model",
-                [
-                    "meta-llama/llama-3.3-70b-instruct:free",
-                    "qwen/qwen-2.5-72b-instruct:free",
-                    "mistralai/mistral-small-24b-instruct-2501:free",
-                ],
-                key="qa_gen_model"
-            )
-        elif qa_gen_provider == "Anthropic":
-            qa_gen_model = st.selectbox(
-                "Choose a model",
-                ["claude-3-haiku-20240307", "claude-3-sonnet-20240229"],
-                key="qa_gen_model"
-            )
-        elif qa_gen_provider == "Google Gemini":
-            qa_gen_model = st.selectbox(
-                "Choose a model",
-                ["gemini-1.5-flash", "gemini-1.5-pro"],
-                key="qa_gen_model"
-            )
+    elif qa_gen_provider == "OpenRouter":
+        qa_gen_model = st.selectbox(
+            "Choose a model",
+            [
+                "meta-llama/llama-3.3-70b-instruct:free",
+                "qwen/qwen-2.5-72b-instruct:free",
+                "mistralai/mistral-small-24b-instruct-2501:free",
+            ],
+            key="qa_gen_model"
+        )
+    elif qa_gen_provider == "Anthropic":
+        qa_gen_model = st.selectbox(
+            "Choose a model",
+            ["claude-3-haiku-20240307", "claude-3-sonnet-20240229"],
+            key="qa_gen_model"
+        )
+    elif qa_gen_provider == "Google Gemini":
+        qa_gen_model = st.selectbox(
+            "Choose a model",
+            ["gemini-1.5-flash", "gemini-1.5-pro"],
+            key="qa_gen_model"
+        )
     
     # API key for first LLM
     st.markdown("**API Key for Q&A Generation**")
@@ -1526,6 +1527,12 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
             help="Controls randomness in Q&A generation. Higher = more diverse questions.",
             key="qa_gen_temperature"
         )
+    
+    # Step 3: Generate Q&A Pairs from PDF
+    st.markdown("---")
+    st.markdown('<p class="analysis-step-label">Step 3 · Generate Q&A Pairs from PDF</p>', unsafe_allow_html=True)
+    st.markdown("#### 📝 Q&A Generation")
+    st.caption("Generate question-answer pairs from the uploaded PDF using the configured first LLM.")
     
     # Button to generate Q&A pairs
     generate_qa = st.button(
@@ -1583,9 +1590,9 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
                 st.markdown("**Answer:**")
                 st.write(qa_pair['answer'])
         
-        # Step 2: Answer Questions with Second LLM
+        # Step 4: Evaluate with Second LLM
         st.markdown("---")
-        st.markdown('<p class="analysis-step-label">Step 2 · Evaluate with Second LLM</p>', unsafe_allow_html=True)
+        st.markdown('<p class="analysis-step-label">Step 4 · Evaluate with Second LLM</p>', unsafe_allow_html=True)
         st.markdown("#### 🤖 Second LLM Evaluation")
         st.caption("Use the second LLM (from sidebar) to answer the generated questions and compare with ground truth.")
         
