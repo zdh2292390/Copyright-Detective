@@ -19,6 +19,11 @@ from src.copyright_detective.comparison import (
     calculate_jaccard_index,
 )
 from src.copyright_detective.pdf_utils import extract_text_from_pdf, split_text_into_chunks
+from src.copyright_detective.knowledge_qa import (
+    generate_qa_pairs_from_pdf,
+    run_knowledge_qa_evaluation,
+    calculate_aggregate_metrics,
+)
 from src.config import DEFAULT_OPENROUTER_KEY
 
 import matplotlib.pyplot as plt
@@ -47,11 +52,6 @@ from src.copyright_detective.adversarial_prompting import (
     MutationWithJudge,
     MutationEvaluation,
     SimilarityMetrics,
-)
-from src.copyright_detective.mcq_test import (
-    load_dataset_overview,
-    run_decop_generation,
-    summarize_decop_results,
 )
 from src.metrics.logger import RougeEvalLogger
 from src.prompt_utils import get_full_prompt
@@ -719,9 +719,10 @@ def render_snippet_to_document_page(api_key, model_choice, provider):
         "Probe AI models for copyright infringement. Analyze snippets or documents using various strategies and compare outputs against ground truth with similarity metrics."
     )
 
-    snippet_tab, pdf_tab = st.tabs([
-        "Text Detection",
-        "Document Detection",
+    snippet_tab, pdf_tab, knowledge_tab = st.tabs([
+        "Text Memorization Detection",
+        "Document Memorization Detection",
+        "Knowledge Memorization Detection",
     ])
 
     with snippet_tab:
@@ -730,12 +731,15 @@ def render_snippet_to_document_page(api_key, model_choice, provider):
     with pdf_tab:
         render_pdf_analysis_page(api_key, model_choice, provider, show_page_header=False)
 
+    with knowledge_tab:
+        render_knowledge_memorization_page(api_key, model_choice, provider)
+
 
 def render_text_analysis_page(api_key, model_choice, provider, *, show_page_header: bool = True):
-    """Render the text detection workflow."""
+    """Render the text memorization detection workflow."""
 
     if show_page_header:
-        st.markdown("### 📝 Text Detection")
+        st.markdown("### 📝 Text Memorization Detection")
         st.markdown(
             "Analyze text snippets to detect potential copyright infringement by comparing generated text with ground truth."
         )
@@ -762,9 +766,8 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             "Next-Passage Prediction",
             "Prior-Context Reconstruction",
             "Title Prediction",
-            "QA",
         ],
-        help="Select the recall mode to guide the Text Detection. (Choose only; typing custom values is not allowed.)",
+    help="Select the recall mode to guide the Text Memorization Detection. (Choose only; typing custom values is not allowed.)",
     )
 
     # Explanatory notes for each prompt type
@@ -780,17 +783,8 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         st.markdown(
             "_Title Prediction: Based on the provided snippet, ask the model to infer the most likely title or attribution for the work. This can surface potential source identification signals._"
         )
-    elif prompt_type == "QA":
-        st.markdown(
-            "_QA: Use Question-Answer pairs to evaluate knowledge memorization. Supports custom input for user-defined QA pairs._"
-        )
 
     st.markdown('<p class="analysis-step-label">Step 2 · Provide comparison texts</p>', unsafe_allow_html=True)
-    
-    selected_qa_example: Optional[Dict[str, str]] = None
-    qa_few_shot_examples: List[Dict[str, str]] = PREDEFINED_QA_EXAMPLES
-    qa_option_mapping: Dict[str, Dict[str, str]] = {}
-    st.session_state["qa_selected_example_question"] = None
 
     base_text_examples = [
         "Example: A Tale of Two Cities", 
@@ -802,23 +796,11 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         "Example: The Catcher in the Rye"
     ]
     input_options = ["Custom Input", *base_text_examples]
-    if prompt_type == "QA":
-        qa_example_options: List[str] = []
-        for idx, example in enumerate(PREDEFINED_QA_EXAMPLES, start=1):
-            question_preview = textwrap.shorten(example["question"], width=80, placeholder="…")
-            option_label = f"Example {idx}: {question_preview}"
-            qa_example_options.append(option_label)
-            qa_option_mapping[option_label] = example
-        input_options = ["Custom Input"] + qa_example_options
-        st.session_state["qa_option_mapping"] = qa_option_mapping
-
-    # Determine default index for QA mode
-    default_index = 0
 
     input_method = st.selectbox(
         "Choose an Input Type:",
         input_options,
-        index=default_index,
+        index=0,
         help="Select custom input or choose from examples."
     )
 
@@ -864,101 +846,43 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         else:
             adjusted_examples[key] = val
 
-    if prompt_type == "QA":
-        qa_container = st.container()
-        with qa_container:
-            ensure_qa_session_defaults()
-
-            selected_example = qa_option_mapping.get(input_method)
-            if selected_example:
-                st.session_state[QA_INPUT_SESSION_KEY] = selected_example["question"]
-                st.session_state[QA_GROUND_SESSION_KEY] = selected_example["answer"]
-                selected_qa_example = selected_example
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("**Question**")
-                st.text_area(
-                    "Question",
-                    key=QA_INPUT_SESSION_KEY,
-                    height=150,
-                    placeholder="Enter the question you want to probe.",
-                    label_visibility="collapsed",
-                )
-            with col2:
-                st.markdown("**Ground Truth**")
-                st.text_area(
-                    "Answer",
-                    key=QA_GROUND_SESSION_KEY,
-                    height=150,
-                    placeholder="Enter the expected reference answer.",
-                    label_visibility="collapsed",
-                )
-
-            text1 = st.session_state[QA_INPUT_SESSION_KEY]
-            text2 = st.session_state[QA_GROUND_SESSION_KEY]
-            selected_question = selected_qa_example["question"] if selected_qa_example else None
-            if selected_question:
-                qa_few_shot_examples = [
-                    example
-                    for example in PREDEFINED_QA_EXAMPLES
-                    if example["question"] != selected_question
-                ]
-            else:
-                qa_few_shot_examples = PREDEFINED_QA_EXAMPLES
-            st.session_state["qa_selected_example_question"] = selected_question
-            
-            # Add zero-shot/few-shot selector
-            qa_prompt_mode = st.selectbox(
-                "Choose Zero-Shot/Few-Shot:",
-                ["Zero-Shot", "Few-Shot"],
-                index=["Zero-Shot", "Few-Shot"].index(st.session_state.get("qa_prompt_mode", "Zero-Shot")),
-                help="Select 'Zero-Shot' for no examples or 'Few-Shot' for including example demonstrations in the prompt.",
-                key="qa_prompt_mode_selector",
+    if input_method == "Custom Input":
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**Input Text**")
+            text1 = st.text_area(
+                "Input Text",
+                height=150,
+                placeholder="Enter the input snippet (e.g., a previous sentence, a continuation, or an excerpt). The role of this field depends on the selected prompt type.",
+                label_visibility="collapsed",
             )
-            st.session_state["qa_prompt_mode"] = qa_prompt_mode
-
-            render_selected_icl_examples()
-            render_evaluation_queue(api_key, model_choice, provider)
-
+        with col2:
+            st.markdown("**Ground Truth**")
+            text2 = st.text_area(
+                "Ground Truth",
+                height=150,
+                placeholder="Enter the ground truth text or expected target to compare against (e.g., the known reference or target continuation). Leave blank if not applicable.",
+                label_visibility="collapsed",
+            )
     else:
-        if input_method == "Custom Input":
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("**Input Text**")
-                text1 = st.text_area(
-                    "Input Text",
-                    height=150,
-                    placeholder="Enter the input snippet (e.g., a previous sentence, a continuation, or an excerpt). The role of this field depends on the selected prompt type.",
-                    label_visibility="collapsed",
-                )
-            with col2:
-                st.markdown("**Ground Truth**")
-                text2 = st.text_area(
-                    "Ground Truth",
-                    height=150,
-                    placeholder="Enter the ground truth text or expected target to compare against (e.g., the known reference or target continuation). Leave blank if not applicable.",
-                    label_visibility="collapsed",
-                )
-        else:
-            example = adjusted_examples[input_method]
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("**Input Text**")
-                text1 = st.text_area(
-                    "Input Text",
-                    value=example["input"],
-                    height=150,
-                    label_visibility="collapsed",
-                )
-            with col2:
-                st.markdown("**Ground Truth**")
-                text2 = st.text_area(
-                    "Ground Truth",
-                    value=example["ground_truth"],
-                    height=150,
-                    label_visibility="collapsed",
-                )
+        example = adjusted_examples[input_method]
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**Input Text**")
+            text1 = st.text_area(
+                "Input Text",
+                value=example["input"],
+                height=150,
+                label_visibility="collapsed",
+            )
+        with col2:
+            st.markdown("**Ground Truth**")
+            text2 = st.text_area(
+                "Ground Truth",
+                value=example["ground_truth"],
+                height=150,
+                label_visibility="collapsed",
+            )
 
     input_word_count = len(text1.split()) if text1 else 0
     ground_word_count = len(text2.split()) if text2 else 0
@@ -1066,40 +990,13 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         )
         render_prompt_preview(prompt_to_preview)
 
-    elif prompt_type == "QA":
-        # Check if few-shot mode is selected
-        qa_prompt_mode = st.session_state.get("qa_prompt_mode", "Zero-Shot")
-        if qa_prompt_mode == "Few-Shot":
-            # Build few-shot prompt preview with all predefined examples
-            prompt_to_preview = ""
-            for example in qa_few_shot_examples:
-                prompt_to_preview += f"Question: {example['question']}\nAnswer: {example['answer']}\n\n"
-            prompt_to_preview += f"Question: {text1}\nAnswer:"
-        else:
-            prompt_to_preview = f"Question: {text1}\nAnswer:"
-        
-        st.markdown(
-            "ℹ️ The model will generate an answer to the question and it will be compared against the ground truth answer."
-        )
-        render_prompt_preview(prompt_to_preview)
-
-    # Prompt Preview - This is now handled within each prompt_type section
-    # if text1:
-    #     # Define continuation_method for the preview logic even if it's not set
-    #     continuation_method = "Normal Continuation"
-    #     chunk_size = len(text2.split()) if text2 else None
-    #     if prompt_type == "Next-Passage Prediction":
-    #         continuation_method = st.session_state.get("continuation_method_selector", "Normal Continuation")
-    #         prompt_to_preview = get_full_prompt(continuation_method, text1, chunk_size=chunk_size)
-    #     else:
-    #         prompt_to_preview = get_full_prompt(prompt_type, text1, chunk_size=chunk_size)
-
-    #     prompt_preview(prompt_to_preview)
-
     st.divider()
     st.markdown('<p class="analysis-step-label">Step 3 · Configure generation</p>', unsafe_allow_html=True)
 
-
+    st.markdown(
+        '<p class="analysis-step-caption">Adjust the number of inference passes and how exploratory the sampling should be.</p>',
+        unsafe_allow_html=True,
+    )
     col1, col2, col3 = st.columns(3)
     with col1:
         inference_runs = st.number_input(
@@ -1128,6 +1025,9 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             step=0.01,
             help="Controls diversity via nucleus sampling. 0.5 means half of all likelihood-weighted options are considered.",
         )
+
+
+    st.caption("Provide both snippets and an API key, then launch the run to view overlap diagnostics.")
 
     run_analysis = st.button("🚀 Run Analysis", key="run_snippet_analysis_button", use_container_width=True)
 
@@ -1165,49 +1065,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 with st.spinner(
                     f"🔄 Generating text with {model_choice} and calculating scores..."
                 ):
-                    if prompt_type == "QA":
-                        # Check if few-shot mode is selected for QA
-                        qa_prompt_mode = st.session_state.get("qa_prompt_mode", "Zero-Shot")
-                        if qa_prompt_mode == "Few-Shot":
-                            # Use all predefined examples for few-shot prompting
-                            few_shot_examples = qa_few_shot_examples
-
-                            # Build few-shot prompt with filtered examples
-                            general_prompt = ""
-                            for example in few_shot_examples:
-                                general_prompt += f"Question: {example['question']}\nAnswer: {example['answer']}\n\n"
-                            
-                            prompt = general_prompt + f"Question: {text1}\nAnswer:"
-                        else:
-                            prompt = f"Question: {text1}\nAnswer:"
-                        generated_text = get_llm_completion(
-                            prompt,
-                            api_key,
-                            model_choice,
-                            provider=provider,
-                            temperature=temperature,
-                            top_p=top_p
-                        )
-                        if isinstance(generated_text, str) and generated_text.startswith("Error"):
-                            result = generated_text
-                        else:
-                            trimmed_output = _trim_knowmem_completion(generated_text) or generated_text.strip()
-                            final_output = trimmed_output
-                            if prompt_type not in {"Title Prediction", "QA"}:
-                                final_output = enforce_exact_char_count(trimmed_output, target_char_count)
-                            # Calculate similarity metrics using RougeEvalLogger for consistency
-                            from src.metrics.logger import RougeEvalLogger
-                            logger = RougeEvalLogger()
-                            logger.log(prompt, text2, final_output, question=text1)
-                            report = logger.report()
-                            metrics_map = {
-                                "rouge_1": report.get('mean_rouge1', 0),
-                                "rouge_l": report.get('mean_rougeL', 0),
-                                "jaccard_index": calculate_jaccard_index(final_output, text2),
-                                "levenshtein": distance(final_output, text2)
-                            }
-                            result = (final_output, metrics_map)
-                    elif prompt_type == "Next-Passage Prediction" and continuation_method != "Normal Continuation":
+                    if prompt_type == "Next-Passage Prediction" and continuation_method != "Normal Continuation":
                         result = run_persuasion_probe(
                             api_key,
                             model_choice,
@@ -1248,7 +1106,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                         metrics_map = metrics or {}
                         rouge_score = float(metrics_map.get("rouge_l", 0.0) or 0.0)
                         jaccard_index = float(metrics_map.get("jaccard_index", 0.0) or 0.0)
-                        if prompt_type not in {"Title Prediction", "QA"}:
+                        if prompt_type not in {"Title Prediction"}:
                             generated_text = enforce_exact_char_count(generated_text, target_char_count)
 
                         # Results section
@@ -1285,44 +1143,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                         (i) / inference_runs,
                         text=f"🔄 Generating text for run {i+1}/{inference_runs}...",
                     )
-                    if prompt_type == "QA":
-                        # For QA, generate answer
-                        qa_prompt_mode = st.session_state.get("qa_prompt_mode", "Zero-Shot")
-                        if qa_prompt_mode == "Few-Shot":
-                            general_prompt = ""
-                            for example in qa_few_shot_examples:
-                                general_prompt += f"Question: {example['question']}\nAnswer: {example['answer']}\n\n"
-                            prompt = general_prompt + f"Question: {text1}\nAnswer:"
-                        else:
-                            prompt = f"Question: {text1}\nAnswer:"
-                        generated_text = get_llm_completion(
-                            prompt,
-                            api_key,
-                            model_choice,
-                            provider=provider,
-                            temperature=temperature,
-                            top_p=top_p
-                        )
-                        if isinstance(generated_text, str) and generated_text.startswith("Error"):
-                            result = generated_text
-                        else:
-                            trimmed_output = _trim_knowmem_completion(generated_text) or generated_text.strip()
-                            final_output = trimmed_output
-                            if prompt_type not in {"Title Prediction", "QA"}:
-                                final_output = enforce_exact_char_count(trimmed_output, target_char_count)
-                            # Calculate metrics using RougeEvalLogger for consistency
-                            from src.metrics.logger import RougeEvalLogger
-                            logger = RougeEvalLogger()
-                            logger.log(prompt, text2, final_output, question=text1)
-                            report = logger.report()
-                            metrics_map = {
-                                "rouge_1": report.get('mean_rouge1', 0),
-                                "rouge_l": report.get('mean_rougeL', 0),
-                                "jaccard_index": calculate_jaccard_index(final_output, text2),
-                                "levenshtein": distance(final_output, text2)
-                            }
-                            result = (final_output, metrics_map)
-                    elif prompt_type == "Next-Passage Prediction" and continuation_method != "Normal Continuation":
+                    if prompt_type == "Next-Passage Prediction" and continuation_method != "Normal Continuation":
                         result = run_persuasion_probe(
                             api_key,
                             model_choice,
@@ -1362,7 +1183,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     if not error_occurred:
                         generated_text, metrics = result
                         metrics_map = metrics or {}
-                        if prompt_type not in {"Title Prediction", "QA"}:
+                        if prompt_type not in {"Title Prediction"}:
                             generated_text = enforce_exact_char_count(generated_text, target_char_count)
                         similarity_scores.append(dict(metrics_map))
                         generated_texts.append(generated_text)
@@ -1594,6 +1415,344 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     # render_jailbreak_persuasion_probe_section(api_key, model_choice, provider)
 
 
+def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_page_header: bool = True):
+    """Render the knowledge memorization detection workflow using QA pairs."""
+    
+    if show_page_header:
+        st.markdown(
+            "Upload a PDF document to generate Q&A pairs, then test if an LLM can answer those questions from memory."
+        )
+    
+    st.markdown(
+        """
+        <div class=\"analysis-callout\">
+            <div class=\"analysis-callout__title\">How Knowledge Memorization Detection works</div>
+            <ul class=\"analysis-callout__list\">
+                <li><strong>Step 1:</strong> Upload a PDF document and select the first LLM to extract knowledge and generate Q&A pairs.</li>
+                <li><strong>Step 2:</strong> Use a second LLM (from sidebar) to answer the generated questions.</li>
+                <li><strong>Step 3:</strong> Compare the answers and evaluate memorization through similarity metrics.</li>
+                <li><strong>Optional:</strong> Run multiple evaluations to assess consistency across different inference passes.</li>
+            </ul>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    
+    # Step 1: PDF Upload and Q&A Generation
+    st.markdown('<p class="analysis-step-label">Step 1 · Upload PDF and Generate Q&A Pairs</p>', unsafe_allow_html=True)
+    
+    uploaded_pdf = st.file_uploader(
+        "📎 Choose a PDF file:",
+        type="pdf",
+        help="Select a PDF document to extract knowledge from",
+        key="knowledge_qa_pdf_upload"
+    )
+    
+    st.markdown("#### ⚙️ First LLM Configuration (for Q&A Generation)")
+    st.caption("Select the LLM to use for extracting knowledge and generating Q&A pairs from the PDF.")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        qa_gen_provider = st.selectbox(
+            "Select Provider for Q&A Generation",
+            ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"],
+            key="qa_gen_provider",
+            help="Choose the provider for the first LLM (Q&A generation)"
+        )
+    
+    with col2:
+        # Model selection based on provider
+        if qa_gen_provider == "OpenAI":
+            qa_gen_model = st.selectbox(
+                "Choose a model",
+                ["gpt-3.5-turbo", "gpt-4o", "gpt-4o-mini"],
+                key="qa_gen_model"
+            )
+        elif qa_gen_provider == "OpenRouter":
+            qa_gen_model = st.selectbox(
+                "Choose a model",
+                [
+                    "meta-llama/llama-3.3-70b-instruct:free",
+                    "qwen/qwen-2.5-72b-instruct:free",
+                    "mistralai/mistral-small-24b-instruct-2501:free",
+                ],
+                key="qa_gen_model"
+            )
+        elif qa_gen_provider == "Anthropic":
+            qa_gen_model = st.selectbox(
+                "Choose a model",
+                ["claude-3-haiku-20240307", "claude-3-sonnet-20240229"],
+                key="qa_gen_model"
+            )
+        elif qa_gen_provider == "Google Gemini":
+            qa_gen_model = st.selectbox(
+                "Choose a model",
+                ["gemini-1.5-flash", "gemini-1.5-pro"],
+                key="qa_gen_model"
+            )
+    
+    # API key for first LLM
+    st.markdown("**API Key for Q&A Generation**")
+    qa_gen_api_key = st.text_input(
+        "API Key (First LLM)",
+        type="password",
+        help="Enter API key for the first LLM. Leave blank to use the same key from sidebar.",
+        key="qa_gen_api_key"
+    )
+    
+    # Use sidebar API key if not provided
+    if not qa_gen_api_key:
+        qa_gen_api_key = api_key
+    
+    col3, col4 = st.columns(2)
+    with col3:
+        num_qa_pairs = st.number_input(
+            "Number of Q&A Pairs to Generate",
+            min_value=1,
+            max_value=20,
+            value=5,
+            step=1,
+            help="How many question-answer pairs to generate from the PDF",
+            key="num_qa_pairs"
+        )
+    
+    with col4:
+        qa_gen_temperature = st.slider(
+            "Temperature (Q&A Generation)",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.7,
+            step=0.05,
+            help="Controls randomness in Q&A generation. Higher = more diverse questions.",
+            key="qa_gen_temperature"
+        )
+    
+    # Button to generate Q&A pairs
+    generate_qa = st.button(
+        "🚀 Generate Q&A Pairs from PDF",
+        key="generate_qa_button",
+        type="primary",
+        use_container_width=True
+    )
+    
+    # Initialize session state for Q&A pairs
+    if 'generated_qa_pairs' not in st.session_state:
+        st.session_state['generated_qa_pairs'] = []
+    if 'pdf_text_content' not in st.session_state:
+        st.session_state['pdf_text_content'] = ""
+    
+    # Generate Q&A pairs
+    if generate_qa:
+        if not uploaded_pdf:
+            st.warning("⚠️ Please upload a PDF file first.")
+        elif not qa_gen_api_key:
+            st.error("⚠️ Please provide an API key for Q&A generation.")
+        else:
+            from src.copyright_detective.knowledge_qa import generate_qa_pairs_from_pdf
+            
+            with st.spinner(f"🔄 Extracting text from PDF and generating {num_qa_pairs} Q&A pairs with {qa_gen_model}..."):
+                qa_pairs, pdf_text = generate_qa_pairs_from_pdf(
+                    uploaded_pdf,
+                    qa_gen_api_key,
+                    qa_gen_model,
+                    qa_gen_provider,
+                    num_pairs=num_qa_pairs,
+                    temperature=qa_gen_temperature,
+                    top_p=0.9,
+                )
+                
+                if isinstance(pdf_text, str) and pdf_text.startswith("Error"):
+                    st.error(f"❌ {pdf_text}")
+                elif not qa_pairs:
+                    st.error("❌ Failed to generate Q&A pairs. The LLM may not have returned valid JSON. Please try again or use a different model.")
+                else:
+                    st.session_state['generated_qa_pairs'] = qa_pairs
+                    st.session_state['pdf_text_content'] = pdf_text
+                    st.success(f"✅ Successfully generated {len(qa_pairs)} Q&A pairs!")
+    
+    # Display generated Q&A pairs
+    if st.session_state['generated_qa_pairs']:
+        st.markdown("---")
+        st.markdown('<p class="analysis-step-label">Generated Q&A Pairs</p>', unsafe_allow_html=True)
+        st.caption(f"Generated {len(st.session_state['generated_qa_pairs'])} question-answer pairs from the PDF.")
+        
+        for idx, qa_pair in enumerate(st.session_state['generated_qa_pairs'], 1):
+            with st.expander(f"Q&A Pair #{idx}", expanded=False):
+                st.markdown("**Question:**")
+                st.write(qa_pair['question'])
+                st.markdown("**Answer:**")
+                st.write(qa_pair['answer'])
+        
+        # Step 2: Answer Questions with Second LLM
+        st.markdown("---")
+        st.markdown('<p class="analysis-step-label">Step 2 · Evaluate with Second LLM</p>', unsafe_allow_html=True)
+        st.markdown("#### 🤖 Second LLM Evaluation")
+        st.caption("Use the second LLM (from sidebar) to answer the generated questions and compare with ground truth.")
+        
+        col5, col6, col7 = st.columns(3)
+        with col5:
+            num_eval_runs = st.number_input(
+                "Number of Evaluation Runs",
+                min_value=1,
+                max_value=10,
+                value=1,
+                step=1,
+                help="How many times to run the evaluation (for consistency testing)",
+                key="num_eval_runs"
+            )
+        
+        with col6:
+            eval_temperature = st.slider(
+                "Temperature (Evaluation)",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.0,
+                step=0.05,
+                help="Controls randomness in answering. 0 = deterministic.",
+                key="eval_temperature"
+            )
+        
+        with col7:
+            eval_top_p = st.slider(
+                "Top-P (Evaluation)",
+                min_value=0.0,
+                max_value=1.0,
+                value=1.0,
+                step=0.05,
+                help="Nucleus sampling parameter.",
+                key="eval_top_p"
+            )
+        
+        # Display which LLM will be used
+        st.info(f"📌 Using **{model_choice}** from **{provider}** (sidebar configuration) for answering questions.")
+        
+        # Button to run evaluation
+        run_evaluation = st.button(
+            "🧪 Run Knowledge Memorization Evaluation",
+            key="run_knowledge_eval_button",
+            type="primary",
+            use_container_width=True
+        )
+        
+        if run_evaluation:
+            if not api_key:
+                st.error("⚠️ Please configure the API key in the sidebar for the second LLM.")
+            else:
+                from src.copyright_detective.knowledge_qa import (
+                    run_knowledge_qa_evaluation,
+                    calculate_aggregate_metrics
+                )
+                
+                with st.spinner(f"🔄 Running {num_eval_runs} evaluation run(s) with {model_choice}..."):
+                    progress_bar = st.progress(0.0)
+                    
+                    all_results = run_knowledge_qa_evaluation(
+                        st.session_state['generated_qa_pairs'],
+                        api_key,
+                        model_choice,
+                        provider,
+                        num_runs=num_eval_runs,
+                        temperature=eval_temperature,
+                        top_p=eval_top_p,
+                    )
+                    
+                    progress_bar.progress(1.0)
+                    progress_bar.empty()
+                
+                if not all_results or not all_results[0]:
+                    st.error("❌ Evaluation failed. Please check your API configuration and try again.")
+                else:
+                    st.success(f"✅ Completed {num_eval_runs} evaluation run(s)!")
+                    
+                    # Display results
+                    st.markdown("---")
+                    st.markdown('<p class="analysis-step-label">Evaluation Results</p>', unsafe_allow_html=True)
+                    
+                    # Calculate aggregate metrics
+                    agg_metrics = calculate_aggregate_metrics(all_results)
+                    
+                    # Display summary metrics
+                    st.markdown("#### 📊 Summary Metrics")
+                    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                    with col_m1:
+                        st.metric("Avg ROUGE Score", f"{agg_metrics.get('avg_rouge_score', 0):.4f}")
+                    with col_m2:
+                        st.metric("Avg Jaccard Index", f"{agg_metrics.get('avg_jaccard_index', 0):.4f}")
+                    with col_m3:
+                        st.metric("Avg Levenshtein", f"{agg_metrics.get('avg_levenshtein_distance', 0):.2f}")
+                    with col_m4:
+                        st.metric("Avg Norm. Levenshtein", f"{agg_metrics.get('avg_normalized_levenshtein', 0):.4f}")
+                    
+                    # Display min/max ranges
+                    st.markdown("**Score Ranges:**")
+                    col_r1, col_r2 = st.columns(2)
+                    with col_r1:
+                        st.write(f"ROUGE: {agg_metrics.get('min_rouge', 0):.4f} - {agg_metrics.get('max_rouge', 0):.4f}")
+                    with col_r2:
+                        st.write(f"Jaccard: {agg_metrics.get('min_jaccard', 0):.4f} - {agg_metrics.get('max_jaccard', 0):.4f}")
+                    
+                    # Display detailed results for each run
+                    st.markdown("---")
+                    st.markdown("#### 📝 Detailed Results by Run")
+                    
+                    for run_idx, run_results in enumerate(all_results, 1):
+                        with st.expander(f"Run #{run_idx} - {len(run_results)} Q&A Evaluations", expanded=(run_idx == 1)):
+                            for qa_idx, eval_result in enumerate(run_results, 1):
+                                st.markdown(f"**Q&A Pair #{qa_idx}**")
+                                
+                                # Display question
+                                st.markdown("*Question:*")
+                                st.info(eval_result['question'])
+                                
+                                # Display answers in columns
+                                col_a1, col_a2 = st.columns(2)
+                                with col_a1:
+                                    st.markdown("*Ground Truth Answer:*")
+                                    st.success(eval_result['ground_truth'])
+                                
+                                with col_a2:
+                                    st.markdown("*LLM Answer:*")
+                                    st.warning(eval_result['llm_answer'])
+                                
+                                # Display metrics
+                                st.markdown("*Similarity Metrics:*")
+                                col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+                                with col_s1:
+                                    st.metric("ROUGE", f"{eval_result['rouge_score']:.4f}")
+                                with col_s2:
+                                    st.metric("Jaccard", f"{eval_result['jaccard_index']:.4f}")
+                                with col_s3:
+                                    st.metric("Levenshtein", f"{eval_result['levenshtein_distance']}")
+                                with col_s4:
+                                    st.metric("Norm. Lev.", f"{eval_result['normalized_levenshtein']:.4f}")
+                                
+                                st.markdown("---")
+                    
+                    # Interpretation
+                    st.markdown("---")
+                    st.markdown("#### 🔍 Interpretation")
+                    avg_rouge = agg_metrics.get('avg_rouge_score', 0)
+                    avg_jaccard = agg_metrics.get('avg_jaccard_index', 0)
+                    
+                    if avg_rouge > 0.5 or avg_jaccard > 0.5:
+                        st.error(
+                            "⚠️ **High Memorization Detected**: The LLM shows strong similarity to the ground truth answers, "
+                            "suggesting it may have memorized content from the document or similar sources."
+                        )
+                    elif avg_rouge > 0.3 or avg_jaccard > 0.3:
+                        st.warning(
+                            "⚠️ **Moderate Memorization**: The LLM shows some similarity to ground truth answers, "
+                            "which could indicate partial memorization or general knowledge overlap."
+                        )
+                    else:
+                        st.success(
+                            "✅ **Low Memorization**: The LLM's answers differ significantly from ground truth, "
+                            "suggesting it is not recalling memorized content from this specific document."
+                        )
+    else:
+        st.info("👆 Upload a PDF and generate Q&A pairs to begin the knowledge memorization detection process.")
+
+
 def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_header: bool = True):
     """Render the document-scale PDF analysis workflow."""
 
@@ -1601,7 +1760,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         # Page header with clear cache button
         header_col, button_col = st.columns([4, 1])
         with header_col:
-            st.markdown("### 📄 Document Detection")
+            st.markdown("### 📄 Document Memorization Detection")
             st.markdown(
                 "Upload a whole PDF document to automatically analyze text chunks for potential copyright infringement."
             )
@@ -1842,25 +2001,22 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
             key='pdf_top_p'
         )
 
-    if uploaded_file is not None:
-        st.markdown("---")
-        analyze_pdf = st.button(
-            "🔍 Analyze PDF",
-            width='stretch',
-            type="primary",
-            key="analyze_pdf_button",
-        )
-        st.markdown(
-            """
-            <div class="analysis-note">
-                ⚡ Analysis may take several minutes depending on PDF size and selected model.<br/>
-                ✨ Generated Text length will be enforced to exactly match the selected chunk size (in words).
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    else:
-        analyze_pdf = False
+    st.markdown("---")
+    analyze_pdf = st.button(
+        "🔍 Analyze PDF",
+        width='stretch',
+        type="primary",
+        key="analyze_pdf_button",
+    )
+    st.markdown(
+        """
+        <div class="analysis-note">
+            ⚡ Analysis may take several minutes depending on PDF size and selected model.<br/>
+            ✨ Generated Text length will be enforced to exactly match the selected chunk size (in words).
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     if analyze_pdf:
         # Set default values for ranking parameters
@@ -1871,6 +2027,9 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
             
         if not api_key:
             st.error("⚠️ Please enter your API key in the sidebar.")
+            return
+        if uploaded_file is None:
+            st.error("⚠️ Please upload a PDF file before running the analysis.")
             return
         custom_template = None
         if continuation_method == "Custom Prompt":
