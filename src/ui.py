@@ -48,6 +48,11 @@ from src.copyright_detective.adversarial_prompting import (
     MutationEvaluation,
     SimilarityMetrics,
 )
+from src.copyright_detective.mcq_test import (
+    load_dataset_overview,
+    run_decop_generation,
+    summarize_decop_results,
+)
 from src.metrics.logger import RougeEvalLogger
 from src.prompt_utils import get_full_prompt
 from src.components import (
@@ -1094,10 +1099,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     st.divider()
     st.markdown('<p class="analysis-step-label">Step 3 · Configure generation</p>', unsafe_allow_html=True)
 
-    st.markdown(
-        '<p class="analysis-step-caption">Adjust the number of inference passes and how exploratory the sampling should be.</p>',
-        unsafe_allow_html=True,
-    )
+
     col1, col2, col3 = st.columns(3)
     with col1:
         inference_runs = st.number_input(
@@ -1126,9 +1128,6 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             step=0.01,
             help="Controls diversity via nucleus sampling. 0.5 means half of all likelihood-weighted options are considered.",
         )
-
-
-    st.caption("Provide both snippets and an API key, then launch the run to view overlap diagnostics.")
 
     run_analysis = st.button("🚀 Run Analysis", key="run_snippet_analysis_button", use_container_width=True)
 
