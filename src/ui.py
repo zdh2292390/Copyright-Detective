@@ -721,9 +721,7 @@ def render_snippet_to_document_page(api_key, model_choice, provider):
     """Render the combined snippet-to-document analysis workspace."""
 
     st.markdown("### 🔎 Direct Recall Test")
-    st.markdown(
-        "Probe AI models for copyright infringement. Analyze snippets or documents using various strategies and compare outputs against ground truth with similarity metrics."
-    )
+
 
     snippet_tab, pdf_tab, knowledge_tab = st.tabs([
         "Text Memorization Detection",
@@ -996,13 +994,8 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         )
         render_prompt_preview(prompt_to_preview)
 
-    st.divider()
     st.markdown('<p class="analysis-step-label">Step 3 · Configure generation</p>', unsafe_allow_html=True)
 
-    st.markdown(
-        '<p class="analysis-step-caption">Adjust the number of inference passes and how exploratory the sampling should be.</p>',
-        unsafe_allow_html=True,
-    )
     col1, col2, col3 = st.columns(3)
     with col1:
         inference_runs = st.number_input(
@@ -1031,9 +1024,6 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             step=0.01,
             help="Controls diversity via nucleus sampling. 0.5 means half of all likelihood-weighted options are considered.",
         )
-
-
-    st.caption("Provide both snippets and an API key, then launch the run to view overlap diagnostics.")
 
     run_analysis = st.button("🚀 Run Analysis", key="run_snippet_analysis_button", use_container_width=True)
 
@@ -1437,7 +1427,7 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
             <div class="analysis-callout__title">How Knowledge Memorization Detection works</div>
             <ul class="analysis-callout__list">
                 <li><strong>Q&A-Based Detection:</strong> Generate open-ended questions from documents and evaluate how well the target model answers them.</li>
-                <li><strong>Multiple-Choice Test (DECOP):</strong> Use multiple-choice questions with verbatim passages and paraphrases to detect training on specific books or papers.</li>
+                <li><strong>Multiple-Choice Test:</strong> Use multiple-choice questions with verbatim passages and paraphrases to detect training on specific books or papers.</li>
             </ul>
         </div>
         """,
@@ -2246,7 +2236,6 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
     custom_pdf_prompt = None
 
     # Move configuration options outside the conditional block
-    st.markdown('<h3 class="section-header sm">⚙️ Analysis Configuration</h3>', unsafe_allow_html=True)
     config_col1, config_col2 = st.columns(2)
     with config_col1:
         chunk_size = st.number_input(
@@ -2295,7 +2284,6 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
     )
     render_prompt_preview(preview_prompt)
 
-    st.markdown('<h3 class="section-header sm">🛠️ Generation Controls</h3>', unsafe_allow_html=True)
     ctrl_col1, ctrl_col2 = st.columns(2)
     with ctrl_col1:
         temperature = st.slider(
@@ -2318,7 +2306,6 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
             key='pdf_top_p'
         )
 
-    st.markdown("---")
     analyze_pdf = st.button(
         "🔍 Analyze PDF",
         width='stretch',
