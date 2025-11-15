@@ -24,6 +24,12 @@ from src.copyright_detective.knowledge_qa import (
     run_knowledge_qa_evaluation,
     calculate_aggregate_metrics,
 )
+from src.copyright_detective.decop_analysis import (
+    get_available_datasets,
+    get_passage_sizes,
+    run_decop_evaluation,
+    calculate_results,
+)
 from src.config import DEFAULT_OPENROUTER_KEY
 
 import matplotlib.pyplot as plt
@@ -726,10 +732,10 @@ def render_snippet_to_document_page(api_key, model_choice, provider):
     ])
 
     with snippet_tab:
-        render_text_analysis_page(api_key, model_choice, provider, show_page_header=False)
+        render_text_analysis_page(api_key, model_choice, provider, show_page_header=True)
 
     with pdf_tab:
-        render_pdf_analysis_page(api_key, model_choice, provider, show_page_header=False)
+        render_pdf_analysis_page(api_key, model_choice, provider, show_page_header=True)
 
     with knowledge_tab:
         render_knowledge_memorization_page(api_key, model_choice, provider)
@@ -739,7 +745,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     """Render the text memorization detection workflow."""
 
     if show_page_header:
-        st.markdown("### 📝 Text Memorization Detection")
+        st.markdown('<h4 class="section-header">📝 Text Memorization Detection</h4>', unsafe_allow_html=True)
         st.markdown(
             "Analyze text snippets to detect potential copyright infringement by comparing generated text with ground truth."
         )
@@ -1419,18 +1425,54 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
     """Render the knowledge memorization detection workflow using QA pairs."""
     
     if show_page_header:
+        st.markdown('<h4 class="section-header">📚 Knowledge Memorization Detection</h4>', unsafe_allow_html=True)
         st.markdown(
-            "Upload a PDF document to generate Q&A pairs, then test if an LLM can answer those questions from memory."
+            "Test if an LLM has been trained on specific materials using either Q&A-based or multiple-choice detection methods."
         )
+    
+    # Mode selection
+    st.markdown(
+        """
+        <div class="analysis-callout">
+            <div class="analysis-callout__title">How Knowledge Memorization Detection works</div>
+            <ul class="analysis-callout__list">
+                <li><strong>Q&A-Based Detection:</strong> Generate open-ended questions from documents and evaluate how well the target model answers them.</li>
+                <li><strong>Multiple-Choice Test (DECOP):</strong> Use multiple-choice questions with verbatim passages and paraphrases to detect training on specific books or papers.</li>
+            </ul>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    
+    st.markdown('<p class="analysis-step-label">Step 1 · Select detection mode</p>', unsafe_allow_html=True)
+    detection_mode = st.radio(
+        "Choose your detection method:",
+        ["Q&A-Based Detection", "Multiple-Choice Question Test (DECOP)"],
+        index=0,
+        help="Q&A mode generates open-ended questions. DECOP uses multiple-choice questions to detect training on specific books or papers.",
+        horizontal=True,
+        key="knowledge_detection_mode"
+    )
+    
+    st.divider()
+    
+    if detection_mode == "Q&A-Based Detection":
+        render_qa_based_detection(api_key, model_choice, provider)
+    else:
+        render_decop_detection(api_key, model_choice, provider)
+
+
+def render_qa_based_detection(api_key, model_choice, provider):
+    """Render Q&A-based knowledge memorization detection."""
     
     st.markdown(
         """
-        <div class=\"analysis-callout\">
-            <div class=\"analysis-callout__title\">Three-step knowledge memorization detection workflow</div>
-            <ul class=\"analysis-callout__list\">
-                <li><strong>Step 1:</strong> Upload a PDF document containing the knowledge to be tested.</li>
-                <li><strong>Step 2:</strong> Configure the first LLM and generate Q&A pairs from the uploaded PDF.</li>
-                <li><strong>Step 3:</strong> Use a second LLM to answer the generated questions and evaluate memorization through similarity metrics.</li>
+        <div class="analysis-callout">
+            <div class="analysis-callout__title">Q&A-Based Detection Workflow</div>
+            <ul class="analysis-callout__list">
+                <li>Upload a PDF document containing the knowledge to be tested.</li>
+                <li>Configure an LLM to generate Q&A pairs from the document.</li>
+                <li>Use a second LLM to answer the questions and evaluate memorization.</li>
             </ul>
         </div>
         """,
@@ -1438,7 +1480,7 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
     )
     
     # Step 1: PDF Upload
-    st.markdown('<p class="analysis-step-label">Step 1 · Upload PDF</p>', unsafe_allow_html=True)
+    st.markdown('<p class="analysis-step-label">Step 2 · Upload PDF document</p>', unsafe_allow_html=True)
     
     uploaded_pdf = st.file_uploader(
         "📎 Choose a PDF file:",
@@ -1448,8 +1490,12 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
     )
     
     # Step 2: Configure First LLM and Generate Q&A Pairs
-    st.markdown("---")
-    st.markdown('<p class="analysis-step-label">Step 2 · Configure First LLM to Generate Q&A Pairs</p>', unsafe_allow_html=True)
+    st.divider()
+    st.markdown('<p class="analysis-step-label">Step 3 · Configure first LLM to generate Q&A pairs</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="analysis-step-caption">Select the model provider and configure generation parameters for creating questions.</p>',
+        unsafe_allow_html=True,
+    )
     
     # Provider and model selection side by side
     col_provider, col_model = st.columns(2)
@@ -1603,8 +1649,8 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
     
     # Display generated Q&A pairs
     if st.session_state['generated_qa_pairs']:
-        st.markdown("---")
-        st.markdown('<p class="analysis-step-label">Generated Q&A Pairs</p>', unsafe_allow_html=True)
+        st.divider()
+        st.markdown('<h4 class="section-header sm">📋 Generated Q&A Pairs</h4>', unsafe_allow_html=True)
         st.caption(f"Generated {len(st.session_state['generated_qa_pairs'])} question-answer pairs from the PDF.")
         
         for idx, qa_pair in enumerate(st.session_state['generated_qa_pairs'], 1):
@@ -1615,11 +1661,13 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
                 st.write(qa_pair['answer'])
     
     # Step 3: Evaluate with Second LLM
-    st.markdown("---")
-    st.markdown('<p class="analysis-step-label">Step 3 · Evaluate with Second LLM</p>', unsafe_allow_html=True)
-    st.markdown("#### 🤖 Second LLM Evaluation")
-    st.caption("Use the second LLM (from sidebar) to answer the generated questions and compare with ground truth.")
-    
+    st.divider()
+    st.markdown('<p class="analysis-step-label">Step 4 · Evaluate with second LLM</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="analysis-step-caption">Configure the target model to test and run evaluation passes.</p>',
+        unsafe_allow_html=True,
+    )
+ 
     col5, col6, col7 = st.columns(3)
     with col5:
         num_eval_runs = st.number_input(
@@ -1786,6 +1834,242 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
         st.info("👆 Upload a PDF and generate Q&A pairs to begin the knowledge memorization detection process.")
 
 
+def render_decop_detection(api_key, model_choice, provider):
+    """Render DECOP multiple-choice question test for copyright detection."""
+    
+    st.markdown(
+        """
+        <div class="analysis-callout">
+            <div class="analysis-callout__title">DECOP: Multiple-Choice Copyright Detection</div>
+            <ul class="analysis-callout__list">
+                <li>DECOP tests if an LLM can identify verbatim passages from copyrighted materials among paraphrased alternatives.</li>
+                <li>Choose a dataset (BookTection for books, arXivTection for academic papers).</li>
+                <li>Configure model parameters and run evaluation with permuted multiple-choice questions.</li>
+                <li>Analyze accuracy metrics to detect training memorization traces.</li>
+            </ul>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    
+    # Step 1: Dataset Selection
+    st.markdown('<p class="analysis-step-label">Step 2 · Select dataset and passage size</p>', unsafe_allow_html=True)
+    
+    available_datasets = get_available_datasets()
+    
+    if not available_datasets:
+        st.error("⚠️ No DECOP datasets found. Please ensure BookTection.csv or arXivTection.csv exists in src/decop/data/")
+        return
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        dataset_type = st.selectbox(
+            "Choose Dataset",
+            available_datasets,
+            help="BookTection tests books, arXivTection tests academic papers",
+            key="decop_dataset"
+        )
+    
+    with col2:
+        if dataset_type == "BookTection":
+            passage_size = st.selectbox(
+                "Passage Size",
+                ["small", "medium", "large"],
+                help="Length of text passages to test",
+                key="decop_passage_size"
+            )
+        else:
+            passage_size = None
+            st.info("arXivTection uses default passage size")
+    
+    # Step 2: Model Configuration
+    st.divider()
+    st.markdown('<p class="analysis-step-label">Step 3 · Configure model and API key</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="analysis-step-caption">Select the target model to test for copyright memorization.</p>',
+        unsafe_allow_html=True,
+    )
+    
+    col3, col4 = st.columns(2)
+    
+    with col3:
+        decop_model = st.selectbox(
+            "Select Model",
+            ["ChatGPT", "Claude"],
+            help="ChatGPT uses gpt-3.5-turbo-instruct, Claude uses claude-2",
+            key="decop_model"
+        )
+    
+    with col4:
+        if decop_model == "ChatGPT":
+            decop_api_key = st.text_input(
+                "OpenAI API Key",
+                type="password",
+                help="Enter your OpenAI API key",
+                key="decop_openai_key"
+            )
+        else:
+            decop_api_key = st.text_input(
+                "Anthropic API Key",
+                type="password",
+                help="Enter your Anthropic API key",
+                key="decop_anthropic_key"
+            )
+    
+    # Step 3: Run Evaluation
+    st.divider()
+    st.markdown('<p class="analysis-step-label">Step 4 · Run evaluation</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="analysis-step-caption">Generate all permutations and query the model for each multiple-choice question.</p>',
+        unsafe_allow_html=True,
+    )
+    
+    st.caption("⚡ Processing time depends on dataset size. Results are cached for analysis.")
+    
+    run_evaluation = st.button(
+        "🚀 Run DECOP Evaluation",
+        key="run_decop_button",
+        use_container_width=True
+    )
+    
+    if run_evaluation:
+        if not decop_api_key:
+            st.error("⚠️ Please provide an API key for the selected model.")
+        else:
+            progress_container = st.empty()
+            progress_bar = st.progress(0.0)
+            status_text = st.empty()
+            
+            def progress_callback(progress, message):
+                progress_bar.progress(progress)
+                status_text.text(message)
+            
+            success, message, output_dir = run_decop_evaluation(
+                data_type=dataset_type,
+                model_name=decop_model,
+                api_key=decop_api_key,
+                passage_size=passage_size,
+                progress_callback=progress_callback
+            )
+            
+            progress_bar.empty()
+            status_text.empty()
+            
+            if success:
+                st.success(f"✅ {message}")
+                st.session_state['decop_results_ready'] = True
+                st.session_state['decop_dataset'] = dataset_type
+                st.session_state['decop_passage_size'] = passage_size
+            else:
+                st.error(f"❌ {message}")
+    
+    # Step 4: View Results
+    st.divider()
+    st.markdown('<p class="analysis-step-label">Step 5 · View results and interpretation</p>', unsafe_allow_html=True)
+    
+    calculate_button = st.button(
+        "📊 Calculate Accuracy & Metrics",
+        key="calculate_decop_results",
+        use_container_width=True
+    )
+    
+    if calculate_button or st.session_state.get('decop_results_ready', False):
+        success, message, results_df = calculate_results(
+            data_type=dataset_type,
+            passage_size=passage_size
+        )
+        
+        if success and results_df is not None:
+            st.success(f"✅ {message}")
+            
+            # Display results table
+            st.markdown('<h4 class="section-header sm">📈 Accuracy Results by Document</h4>', unsafe_allow_html=True)
+            st.dataframe(
+                results_df,
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Calculate summary statistics
+            st.markdown('<h4 class="section-header sm">📊 Summary Statistics</h4>', unsafe_allow_html=True)
+            
+            summary_cols = []
+            if 'ChatGPT_Accuracy' in results_df.columns:
+                chatgpt_acc = results_df['ChatGPT_Accuracy'].dropna()
+                if not chatgpt_acc.empty:
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("ChatGPT Avg Accuracy", f"{chatgpt_acc.mean():.4f}")
+                    with col2:
+                        st.metric("ChatGPT Min Accuracy", f"{chatgpt_acc.min():.4f}")
+                    with col3:
+                        st.metric("ChatGPT Max Accuracy", f"{chatgpt_acc.max():.4f}")
+            
+            if 'Claude_Accuracy' in results_df.columns:
+                claude_acc = results_df['Claude_Accuracy'].dropna()
+                if not claude_acc.empty:
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Claude Avg Accuracy", f"{claude_acc.mean():.4f}")
+                    with col2:
+                        st.metric("Claude Min Accuracy", f"{claude_acc.min():.4f}")
+                    with col3:
+                        st.metric("Claude Max Accuracy", f"{claude_acc.max():.4f}")
+            
+            # Interpretation
+            st.divider()
+            st.markdown('<h4 class="section-header sm">🔍 Interpretation</h4>', unsafe_allow_html=True)
+            
+            # Get average accuracy
+            avg_accuracy = 0
+            if 'ChatGPT_Accuracy' in results_df.columns:
+                chatgpt_avg = results_df['ChatGPT_Accuracy'].dropna().mean()
+                if not pd.isna(chatgpt_avg):
+                    avg_accuracy = max(avg_accuracy, chatgpt_avg)
+            if 'Claude_Accuracy' in results_df.columns:
+                claude_avg = results_df['Claude_Accuracy'].dropna().mean()
+                if not pd.isna(claude_avg):
+                    avg_accuracy = max(avg_accuracy, claude_avg)
+            
+            # Random chance for 4-option multiple choice is 0.25
+            if avg_accuracy > 0.5:
+                st.error(
+                    f"⚠️ **High Memorization Detected** (Accuracy: {avg_accuracy:.2%}): "
+                    "The model shows significantly above-chance performance (>50%) in identifying "
+                    "verbatim passages, strongly suggesting it has been trained on this material. "
+                    "Random guessing would yield ~25% accuracy."
+                )
+            elif avg_accuracy > 0.35:
+                st.warning(
+                    f"⚠️ **Moderate Memorization** (Accuracy: {avg_accuracy:.2%}): "
+                    "The model performs better than random chance (25%) but not definitively. "
+                    "This could indicate partial exposure to the material during training."
+                )
+            else:
+                st.success(
+                    f"✅ **Low Memorization** (Accuracy: {avg_accuracy:.2%}): "
+                    "The model's performance is close to random chance (25%), suggesting "
+                    "it has not been specifically trained on this copyrighted material."
+                )
+            
+            # Download results
+            st.divider()
+            st.markdown('<h4 class="section-header sm">💾 Export Results</h4>', unsafe_allow_html=True)
+            
+            csv = results_df.to_csv(index=False)
+            st.download_button(
+                label="📥 Download Results as CSV",
+                data=csv,
+                file_name=f"decop_results_{dataset_type}_{passage_size if passage_size else 'default'}.csv",
+                mime="text/csv",
+                key="download_decop_csv"
+            )
+            
+        else:
+            st.error(f"❌ {message}")
+
+
 def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_header: bool = True):
     """Render the document-scale PDF analysis workflow."""
 
@@ -1793,7 +2077,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         # Page header with clear cache button
         header_col, button_col = st.columns([4, 1])
         with header_col:
-            st.markdown("### 📄 Document Memorization Detection")
+            st.markdown('<h4 class="section-header">📄 Document Memorization Detection</h4>', unsafe_allow_html=True)
             st.markdown(
                 "Upload a whole PDF document to automatically analyze text chunks for potential copyright infringement."
             )
