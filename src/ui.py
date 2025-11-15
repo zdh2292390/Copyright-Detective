@@ -1426,12 +1426,11 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
     st.markdown(
         """
         <div class=\"analysis-callout\">
-            <div class=\"analysis-callout__title\">Four-step knowledge memorization detection workflow</div>
+            <div class=\"analysis-callout__title\">Three-step knowledge memorization detection workflow</div>
             <ul class=\"analysis-callout__list\">
                 <li><strong>Step 1:</strong> Upload a PDF document containing the knowledge to be tested.</li>
-                <li><strong>Step 2:</strong> Configure the first LLM to extract knowledge and generate Q&A pairs from the PDF.</li>
-                <li><strong>Step 3:</strong> Generate question-answer pairs from the uploaded PDF using the configured LLM.</li>
-                <li><strong>Step 4:</strong> Use a second LLM to answer the generated questions and evaluate memorization through similarity metrics.</li>
+                <li><strong>Step 2:</strong> Configure the first LLM and generate Q&A pairs from the uploaded PDF.</li>
+                <li><strong>Step 3:</strong> Use a second LLM to answer the generated questions and evaluate memorization through similarity metrics.</li>
             </ul>
         </div>
         """,
@@ -1448,9 +1447,9 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
         key="knowledge_qa_pdf_upload"
     )
     
-    # Step 2: Configure First LLM for Q&A Generation
+    # Step 2: Configure First LLM and Generate Q&A Pairs
     st.markdown("---")
-    st.markdown('<p class="analysis-step-label">Step 2 · LLM Configuration (for Q&A Generation)</p>', unsafe_allow_html=True)
+    st.markdown('<p class="analysis-step-label">Step 2 · Configure First LLM to Generate Q&A Pairs</p>', unsafe_allow_html=True)
     
     # Provider and model selection side by side
     col_provider, col_model = st.columns(2)
@@ -1458,10 +1457,10 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
     with col_provider:
         # Provider selection for first LLM
         qa_gen_provider = st.selectbox(
-            "Choose a provider",
+            "Select Provider",
             ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"],
             index=0,
-            help="Select the LLM provider for Q&A generation",
+            help="Choose your AI provider",
             key="qa_gen_provider"
         )
     
@@ -1470,23 +1469,40 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
         if qa_gen_provider == "OpenAI":
             qa_gen_model = st.selectbox(
                 "Choose a model",
-                ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"],
+                [
+                    "gpt-3.5-turbo",
+                    "gpt-3.5-turbo-instruct",
+                    "gpt-4o",
+                    "gpt-4o-mini",
+                ],
+                help="Select an OpenAI model. Perplexity probes work best with instruct-style or mini models that support logprobs.",
                 key="qa_gen_model"
             )
         elif qa_gen_provider == "OpenRouter":
             qa_gen_model = st.selectbox(
                 "Choose a model",
                 [
+                    "moonshotai/kimi-k2:free",
+                    "meta-llama/llama-3.1-405b-instruct:free",
+                    "qwen/qwen3-235b-a22b:free",
                     "meta-llama/llama-3.3-70b-instruct:free",
-                    "qwen/qwen-2.5-72b-instruct:free",
                     "mistralai/mistral-small-24b-instruct-2501:free",
+                    "qwen/qwen-2.5-72b-instruct:free",
+                    "nvidia/nemotron-nano-9b-v2:free",
+                    "microsoft/wizardlm-2-8x22b:free",
+                    "google/gemma-7b-it:free",
+                    "meta-llama/llama-3.2-3b-instruct:free",
                 ],
                 key="qa_gen_model"
             )
         elif qa_gen_provider == "Anthropic":
             qa_gen_model = st.selectbox(
                 "Choose a model",
-                ["claude-3-haiku-20240307", "claude-3-sonnet-20240229"],
+                [
+                    "claude-3-haiku-20240307",
+                    "claude-3-sonnet-20240229",
+                    "claude-3-opus-20240229",
+                ],
                 key="qa_gen_model"
             )
         elif qa_gen_provider == "Google Gemini":
@@ -1497,7 +1513,7 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
             )
     
     qa_gen_api_key = st.text_input(
-        "API Key (First LLM)",
+        "API Key",
         type="password",
         help="Enter API key for the first LLM. Leave blank to use the same key from sidebar.",
         key="qa_gen_api_key"
@@ -1507,7 +1523,7 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
     if not qa_gen_api_key:
         qa_gen_api_key = api_key
     
-    col3, col4 = st.columns(2)
+    col3, col4, col5 = st.columns(3)
     with col3:
         num_qa_pairs = st.number_input(
             "Number of Q&A Pairs to Generate",
@@ -1521,7 +1537,7 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
     
     with col4:
         qa_gen_temperature = st.slider(
-            "Temperature (Q&A Generation)",
+            "Temperature",
             min_value=0.0,
             max_value=1.0,
             value=0.7,
@@ -1529,13 +1545,19 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
             help="Controls randomness in Q&A generation. Higher = more diverse questions.",
             key="qa_gen_temperature"
         )
+
+    with col5:
+        qa_gen_top_p = st.slider(
+            "Top-P",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.9,
+            step=0.05,
+            help="Nucleus sampling parameter for controlling diversity during Q&A generation.",
+            key="qa_gen_top_p"
+        )
     
-    # Step 3: Generate Q&A Pairs from PDF
-    st.markdown("---")
-    st.markdown('<p class="analysis-step-label">Step 3 · Generate Q&A Pairs from PDF</p>', unsafe_allow_html=True)
-    st.markdown("#### 📝 Q&A Generation")
-    st.caption("Generate question-answer pairs from the uploaded PDF using the configured first LLM.")
-    
+
     # Button to generate Q&A pairs
     generate_qa = st.button(
         "🚀 Generate Q&A Pairs from PDF",
@@ -1567,7 +1589,7 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
                     qa_gen_provider,
                     num_pairs=num_qa_pairs,
                     temperature=qa_gen_temperature,
-                    top_p=0.9,
+                    top_p=qa_gen_top_p,
                 )
                 
                 if isinstance(pdf_text, str) and pdf_text.startswith("Error"):
@@ -1591,173 +1613,175 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
                 st.write(qa_pair['question'])
                 st.markdown("**Answer:**")
                 st.write(qa_pair['answer'])
-        
-        # Step 4: Evaluate with Second LLM
-        st.markdown("---")
-        st.markdown('<p class="analysis-step-label">Step 4 · Evaluate with Second LLM</p>', unsafe_allow_html=True)
-        st.markdown("#### 🤖 Second LLM Evaluation")
-        st.caption("Use the second LLM (from sidebar) to answer the generated questions and compare with ground truth.")
-        
-        col5, col6, col7 = st.columns(3)
-        with col5:
-            num_eval_runs = st.number_input(
-                "Number of Evaluation Runs",
-                min_value=1,
-                max_value=10,
-                value=1,
-                step=1,
-                help="How many times to run the evaluation (for consistency testing)",
-                key="num_eval_runs"
-            )
-        
-        with col6:
-            eval_temperature = st.slider(
-                "Temperature (Evaluation)",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.0,
-                step=0.05,
-                help="Controls randomness in answering. 0 = deterministic.",
-                key="eval_temperature"
-            )
-        
-        with col7:
-            eval_top_p = st.slider(
-                "Top-P (Evaluation)",
-                min_value=0.0,
-                max_value=1.0,
-                value=1.0,
-                step=0.05,
-                help="Nucleus sampling parameter.",
-                key="eval_top_p"
-            )
-        
-        # Display which LLM will be used
-        st.info(f"📌 Using **{model_choice}** from **{provider}** (sidebar configuration) for answering questions.")
-        
-        # Button to run evaluation
-        run_evaluation = st.button(
-            "🧪 Run Knowledge Memorization Evaluation",
-            key="run_knowledge_eval_button",
-            type="primary",
-            use_container_width=True
+    
+    # Step 3: Evaluate with Second LLM
+    st.markdown("---")
+    st.markdown('<p class="analysis-step-label">Step 3 · Evaluate with Second LLM</p>', unsafe_allow_html=True)
+    st.markdown("#### 🤖 Second LLM Evaluation")
+    st.caption("Use the second LLM (from sidebar) to answer the generated questions and compare with ground truth.")
+    
+    col5, col6, col7 = st.columns(3)
+    with col5:
+        num_eval_runs = st.number_input(
+            "Number of Evaluation Runs",
+            min_value=1,
+            max_value=10,
+            value=1,
+            step=1,
+            help="How many times to run the evaluation (for consistency testing)",
+            key="num_eval_runs"
         )
-        
-        if run_evaluation:
-            if not api_key:
-                st.error("⚠️ Please configure the API key in the sidebar for the second LLM.")
-            else:
-                from src.copyright_detective.knowledge_qa import (
-                    run_knowledge_qa_evaluation,
-                    calculate_aggregate_metrics
+    
+    with col6:
+        eval_temperature = st.slider(
+            "Temperature (Evaluation)",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.0,
+            step=0.05,
+            help="Controls randomness in answering. 0 = deterministic.",
+            key="eval_temperature"
+        )
+    
+    with col7:
+        eval_top_p = st.slider(
+            "Top-P (Evaluation)",
+            min_value=0.0,
+            max_value=1.0,
+            value=1.0,
+            step=0.05,
+            help="Nucleus sampling parameter.",
+            key="eval_top_p"
+        )
+    
+    # Display which LLM will be used
+    st.info(f"📌 Using **{model_choice}** from **{provider}** (sidebar configuration) for answering questions.")
+    
+    # Button to run evaluation
+    run_evaluation = st.button(
+        "🧪 Run Knowledge Memorization Evaluation",
+        key="run_knowledge_eval_button",
+        type="primary",
+        use_container_width=True
+    )
+    
+    if run_evaluation:
+        if not st.session_state['generated_qa_pairs']:
+            st.warning("⚠️ Please generate Q&A pairs first before running evaluation.")
+        elif not api_key:
+            st.error("⚠️ Please configure the API key in the sidebar for the second LLM.")
+        else:
+            from src.copyright_detective.knowledge_qa import (
+                run_knowledge_qa_evaluation,
+                calculate_aggregate_metrics
+            )
+            
+            with st.spinner(f"🔄 Running {num_eval_runs} evaluation run(s) with {model_choice}..."):
+                progress_bar = st.progress(0.0)
+                
+                all_results = run_knowledge_qa_evaluation(
+                    st.session_state['generated_qa_pairs'],
+                    api_key,
+                    model_choice,
+                    provider,
+                    num_runs=num_eval_runs,
+                    temperature=eval_temperature,
+                    top_p=eval_top_p,
                 )
                 
-                with st.spinner(f"🔄 Running {num_eval_runs} evaluation run(s) with {model_choice}..."):
-                    progress_bar = st.progress(0.0)
-                    
-                    all_results = run_knowledge_qa_evaluation(
-                        st.session_state['generated_qa_pairs'],
-                        api_key,
-                        model_choice,
-                        provider,
-                        num_runs=num_eval_runs,
-                        temperature=eval_temperature,
-                        top_p=eval_top_p,
-                    )
-                    
-                    progress_bar.progress(1.0)
-                    progress_bar.empty()
+                progress_bar.progress(1.0)
+                progress_bar.empty()
+            
+            if not all_results or not all_results[0]:
+                st.error("❌ Evaluation failed. Please check your API configuration and try again.")
+            else:
+                st.success(f"✅ Completed {num_eval_runs} evaluation run(s)!")
                 
-                if not all_results or not all_results[0]:
-                    st.error("❌ Evaluation failed. Please check your API configuration and try again.")
+                # Display results
+                st.markdown("---")
+                st.markdown('<p class="analysis-step-label">Evaluation Results</p>', unsafe_allow_html=True)
+                
+                # Calculate aggregate metrics
+                agg_metrics = calculate_aggregate_metrics(all_results)
+                
+                # Display summary metrics
+                st.markdown("#### 📊 Summary Metrics")
+                col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                with col_m1:
+                    st.metric("Avg ROUGE Score", f"{agg_metrics.get('avg_rouge_score', 0):.4f}")
+                with col_m2:
+                    st.metric("Avg Jaccard Index", f"{agg_metrics.get('avg_jaccard_index', 0):.4f}")
+                with col_m3:
+                    st.metric("Avg Levenshtein", f"{agg_metrics.get('avg_levenshtein_distance', 0):.2f}")
+                with col_m4:
+                    st.metric("Avg Norm. Levenshtein", f"{agg_metrics.get('avg_normalized_levenshtein', 0):.4f}")
+                
+                # Display min/max ranges
+                st.markdown("**Score Ranges:**")
+                col_r1, col_r2 = st.columns(2)
+                with col_r1:
+                    st.write(f"ROUGE: {agg_metrics.get('min_rouge', 0):.4f} - {agg_metrics.get('max_rouge', 0):.4f}")
+                with col_r2:
+                    st.write(f"Jaccard: {agg_metrics.get('min_jaccard', 0):.4f} - {agg_metrics.get('max_jaccard', 0):.4f}")
+                
+                # Display detailed results for each run
+                st.markdown("---")
+                st.markdown("#### 📝 Detailed Results by Run")
+                
+                for run_idx, run_results in enumerate(all_results, 1):
+                    with st.expander(f"Run #{run_idx} - {len(run_results)} Q&A Evaluations", expanded=(run_idx == 1)):
+                        for qa_idx, eval_result in enumerate(run_results, 1):
+                            st.markdown(f"**Q&A Pair #{qa_idx}**")
+                            
+                            # Display question
+                            st.markdown("*Question:*")
+                            st.info(eval_result['question'])
+                            
+                            # Display answers in columns
+                            col_a1, col_a2 = st.columns(2)
+                            with col_a1:
+                                st.markdown("*Ground Truth Answer:*")
+                                st.success(eval_result['ground_truth'])
+                            
+                            with col_a2:
+                                st.markdown("*LLM Answer:*")
+                                st.warning(eval_result['llm_answer'])
+                            
+                            # Display metrics
+                            st.markdown("*Similarity Metrics:*")
+                            col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+                            with col_s1:
+                                st.metric("ROUGE", f"{eval_result['rouge_score']:.4f}")
+                            with col_s2:
+                                st.metric("Jaccard", f"{eval_result['jaccard_index']:.4f}")
+                            with col_s3:
+                                st.metric("Levenshtein", f"{eval_result['levenshtein_distance']}")
+                            with col_s4:
+                                st.metric("Norm. Lev.", f"{eval_result['normalized_levenshtein']:.4f}")
+                            
+                            st.markdown("---")
+                
+                # Interpretation
+                st.markdown("---")
+                st.markdown("#### 🔍 Interpretation")
+                avg_rouge = agg_metrics.get('avg_rouge_score', 0)
+                avg_jaccard = agg_metrics.get('avg_jaccard_index', 0)
+                
+                if avg_rouge > 0.5 or avg_jaccard > 0.5:
+                    st.error(
+                        "⚠️ **High Memorization Detected**: The LLM shows strong similarity to the ground truth answers, "
+                        "suggesting it may have memorized content from the document or similar sources."
+                    )
+                elif avg_rouge > 0.3 or avg_jaccard > 0.3:
+                    st.warning(
+                        "⚠️ **Moderate Memorization**: The LLM shows some similarity to ground truth answers, "
+                        "which could indicate partial memorization or general knowledge overlap."
+                    )
                 else:
-                    st.success(f"✅ Completed {num_eval_runs} evaluation run(s)!")
-                    
-                    # Display results
-                    st.markdown("---")
-                    st.markdown('<p class="analysis-step-label">Evaluation Results</p>', unsafe_allow_html=True)
-                    
-                    # Calculate aggregate metrics
-                    agg_metrics = calculate_aggregate_metrics(all_results)
-                    
-                    # Display summary metrics
-                    st.markdown("#### 📊 Summary Metrics")
-                    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-                    with col_m1:
-                        st.metric("Avg ROUGE Score", f"{agg_metrics.get('avg_rouge_score', 0):.4f}")
-                    with col_m2:
-                        st.metric("Avg Jaccard Index", f"{agg_metrics.get('avg_jaccard_index', 0):.4f}")
-                    with col_m3:
-                        st.metric("Avg Levenshtein", f"{agg_metrics.get('avg_levenshtein_distance', 0):.2f}")
-                    with col_m4:
-                        st.metric("Avg Norm. Levenshtein", f"{agg_metrics.get('avg_normalized_levenshtein', 0):.4f}")
-                    
-                    # Display min/max ranges
-                    st.markdown("**Score Ranges:**")
-                    col_r1, col_r2 = st.columns(2)
-                    with col_r1:
-                        st.write(f"ROUGE: {agg_metrics.get('min_rouge', 0):.4f} - {agg_metrics.get('max_rouge', 0):.4f}")
-                    with col_r2:
-                        st.write(f"Jaccard: {agg_metrics.get('min_jaccard', 0):.4f} - {agg_metrics.get('max_jaccard', 0):.4f}")
-                    
-                    # Display detailed results for each run
-                    st.markdown("---")
-                    st.markdown("#### 📝 Detailed Results by Run")
-                    
-                    for run_idx, run_results in enumerate(all_results, 1):
-                        with st.expander(f"Run #{run_idx} - {len(run_results)} Q&A Evaluations", expanded=(run_idx == 1)):
-                            for qa_idx, eval_result in enumerate(run_results, 1):
-                                st.markdown(f"**Q&A Pair #{qa_idx}**")
-                                
-                                # Display question
-                                st.markdown("*Question:*")
-                                st.info(eval_result['question'])
-                                
-                                # Display answers in columns
-                                col_a1, col_a2 = st.columns(2)
-                                with col_a1:
-                                    st.markdown("*Ground Truth Answer:*")
-                                    st.success(eval_result['ground_truth'])
-                                
-                                with col_a2:
-                                    st.markdown("*LLM Answer:*")
-                                    st.warning(eval_result['llm_answer'])
-                                
-                                # Display metrics
-                                st.markdown("*Similarity Metrics:*")
-                                col_s1, col_s2, col_s3, col_s4 = st.columns(4)
-                                with col_s1:
-                                    st.metric("ROUGE", f"{eval_result['rouge_score']:.4f}")
-                                with col_s2:
-                                    st.metric("Jaccard", f"{eval_result['jaccard_index']:.4f}")
-                                with col_s3:
-                                    st.metric("Levenshtein", f"{eval_result['levenshtein_distance']}")
-                                with col_s4:
-                                    st.metric("Norm. Lev.", f"{eval_result['normalized_levenshtein']:.4f}")
-                                
-                                st.markdown("---")
-                    
-                    # Interpretation
-                    st.markdown("---")
-                    st.markdown("#### 🔍 Interpretation")
-                    avg_rouge = agg_metrics.get('avg_rouge_score', 0)
-                    avg_jaccard = agg_metrics.get('avg_jaccard_index', 0)
-                    
-                    if avg_rouge > 0.5 or avg_jaccard > 0.5:
-                        st.error(
-                            "⚠️ **High Memorization Detected**: The LLM shows strong similarity to the ground truth answers, "
-                            "suggesting it may have memorized content from the document or similar sources."
-                        )
-                    elif avg_rouge > 0.3 or avg_jaccard > 0.3:
-                        st.warning(
-                            "⚠️ **Moderate Memorization**: The LLM shows some similarity to ground truth answers, "
-                            "which could indicate partial memorization or general knowledge overlap."
-                        )
-                    else:
-                        st.success(
-                            "✅ **Low Memorization**: The LLM's answers differ significantly from ground truth, "
-                            "suggesting it is not recalling memorized content from this specific document."
-                        )
+                    st.success(
+                        "✅ **Low Memorization**: The LLM's answers differ significantly from ground truth, "
+                        "suggesting it is not recalling memorized content from this specific document."
+                    )
     else:
         st.info("👆 Upload a PDF and generate Q&A pairs to begin the knowledge memorization detection process.")
 
