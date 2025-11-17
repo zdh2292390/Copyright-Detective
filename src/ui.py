@@ -751,6 +751,24 @@ def render_snippet_to_document_page(api_key, model_choice, provider):
 
 def render_text_analysis_page(api_key, model_choice, provider, *, show_page_header: bool = True):
     """Render the text memorization detection workflow."""
+    
+    # Initialize session state for Text Memorization Detection
+    if 'text_prompt_type_index' not in st.session_state:
+        st.session_state['text_prompt_type_index'] = 0
+    if 'text_input_method_index' not in st.session_state:
+        st.session_state['text_input_method_index'] = 0
+    if 'text_custom_input_text1' not in st.session_state:
+        st.session_state['text_custom_input_text1'] = ""
+    if 'text_custom_input_text2' not in st.session_state:
+        st.session_state['text_custom_input_text2'] = ""
+    if 'text_inference_runs' not in st.session_state:
+        st.session_state['text_inference_runs'] = 1
+    if 'text_temperature' not in st.session_state:
+        st.session_state['text_temperature'] = 0.7
+    if 'text_top_p' not in st.session_state:
+        st.session_state['text_top_p'] = 1.0
+    if 'text_analysis_results' not in st.session_state:
+        st.session_state['text_analysis_results'] = None
 
     if show_page_header:
         st.markdown('<h4 class="section-header">📝 Text Memorization Detection</h4>', unsafe_allow_html=True)
@@ -776,15 +794,18 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     )
 
     st.markdown('<p class="analysis-step-label">Step 1 · Choose recall framing</p>', unsafe_allow_html=True)
+    prompt_type_options = [
+        "Next-Passage Prediction",
+        "Prior-Context Reconstruction",
+        "Title Prediction",
+    ]
     prompt_type = st.selectbox(
         "🎛️ Choose the Recall Type:",
-        [
-            "Next-Passage Prediction",
-            "Prior-Context Reconstruction",
-            "Title Prediction",
-        ],
-    help="Select the recall mode to guide the Text Memorization Detection. (Choose only; typing custom values is not allowed.)",
+        prompt_type_options,
+        index=min(st.session_state['text_prompt_type_index'], len(prompt_type_options) - 1),
+        help="Select the recall mode to guide the Text Memorization Detection. (Choose only; typing custom values is not allowed.)",
     )
+    st.session_state['text_prompt_type_index'] = prompt_type_options.index(prompt_type)
 
     # Explanatory notes for each prompt type
     if prompt_type == "Next-Passage Prediction":
@@ -816,9 +837,10 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     input_method = st.selectbox(
         "Choose an Input Type:",
         input_options,
-        index=0,
+        index=min(st.session_state['text_input_method_index'], len(input_options) - 1),
         help="Select custom input or choose from examples."
     )
+    st.session_state['text_input_method_index'] = input_options.index(input_method)
 
     examples = {
         "Example: A Tale of Two Cities": {
@@ -868,18 +890,24 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             st.markdown("**Input Text**")
             text1 = st.text_area(
                 "Input Text",
+                value=st.session_state['text_custom_input_text1'],
                 height=150,
                 placeholder="Enter the input snippet (e.g., a previous sentence, a continuation, or an excerpt). The role of this field depends on the selected prompt type.",
                 label_visibility="collapsed",
+                key="text_input_text1_widget"
             )
+            st.session_state['text_custom_input_text1'] = text1
         with col2:
             st.markdown("**Ground Truth**")
             text2 = st.text_area(
                 "Ground Truth",
+                value=st.session_state['text_custom_input_text2'],
                 height=150,
                 placeholder="Enter the ground truth text or expected target to compare against (e.g., the known reference or target continuation). Leave blank if not applicable.",
                 label_visibility="collapsed",
+                key="text_input_text2_widget"
             )
+            st.session_state['text_custom_input_text2'] = text2
     else:
         example = adjusted_examples[input_method]
         col1, col2 = st.columns(2)
@@ -890,6 +918,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 value=example["input"],
                 height=150,
                 label_visibility="collapsed",
+                key="text_input_text1_example_widget"
             )
         with col2:
             st.markdown("**Ground Truth**")
@@ -898,6 +927,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 value=example["ground_truth"],
                 height=150,
                 label_visibility="collapsed",
+                key="text_input_text2_example_widget"
             )
 
     input_word_count = len(text1.split()) if text1 else 0
@@ -1018,28 +1048,31 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             "Number of Inference Runs",
             min_value=1,
             max_value=100,
-            value=1,
+            value=st.session_state['text_inference_runs'],
             step=1,
             help="Specify how many times to run the inference for statistical analysis.",
         )
+        st.session_state['text_inference_runs'] = inference_runs
     with col2:
         temperature = st.slider(
             "Temperature",
             min_value=0.0,
             max_value=2.0,
-            value=0.7,
+            value=st.session_state['text_temperature'],
             step=0.01,
             help="Controls randomness. Lower values make the model more deterministic.",
         )
+        st.session_state['text_temperature'] = temperature
     with col3:
         top_p = st.slider(
             "Top-P",
             min_value=0.0,
             max_value=1.0,
-            value=1.0,
+            value=st.session_state['text_top_p'],
             step=0.01,
             help="Controls diversity via nucleus sampling. 0.5 means half of all likelihood-weighted options are considered.",
         )
+        st.session_state['text_top_p'] = top_p
 
     run_analysis = st.button("🚀 Run: Text Memorization Detection", key="run_snippet_analysis_button", use_container_width=True)
 
@@ -1482,16 +1515,30 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
     )
     
     st.markdown('<p class="analysis-step-label">Step 1 · Select detection mode</p>', unsafe_allow_html=True)
-    detection_mode = st.radio(
-        "Choose your detection method:",
-        ["Q&A-Based Detection", "Multiple-Choice Question Test (DECOP)"],
-        index=0,
-        help="Q&A mode generates open-ended questions. DECOP uses multiple-choice questions to detect training on specific books or papers.",
-        horizontal=True,
-        key="knowledge_detection_mode"
-    )
     
-    st.divider()
+    # Add clear data button
+    col_mode, col_clear = st.columns([3, 1])
+    
+    with col_mode:
+        detection_mode = st.radio(
+            "Choose your detection method:",
+            ["Q&A-Based Detection", "Multiple-Choice Question Test (DECOP)"],
+            index=0,
+            help="Q&A mode generates open-ended questions. DECOP uses multiple-choice questions to detect training on specific books or papers.",
+            horizontal=True,
+            key="knowledge_detection_mode"
+        )
+    
+    with col_clear:
+        st.write("")  # Spacing
+        if st.button("🔄 Clear All Data", help="Reset all session data for this page", key="clear_knowledge_data"):
+            # Clear Q&A detection data
+            for key in list(st.session_state.keys()):
+                if key.startswith('qa_') or key.startswith('decop_'):
+                    del st.session_state[key]
+            st.success("✅ All data cleared!")
+            st.rerun()
+
     
     if detection_mode == "Q&A-Based Detection":
         render_qa_based_detection(api_key, model_choice, provider)
@@ -1501,6 +1548,28 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
 
 def render_qa_based_detection(api_key, model_choice, provider):
     """Render Q&A-based knowledge memorization detection."""
+    
+    # Initialize session state for Q&A detection to preserve data across page switches
+    if 'qa_generated_qa_pairs' not in st.session_state:
+        st.session_state['qa_generated_qa_pairs'] = []
+    if 'qa_document_text_content' not in st.session_state:
+        st.session_state['qa_document_text_content'] = ""
+    if 'qa_gen_provider_index' not in st.session_state:
+        st.session_state['qa_gen_provider_index'] = 0
+    if 'qa_num_qa_pairs' not in st.session_state:
+        st.session_state['qa_num_qa_pairs'] = 5
+    if 'qa_gen_temperature' not in st.session_state:
+        st.session_state['qa_gen_temperature'] = 0.7
+    if 'qa_gen_top_p' not in st.session_state:
+        st.session_state['qa_gen_top_p'] = 0.9
+    if 'qa_num_eval_runs' not in st.session_state:
+        st.session_state['qa_num_eval_runs'] = 1
+    if 'qa_eval_temperature' not in st.session_state:
+        st.session_state['qa_eval_temperature'] = 0.0
+    if 'qa_eval_top_p' not in st.session_state:
+        st.session_state['qa_eval_top_p'] = 1.0
+    if 'qa_evaluation_results' not in st.session_state:
+        st.session_state['qa_evaluation_results'] = None
     
     st.markdown(
         """
@@ -1527,7 +1596,6 @@ def render_qa_based_detection(api_key, model_choice, provider):
     )
     
     # Step 2: Configure First LLM and Generate Q&A Pairs
-    st.divider()
     st.markdown('<p class="analysis-step-label">Step 3 · Configure first LLM to generate Q&A pairs</p>', unsafe_allow_html=True)
     st.markdown(
         '<p class="analysis-step-caption">Select the model provider and configure generation parameters for creating questions.</p>',
@@ -1538,14 +1606,17 @@ def render_qa_based_detection(api_key, model_choice, provider):
     col_provider, col_model = st.columns(2)
     
     with col_provider:
-        # Provider selection for first LLM
+        # Provider selection for first LLM (preserve selection across tabs)
+        provider_options = ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"]
         qa_gen_provider = st.selectbox(
             "Select Provider",
-            ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"],
-            index=0,
+            provider_options,
+            index=st.session_state['qa_gen_provider_index'],
             help="Choose your AI provider",
             key="qa_gen_provider"
         )
+        # Update stored index when selection changes
+        st.session_state['qa_gen_provider_index'] = provider_options.index(qa_gen_provider)
     
     with col_model:
         # Model selection based on provider
@@ -1608,33 +1679,33 @@ def render_qa_based_detection(api_key, model_choice, provider):
     
     col3, col4, col5 = st.columns(3)
     with col3:
-        num_qa_pairs = st.number_input(
+        st.number_input(
             "Number of Q&A Pairs to Generate",
             min_value=1,
             max_value=20,
-            value=5,
+            value=st.session_state['qa_num_qa_pairs'],
             step=1,
             help="How many question-answer pairs to generate from the uploaded document",
             key="num_qa_pairs"
         )
     
     with col4:
-        qa_gen_temperature = st.slider(
+        st.slider(
             "Temperature",
             min_value=0.0,
             max_value=1.0,
-            value=0.7,
+            value=st.session_state['qa_gen_temperature'],
             step=0.05,
             help="Controls randomness in Q&A generation. Higher = more diverse questions.",
             key="qa_gen_temperature"
         )
 
     with col5:
-        qa_gen_top_p = st.slider(
+        st.slider(
             "Top-P",
             min_value=0.0,
             max_value=1.0,
-            value=0.9,
+            value=st.session_state['qa_gen_top_p'],
             step=0.05,
             help="Nucleus sampling parameter for controlling diversity during Q&A generation.",
             key="qa_gen_top_p"
@@ -1649,14 +1720,13 @@ def render_qa_based_detection(api_key, model_choice, provider):
         use_container_width=True
     )
     
-    # Initialize session state for Q&A pairs
-    if 'generated_qa_pairs' not in st.session_state:
-        st.session_state['generated_qa_pairs'] = []
-    if 'document_text_content' not in st.session_state:
-        st.session_state['document_text_content'] = ""
-    
     # Generate Q&A pairs
     if generate_qa:
+        # Get values from session state
+        num_qa_pairs = st.session_state.get('num_qa_pairs', 5)
+        qa_gen_temperature = st.session_state.get('qa_gen_temperature', 0.7)
+        qa_gen_top_p = st.session_state.get('qa_gen_top_p', 0.9)
+        
         if not uploaded_document:
             st.warning("⚠️ Please upload a document first.")
         elif not qa_gen_api_key:
@@ -1680,17 +1750,16 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 elif not qa_pairs:
                     st.error("❌ Failed to generate Q&A pairs. The LLM may not have returned valid JSON. Please try again or use a different model.")
                 else:
-                    st.session_state['generated_qa_pairs'] = qa_pairs
-                    st.session_state['document_text_content'] = document_text
+                    st.session_state['qa_generated_qa_pairs'] = qa_pairs
+                    st.session_state['qa_document_text_content'] = document_text
                     st.success(f"✅ Successfully generated {len(qa_pairs)} Q&A pairs!")
     
     # Display generated Q&A pairs
-    if st.session_state['generated_qa_pairs']:
-        st.divider()
+    if st.session_state['qa_generated_qa_pairs']:
         st.markdown('<h4 class="section-header sm">📋 Generated Q&A Pairs</h4>', unsafe_allow_html=True)
-        st.caption(f"Generated {len(st.session_state['generated_qa_pairs'])} question-answer pairs from the document.")
+        st.caption(f"Generated {len(st.session_state['qa_generated_qa_pairs'])} question-answer pairs from the document.")
 
-        for idx, qa_pair in enumerate(st.session_state['generated_qa_pairs'], 1):
+        for idx, qa_pair in enumerate(st.session_state['qa_generated_qa_pairs'], 1):
             with st.expander(f"Q&A Pair #{idx}", expanded=False):
                 st.markdown("**Question:**")
                 st.write(qa_pair['question'])
@@ -1698,49 +1767,47 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 st.write(qa_pair['answer'])
     
     # Step 3: Evaluate with Second LLM
-    st.divider()
     st.markdown('<p class="analysis-step-label">Step 4 · Evaluate with second LLM</p>', unsafe_allow_html=True)
-    st.markdown(
-        '<p class="analysis-step-caption">Configure the target model to test and run evaluation passes.</p>',
-        unsafe_allow_html=True,
-    )
  
     col5, col6, col7 = st.columns(3)
     with col5:
-        num_eval_runs = st.number_input(
+        st.number_input(
             "Number of Evaluation Runs",
             min_value=1,
             max_value=10,
-            value=1,
+            value=st.session_state['qa_num_eval_runs'],
             step=1,
             help="How many times to run the evaluation (for consistency testing)",
             key="num_eval_runs"
         )
     
     with col6:
-        eval_temperature = st.slider(
+        st.slider(
             "Temperature (Evaluation)",
             min_value=0.0,
             max_value=1.0,
-            value=0.0,
+            value=st.session_state['qa_eval_temperature'],
             step=0.05,
             help="Controls randomness in answering. 0 = deterministic.",
             key="eval_temperature"
         )
     
     with col7:
-        eval_top_p = st.slider(
+        st.slider(
             "Top-P (Evaluation)",
             min_value=0.0,
             max_value=1.0,
-            value=1.0,
+            value=st.session_state['qa_eval_top_p'],
             step=0.05,
             help="Nucleus sampling parameter.",
             key="eval_top_p"
         )
     
     # Display which LLM will be used
-    st.info(f"📌 Using **{model_choice}** from **{provider}** (sidebar configuration) for answering questions.")
+    if api_key and model_choice and provider:
+        st.info(f"📌 Using **{model_choice}** from **{provider}** (sidebar configuration) for answering questions.")
+    else:
+        st.warning(f"⚠️ Please configure the API key, model, and provider in the sidebar. Current: Provider={provider}, Model={model_choice}, API Key={'✓' if api_key else '✗'}")
     
     # Button to run evaluation
     run_evaluation = st.button(
@@ -1751,128 +1818,202 @@ def render_qa_based_detection(api_key, model_choice, provider):
     )
     
     if run_evaluation:
-        if not st.session_state['generated_qa_pairs']:
+        # Get values from session state
+        num_eval_runs = st.session_state.get('num_eval_runs', 1)
+        eval_temperature = st.session_state.get('eval_temperature', 0.0)
+        eval_top_p = st.session_state.get('eval_top_p', 1.0)
+        
+        if not st.session_state['qa_generated_qa_pairs']:
             st.warning("⚠️ Please generate Q&A pairs first before running evaluation.")
-        elif not api_key:
-            st.error("⚠️ Please configure the API key in the sidebar for the second LLM.")
+        elif not api_key or not api_key.strip():
+            st.error(f"⚠️ Please configure the API key for **{provider}** in the sidebar before running evaluation.")
+        elif not model_choice:
+            st.error("⚠️ Please select a model in the sidebar before running evaluation.")
         else:
-            from src.copyright_detective.knowledge_qa import (
-                run_knowledge_qa_evaluation,
-                calculate_aggregate_metrics
-            )
+            # Calculate total items for progress tracking
+            total_qa_pairs = len(st.session_state['qa_generated_qa_pairs'])
+            total_items = num_eval_runs * total_qa_pairs
             
-            with st.spinner(f"🔄 Running {num_eval_runs} evaluation run(s) with {model_choice}..."):
-                progress_bar = st.progress(0.0)
-                
+            # Create progress display
+            progress_bar = st.progress(0.0)
+            progress_text = st.empty()
+            
+            def update_progress(current, total, run_num, qa_num, qa_total):
+                """Update progress bar and text."""
+                progress = current / total if total > 0 else 0
+                progress_bar.progress(progress)
+                progress_text.text(f"🔄 Run {run_num}/{num_eval_runs} | Q&A {qa_num}/{qa_total} | Overall: {current}/{total}")
+            
+            try:
                 all_results = run_knowledge_qa_evaluation(
-                    st.session_state['generated_qa_pairs'],
+                    st.session_state['qa_generated_qa_pairs'],
                     api_key,
                     model_choice,
                     provider,
                     num_runs=num_eval_runs,
                     temperature=eval_temperature,
                     top_p=eval_top_p,
+                    progress_callback=update_progress,
                 )
                 
                 progress_bar.progress(1.0)
+                progress_text.text(f"✅ Completed {num_eval_runs} run(s) × {total_qa_pairs} Q&A pairs = {total_items} evaluations")
                 progress_bar.empty()
+                progress_text.empty()
+            except Exception as e:
+                progress_bar.empty()
+                progress_text.empty()
+                st.error(f"❌ Evaluation failed with error: {str(e)}")
+                st.error(f"🔍 Debug info: Provider={provider}, Model={model_choice}, API Key Length={len(api_key) if api_key else 0}")
+                all_results = None
             
             if not all_results or not all_results[0]:
-                st.error("❌ Evaluation failed. Please check your API configuration and try again.")
+                if all_results is not None:
+                    st.error("❌ Evaluation completed but returned no results. Please check your API configuration and try again.")
+                    st.info(f"💡 Make sure you have configured the API key for **{provider}** in the sidebar.")
             else:
+                # Store results in session state
+                st.session_state['qa_evaluation_results'] = all_results
                 st.success(f"✅ Completed {num_eval_runs} evaluation run(s)!")
-                
-                # Display results
-                st.markdown("---")
-                st.markdown('<p class="analysis-step-label">Evaluation Results</p>', unsafe_allow_html=True)
-                
-                # Calculate aggregate metrics
-                agg_metrics = calculate_aggregate_metrics(all_results)
-                
-                # Display summary metrics
-                st.markdown("#### 📊 Summary Metrics")
-                col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-                with col_m1:
-                    st.metric("Avg ROUGE Score", f"{agg_metrics.get('avg_rouge_score', 0):.4f}")
-                with col_m2:
-                    st.metric("Avg Jaccard Index", f"{agg_metrics.get('avg_jaccard_index', 0):.4f}")
-                with col_m3:
-                    st.metric("Avg Levenshtein", f"{agg_metrics.get('avg_levenshtein_distance', 0):.2f}")
-                with col_m4:
-                    st.metric("Avg Norm. Levenshtein", f"{agg_metrics.get('avg_normalized_levenshtein', 0):.4f}")
-                
-                # Display min/max ranges
-                st.markdown("**Score Ranges:**")
-                col_r1, col_r2 = st.columns(2)
-                with col_r1:
-                    st.write(f"ROUGE: {agg_metrics.get('min_rouge', 0):.4f} - {agg_metrics.get('max_rouge', 0):.4f}")
-                with col_r2:
-                    st.write(f"Jaccard: {agg_metrics.get('min_jaccard', 0):.4f} - {agg_metrics.get('max_jaccard', 0):.4f}")
-                
-                # Display detailed results for each run
-                st.markdown("---")
-                st.markdown("#### 📝 Detailed Results by Run")
-                
-                for run_idx, run_results in enumerate(all_results, 1):
-                    with st.expander(f"Run #{run_idx} - {len(run_results)} Q&A Evaluations", expanded=(run_idx == 1)):
-                        for qa_idx, eval_result in enumerate(run_results, 1):
-                            st.markdown(f"**Q&A Pair #{qa_idx}**")
-                            
-                            # Display question
-                            st.markdown("*Question:*")
-                            st.info(eval_result['question'])
-                            
-                            # Display answers in columns
-                            col_a1, col_a2 = st.columns(2)
-                            with col_a1:
-                                st.markdown("*Ground Truth Answer:*")
-                                st.success(eval_result['ground_truth'])
-                            
-                            with col_a2:
-                                st.markdown("*LLM Answer:*")
-                                st.warning(eval_result['llm_answer'])
-                            
-                            # Display metrics
-                            st.markdown("*Similarity Metrics:*")
-                            col_s1, col_s2, col_s3, col_s4 = st.columns(4)
-                            with col_s1:
-                                st.metric("ROUGE", f"{eval_result['rouge_score']:.4f}")
-                            with col_s2:
-                                st.metric("Jaccard", f"{eval_result['jaccard_index']:.4f}")
-                            with col_s3:
-                                st.metric("Levenshtein", f"{eval_result['levenshtein_distance']}")
-                            with col_s4:
-                                st.metric("Norm. Lev.", f"{eval_result['normalized_levenshtein']:.4f}")
-                            
-                            st.markdown("---")
-                
-                # Interpretation
-                st.markdown("---")
-                st.markdown("#### 🔍 Interpretation")
-                avg_rouge = agg_metrics.get('avg_rouge_score', 0)
-                avg_jaccard = agg_metrics.get('avg_jaccard_index', 0)
-                
-                if avg_rouge > 0.5 or avg_jaccard > 0.5:
-                    st.error(
-                        "⚠️ **High Memorization Detected**: The LLM shows strong similarity to the ground truth answers, "
-                        "suggesting it may have memorized content from the document or similar sources."
+    
+    # Display results (whether just generated or retrieved from session state)
+    if st.session_state['qa_evaluation_results']:
+        all_results = st.session_state['qa_evaluation_results']
+        
+        # Display results
+        st.markdown("---")
+        st.markdown('<p class="analysis-step-label">Evaluation Results</p>', unsafe_allow_html=True)
+        
+        # Calculate aggregate metrics
+        agg_metrics = calculate_aggregate_metrics(all_results)
+        
+        # Display summary metrics
+        st.markdown("#### 📊 Summary Metrics")
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+        with col_m1:
+            st.metric("Avg ROUGE Score", f"{agg_metrics.get('avg_rouge_score', 0):.4f}")
+        with col_m2:
+            st.metric("Avg Jaccard Index", f"{agg_metrics.get('avg_jaccard_index', 0):.4f}")
+        with col_m3:
+            st.metric("Avg Levenshtein", f"{agg_metrics.get('avg_levenshtein_distance', 0):.2f}")
+        with col_m4:
+            st.metric("Avg Norm. Levenshtein", f"{agg_metrics.get('avg_normalized_levenshtein', 0):.4f}")
+        
+        # Display min/max ranges
+        st.markdown("**Score Ranges:**")
+        col_r1, col_r2 = st.columns(2)
+        with col_r1:
+            st.write(f"ROUGE: {agg_metrics.get('min_rouge', 0):.4f} - {agg_metrics.get('max_rouge', 0):.4f}")
+        with col_r2:
+            st.write(f"Jaccard: {agg_metrics.get('min_jaccard', 0):.4f} - {agg_metrics.get('max_jaccard', 0):.4f}")
+        
+        # Display detailed results grouped by Q&A pair
+        st.markdown("---")
+        st.markdown("#### 📝 Detailed Results by Q&A Pair")
+
+        qa_pairs_generated = st.session_state.get('qa_generated_qa_pairs', [])
+        total_pairs = max(len(qa_pairs_generated), max((len(run) for run in all_results), default=0))
+
+        for qa_idx in range(total_pairs):
+            # Gather per-run evaluations for this Q&A index
+            run_details = []
+            for run_idx, run_results in enumerate(all_results, 1):
+                if qa_idx < len(run_results):
+                    run_details.append((run_idx, run_results[qa_idx]))
+
+            if not run_details:
+                continue
+
+            # Use first available evaluation as reference for question/ground truth
+            reference_eval = run_details[0][1]
+            question_preview = textwrap.shorten(reference_eval['question'], width=60, placeholder='…')
+
+            with st.expander(f"Q&A Pair #{qa_idx + 1} · {question_preview}", expanded=(qa_idx == 0)):
+                st.markdown("**📥 Question**")
+                question_card_html = (
+                    "<div style=\""
+                    "background: rgba(255, 255, 255, 0.9);"
+                    " border: 1px solid rgba(191, 219, 254, 0.8);"
+                    " border-left: 4px solid #2563eb;"
+                    " border-radius: 12px;"
+                    " padding: 0.75rem 0.85rem;"
+                    " font-size: 0.95rem;"
+                    " line-height: 1.7;"
+                    " color: #0f172a;"
+                    " white-space: pre-wrap;"
+                    " word-break: break-word;"
+                    " margin: 0.35rem 0 1rem 0;"
+                    '\">'
+                    f"{html.escape(reference_eval['question'])}"
+                    "</div>"
+                )
+
+                st.markdown(question_card_html, unsafe_allow_html=True)
+
+                for run_idx, eval_result in run_details:
+                    st.markdown(f"**Run #{run_idx} · Ground Truth vs. LLM Answer**")
+
+                    metrics_payload = {
+                        "rouge_l": eval_result.get('rouge_score'),
+                        "jaccard_index": eval_result.get('jaccard_index'),
+                        "levenshtein": float(eval_result.get('levenshtein_distance', 0) or 0.0),
+                    }
+
+                    # Filter out None values to avoid rendering issues
+                    metrics_payload = {k: v for k, v in metrics_payload.items() if v is not None}
+
+                    render_direct_recall_diff(
+                        reference_eval['ground_truth'],
+                        eval_result['llm_answer'],
+                        title=f"Run #{run_idx} · Answer Similarity",
+                        metrics=metrics_payload,
                     )
-                elif avg_rouge > 0.3 or avg_jaccard > 0.3:
-                    st.warning(
-                        "⚠️ **Moderate Memorization**: The LLM shows some similarity to ground truth answers, "
-                        "which could indicate partial memorization or general knowledge overlap."
-                    )
-                else:
-                    st.success(
-                        "✅ **Low Memorization**: The LLM's answers differ significantly from ground truth, "
-                        "suggesting it is not recalling memorized content from this specific document."
-                    )
-    else:
+
+                    st.divider()
+        
+        # Interpretation
+        st.markdown("---")
+        st.markdown("#### 🔍 Interpretation")
+        avg_rouge = agg_metrics.get('avg_rouge_score', 0)
+        avg_jaccard = agg_metrics.get('avg_jaccard_index', 0)
+        
+        if avg_rouge > 0.5 or avg_jaccard > 0.5:
+            st.error(
+                "⚠️ **High Memorization Detected**: The LLM shows strong similarity to the ground truth answers, "
+                "suggesting it may have memorized content from the document or similar sources."
+            )
+        elif avg_rouge > 0.3 or avg_jaccard > 0.3:
+            st.warning(
+                "⚠️ **Moderate Memorization**: The LLM shows some similarity to ground truth answers, "
+                "which could indicate partial memorization or general knowledge overlap."
+            )
+        else:
+            st.success(
+                "✅ **Low Memorization**: The LLM's answers differ significantly from ground truth, "
+                "suggesting it is not recalling memorized content from this specific document."
+            )
+    elif not st.session_state['qa_generated_qa_pairs']:
         st.info("👆 Upload a PDF or TXT file and generate Q&A pairs to begin the knowledge memorization detection process.")
 
 
 def render_decop_detection(api_key, model_choice, provider):
     """Render DECOP multiple-choice question test for copyright detection."""
+    
+    # Initialize session state for DECOP detection to preserve data across page switches
+    if 'decop_dataset_index' not in st.session_state:
+        st.session_state['decop_dataset_index'] = 0
+    if 'decop_passage_size_index' not in st.session_state:
+        st.session_state['decop_passage_size_index'] = 0
+    if 'decop_model_index' not in st.session_state:
+        st.session_state['decop_model_index'] = 0
+    if 'decop_results_ready' not in st.session_state:
+        st.session_state['decop_results_ready'] = False
+    if 'decop_dataset' not in st.session_state:
+        st.session_state['decop_dataset'] = None
+    if 'decop_passage_size' not in st.session_state:
+        st.session_state['decop_passage_size'] = None
+    if 'decop_results_data' not in st.session_state:
+        st.session_state['decop_results_data'] = None
     
     st.markdown(
         """
@@ -1904,18 +2045,24 @@ def render_decop_detection(api_key, model_choice, provider):
         dataset_type = st.selectbox(
             "Choose Dataset",
             available_datasets,
+            index=min(st.session_state['decop_dataset_index'], len(available_datasets) - 1),
             help="BookTection tests books, arXivTection tests academic papers",
             key="decop_dataset"
         )
+        # Update stored index
+        st.session_state['decop_dataset_index'] = available_datasets.index(dataset_type)
     
     with col2:
         if dataset_type == "BookTection":
+            passage_size_options = ["small", "medium", "large"]
             passage_size = st.selectbox(
                 "Passage Size",
-                ["small", "medium", "large"],
+                passage_size_options,
+                index=min(st.session_state['decop_passage_size_index'], len(passage_size_options) - 1),
                 help="Length of text passages to test",
                 key="decop_passage_size"
             )
+            st.session_state['decop_passage_size_index'] = passage_size_options.index(passage_size)
         else:
             passage_size = None
             st.info("arXivTection uses default passage size")
@@ -1931,12 +2078,15 @@ def render_decop_detection(api_key, model_choice, provider):
     col3, col4 = st.columns(2)
     
     with col3:
+        model_options = ["ChatGPT", "Claude"]
         decop_model = st.selectbox(
             "Select Model",
-            ["ChatGPT", "Claude"],
+            model_options,
+            index=min(st.session_state['decop_model_index'], len(model_options) - 1),
             help="ChatGPT uses gpt-3.5-turbo-instruct, Claude uses claude-2",
             key="decop_model"
         )
+        st.session_state['decop_model_index'] = model_options.index(decop_model)
     
     with col4:
         if decop_model == "ChatGPT":
@@ -2011,13 +2161,25 @@ def render_decop_detection(api_key, model_choice, provider):
         use_container_width=True
     )
     
-    if calculate_button or st.session_state.get('decop_results_ready', False):
-        success, message, results_df = calculate_results(
-            data_type=dataset_type,
-            passage_size=passage_size
-        )
+    # Show results if button clicked or if results exist in session state
+    if calculate_button or (st.session_state.get('decop_results_ready', False) and st.session_state.get('decop_results_data') is not None):
+        # Only recalculate if button is clicked or if we don't have cached results
+        if calculate_button or st.session_state.get('decop_results_data') is None:
+            success, message, results_df = calculate_results(
+                data_type=dataset_type,
+                passage_size=passage_size
+            )
+            
+            if success and results_df is not None:
+                # Store results in session state
+                st.session_state['decop_results_data'] = results_df
+                st.session_state['decop_results_message'] = message
         
-        if success and results_df is not None:
+        # Display cached or newly calculated results
+        if st.session_state.get('decop_results_data') is not None:
+            results_df = st.session_state['decop_results_data']
+            message = st.session_state.get('decop_results_message', 'Results loaded from cache')
+            
             st.success(f"✅ {message}")
             
             # Display results table
@@ -2109,6 +2271,24 @@ def render_decop_detection(api_key, model_choice, provider):
 
 def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_header: bool = True):
     """Render the document-scale analysis workflow for PDF/TXT uploads."""
+    
+    # Initialize session state for PDF Analysis
+    if 'pdf_chunk_size' not in st.session_state:
+        st.session_state['pdf_chunk_size'] = 200
+    if 'pdf_continuation_method_index' not in st.session_state:
+        st.session_state['pdf_continuation_method_index'] = 0
+    if 'pdf_temperature' not in st.session_state:
+        st.session_state['pdf_temperature'] = 0.7
+    if 'pdf_top_p' not in st.session_state:
+        st.session_state['pdf_top_p'] = 1.0
+    if 'pdf_analysis_results' not in st.session_state:
+        st.session_state['pdf_analysis_results'] = None
+    if 'pdf_analysis_score_type' not in st.session_state:
+        st.session_state['pdf_analysis_score_type'] = None
+    if 'pdf_analysis_top_k' not in st.session_state:
+        st.session_state['pdf_analysis_top_k'] = None
+    if 'pdf_custom_prompt_text' not in st.session_state:
+        st.session_state['pdf_custom_prompt_text'] = ""
 
     if show_page_header:
         # Page header with clear cache button
@@ -2123,9 +2303,11 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                 st.session_state.pop("pdf_analysis_results", None)
                 st.session_state.pop("pdf_analysis_score_type", None)
                 st.session_state.pop("pdf_analysis_top_k", None)
-                st.session_state.pop("pdf_analysis_continuation_method", None)
-                st.session_state.pop("pdf_analysis_temperature", None)
-                st.session_state.pop("pdf_analysis_top_p", None)
+                st.session_state['pdf_chunk_size'] = 200
+                st.session_state['pdf_continuation_method_index'] = 0
+                st.session_state['pdf_temperature'] = 0.7
+                st.session_state['pdf_top_p'] = 1.0
+                st.session_state['pdf_custom_prompt_text'] = ""
                 rerun_fn = getattr(st, "rerun", None)
                 if callable(rerun_fn):
                     rerun_fn()
@@ -2293,24 +2475,30 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
             'Change Chunk Size (words):',
             min_value=50,
             max_value=2000,
-            value=200,
+            value=st.session_state['pdf_chunk_size'],
             step=25,
             help='Number of words per text chunk'
         )
+        st.session_state['pdf_chunk_size'] = chunk_size
         st.caption("Chunk size must be at least 50 words to run document analysis.")
     with config_col2:
         continuation_method = st.selectbox(
             'Choose a Prompting Method:',
             CONTINUATION_STRATEGIES,
-            index=0,
+            index=min(st.session_state['pdf_continuation_method_index'], len(CONTINUATION_STRATEGIES) - 1),
             help='Pick how the model should be nudged when generating chunk continuations. "Normal Continuation" keeps the default behaviour.',
             key='pdf_continuation_method'
         )
 
+    # Get values from session state for use in logic
+    continuation_method = st.session_state.get('pdf_continuation_method', CONTINUATION_STRATEGIES[0])
+    chunk_size = st.session_state.get('pdf_chunk_size', 200)
+    
     custom_pdf_prompt = None
     if continuation_method == "Custom Prompt":
         custom_pdf_prompt = st.text_area(
             "Custom prompt template",
+            value=st.session_state['pdf_custom_prompt_text'],
             height=180,
             placeholder="Write the instruction to use for each document chunk. Include {input_text} where the chunk should appear (e.g., '[Document chunk]'). Optional placeholders: {word_count}, {char_count}.",
             key="pdf_custom_prompt",
@@ -2343,24 +2531,24 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
 
     ctrl_col1, ctrl_col2 = st.columns(2)
     with ctrl_col1:
-        temperature = st.slider(
+        st.slider(
             'Temperature',
             min_value=0.0,
             max_value=2.0,
-            value=0.7,
+            value=st.session_state['pdf_temperature'],
             step=0.01,
             help='Controls randomness. Lower values make the model more deterministic.',
-            key='pdf_temperature'
+            key='pdf_temperature_slider'
         )
     with ctrl_col2:
-        top_p = st.slider(
+        st.slider(
             'Top-P',
             min_value=0.0,
             max_value=1.0,
-            value=1.0,
+            value=st.session_state['pdf_top_p'],
             step=0.01,
             help='Controls nucleus sampling diversity. 0.5 considers the top 50% probability mass.',
-            key='pdf_top_p'
+            key='pdf_top_p_slider'
         )
 
     analyze_document = st.button(
@@ -2380,6 +2568,10 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
     )
 
     if analyze_document:
+        # Get values from session state
+        temperature = st.session_state.get('pdf_temperature_slider', 0.7)
+        top_p = st.session_state.get('pdf_top_p_slider', 1.0)
+        
         # Set default values for ranking parameters
         if score_type is None:
             score_type = "ROUGE-L"
@@ -2496,6 +2688,24 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
 
 def render_adversarial_persuasion_page(api_key, model_choice, provider):
     """Render the adversarial persuasive prompting workspace."""
+    
+    # Initialize session state for Adversarial Persuasion
+    if 'adv_stage1_input_prompt' not in st.session_state:
+        st.session_state['adv_stage1_input_prompt'] = ""
+    if 'adv_reference_excerpt' not in st.session_state:
+        st.session_state['adv_reference_excerpt'] = DEFAULT_HP_REFERENCE_EXCERPT
+    if 'adv_stage1_attempts' not in st.session_state:
+        st.session_state['adv_stage1_attempts'] = 3
+    if 'adv_stage1_temperature' not in st.session_state:
+        st.session_state['adv_stage1_temperature'] = 0.7
+    if 'adv_stage1_top_p' not in st.session_state:
+        st.session_state['adv_stage1_top_p'] = 0.9
+    if 'adv_stage2_attempts' not in st.session_state:
+        st.session_state['adv_stage2_attempts'] = 5
+    if 'adv_stage2_temperature' not in st.session_state:
+        st.session_state['adv_stage2_temperature'] = 0.8
+    if 'adv_stage2_top_p' not in st.session_state:
+        st.session_state['adv_stage2_top_p'] = 0.95
 
     st.markdown("### 🔓 Persuasive Jailbreak Test")
     strategies = list_persuasion_strategies()
@@ -2554,10 +2764,10 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     st.markdown(
         """
         <div class=\"analysis-callout\">
-            <div class=\"analysis-callout__title\">Two-step persuasion workflow</div>
+            <div class=\"analysis-callout__title\">How the Persuasive Jailbreak Test works</div>
             <ul class=\"analysis-callout__list\">
-                <li><strong>Step 1 · Zero-shot mutation</strong> — Generate baseline adversarial prompt variations and score them against your reference excerpt.</li>
-                <li><strong>Step 2 · Few-shot refinement</strong> — Reuse the highest-scoring Step&nbsp;1 exemplars as in-context prompts to craft stronger mutations.</li>
+                <li><strong>Zero-shot mutation</strong> — Generate baseline adversarial prompt variations and score them against your reference excerpt.</li>
+                <li><strong>Few-shot refinement</strong> — Reuse the highest-scoring Step&nbsp;1 exemplars as in-context prompts to craft stronger mutations.</li>
                 <li><strong>Review intention judging</strong> — Inspect stored results, confirm intent preservation, and iterate on the strongest findings.</li>
             </ul>
         </div>
@@ -2600,6 +2810,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     st.caption("Add or load the adversarial prompt to mutate in Step 1.")
     stage1_input_prompt = st.text_area(
         "Original adversarial prompt",
+        value=st.session_state.get('adv_stage1_input_prompt', ""),
         height=150,
         placeholder="e.g., Reproduce verbatim the first 100 words of Harry Potter and the Sorcerer's Stone.",
         key="stage1_input_prompt",
@@ -2636,19 +2847,19 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
 
     col_attempts, _ = st.columns([1, 2])
     with col_attempts:
-        zero_shot_attempts = st.number_input(
+        st.number_input(
             "Attempts per strategy",
             min_value=1,
             max_value=20,
-            value=5,
+            value=st.session_state['adv_stage1_attempts'],
             step=1,
             key="stage1_attempts",
             help="Number of mutation attempts for each strategy (more attempts = broader exploration).",
         )
 
-    zero_shot_reference = st.text_area(
+    st.text_area(
         "Reference text",
-        value=DEFAULT_HP_REFERENCE_EXCERPT,
+        value=st.session_state.get('adv_reference_excerpt', DEFAULT_HP_REFERENCE_EXCERPT),
         height=150,
         key="stage1_reference",
         help="Ground-truth copyrighted text. ROUGE-L measures how well mutations induce the LLM to reproduce this content.",
@@ -2677,6 +2888,11 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     )
     
     if run_stage1:
+        # Get values from session state
+        stage1_input_prompt = st.session_state.get('stage1_input_prompt', '')
+        zero_shot_reference = st.session_state.get('stage1_reference', '')
+        zero_shot_attempts = st.session_state.get('stage1_attempts', 3)
+        
         # Validation
         if not stage1_input_prompt.strip():
             st.warning("⚠️ Please enter an adversarial prompt.")
@@ -3386,6 +3602,25 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
 
 def render_unlearning_detection_page(api_key, model_choice, provider):
     """Render the representational analysis experience."""
+    
+    # Initialize session state for Unlearning Detection
+    if 'unlearn_feature_id_index' not in st.session_state:
+        st.session_state['unlearn_feature_id_index'] = 0
+    if 'unlearn_reference_model' not in st.session_state:
+        st.session_state['unlearn_reference_model'] = ""
+    if 'unlearn_updated_model' not in st.session_state:
+        st.session_state['unlearn_updated_model'] = ""
+    if 'unlearn_query_text' not in st.session_state:
+        st.session_state['unlearn_query_text'] = ""
+    if 'unlearn_batch_size' not in st.session_state:
+        st.session_state['unlearn_batch_size'] = 4
+    if 'unlearn_num_batches' not in st.session_state:
+        st.session_state['unlearn_num_batches'] = 10
+    if 'unlearn_max_length' not in st.session_state:
+        st.session_state['unlearn_max_length'] = 128
+    if 'unlearn_last_result' not in st.session_state:
+        st.session_state['unlearn_last_result'] = None
+    
     st.markdown("### 🧬 Representational Analysis")
     st.markdown(
         "Run Fisher Information, PCA shift/sim, and layer-wise CKA probes to quantify how unlearning reshapes the reference versus adapted model across every layer."
@@ -3414,14 +3649,18 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
     feature_lookup = {feature.id: feature for feature in features}
 
     with st.form("representational_analysis_form"):
+        feature_options = [feature.id for feature in features]
         selected_feature_id = st.selectbox(
             "Select representational probe",
-            options=[feature.id for feature in features],
-            index=0,
+            options=feature_options,
+            index=min(st.session_state['unlearn_feature_id_index'], len(feature_options) - 1),
             format_func=lambda feature_id: f"{feature_lookup[feature_id].name} — {feature_lookup[feature_id].description}",
             key="representational_feature_selection",
             help="Maps directly to the `feature` argument of `run_feature_analysis`.",
         )
+        # Update index in session state
+        if selected_feature_id in feature_options:
+            st.session_state['unlearn_feature_id_index'] = feature_options.index(selected_feature_id)
 
         selected_feature = feature_lookup[selected_feature_id]
 
@@ -3431,27 +3670,30 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
         with col_ref:
             reference_model_path = st.text_input(
                 "Reference model (baseline)",
+                value=st.session_state['unlearn_reference_model'],
                 placeholder="e.g. gpt2, Qwen/Qwen2.5-7B, or /path/to/local/model",
                 help="Hugging Face model ID (e.g., 'gpt2') or absolute path to local model directory containing config.json",
                 key="representational_reference_model",
             )
         with col_upd:
-            updated_model_path = st.text_input(
+            st.text_input(
                 "Updated / deployed model",
+                value=st.session_state['unlearn_updated_model'],
                 placeholder="Path or HF repo ID for the model under audit",
                 help="Hugging Face model ID (e.g., 'microsoft/DialoGPT-medium') or absolute path to local model directory",
                 key="representational_updated_model",
             )
 
         st.markdown("##### Evaluation prompts")
-        query_text = st.text_area(
+        st.text_area(
             "Evaluation prompts",
+            value=st.session_state['unlearn_query_text'],
             height=180,
             placeholder="Enter one query per line that probes the model's behaviour post-unlearning.\n\nExample:\nThe quick brown fox jumps over the lazy dog.\nUnlearning LLMs is an active area of research.\nWhat is the capital of France?",
             help="Each non-empty line is passed as an element of the `query` list. Enter multiple queries (one per line) to test different prompts.",
             key="representational_query_text",
         )
-        query_preview = [line.strip() for line in query_text.splitlines() if line.strip()]
+        query_preview = [line.strip() for line in st.session_state.get('representational_query_text', '').splitlines() if line.strip()]
 
         if query_preview:
             st.caption(f"📝 **{len(query_preview)} query(ies) will be processed:**")
@@ -3466,31 +3708,31 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
 
         col_batch, col_batches, col_length = st.columns([1, 1, 1])
         with col_batch:
-            batch_size = st.number_input(
+            st.number_input(
                 "Batch size",
                 min_value=1,
                 max_value=128,
-                value=4,
+                value=st.session_state['unlearn_batch_size'],
                 step=1,
                 help="Mini-batch size for analyses that stream batches (FIM, CKA).",
                 key="representational_batch_size",
             )
         with col_batches:
-            num_batches = st.number_input(
+            st.number_input(
                 "Batches",
                 min_value=1,
                 max_value=200,
-                value=10,
+                value=st.session_state['unlearn_num_batches'],
                 step=1,
                 help="Number of dataloader batches to use when estimating statistics (FIM, CKA).",
                 key="representational_num_batches",
             )
         with col_length:
-            max_length = st.number_input(
+            st.number_input(
                 "Max length",
                 min_value=16,
                 max_value=4096,
-                value=128,
+                value=st.session_state['unlearn_max_length'],
                 step=16,
                 help="Maximum sequence length for tokenization.",
                 key="representational_max_length",
@@ -3498,6 +3740,11 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
 
         st.caption("Preview of the backend call that will be executed with your settings:")
         query_list_preview = ", ".join(f'"{q}"' for q in query_preview) or '"<enter at least one query>"'
+        reference_model_path = st.session_state.get('representational_reference_model', '')
+        updated_model_path = st.session_state.get('representational_updated_model', '')
+        batch_size = st.session_state.get('representational_batch_size', 4)
+        num_batches = st.session_state.get('representational_num_batches', 10)
+        max_length = st.session_state.get('representational_max_length', 128)
         call_preview = textwrap.dedent(
             f"""
             run_feature_analysis(

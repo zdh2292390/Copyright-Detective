@@ -281,6 +281,7 @@ def run_knowledge_qa_evaluation(
     num_runs: int = 1,
     temperature: float = 0.0,
     top_p: float = 1.0,
+    progress_callback: Optional[callable] = None,
 ) -> List[List[Dict[str, Any]]]:
     """
     Run knowledge Q&A evaluation for multiple runs.
@@ -293,17 +294,20 @@ def run_knowledge_qa_evaluation(
         num_runs: Number of times to run the evaluation
         temperature: Sampling temperature for answers
         top_p: Top-p sampling parameter
+        progress_callback: Optional callback function(current, total) to report progress
         
     Returns:
         List of evaluation results for each run
     """
     
     all_results = []
+    total_items = num_runs * len(qa_pairs)
+    current_item = 0
     
     for run_idx in range(num_runs):
         run_results = []
         
-        for qa_pair in qa_pairs:
+        for qa_idx, qa_pair in enumerate(qa_pairs):
             question = qa_pair['question']
             ground_truth = qa_pair['answer']
             
@@ -319,6 +323,9 @@ def run_knowledge_qa_evaluation(
             
             # Skip if error
             if isinstance(llm_answer, str) and llm_answer.startswith("Error"):
+                current_item += 1
+                if progress_callback:
+                    progress_callback(current_item, total_items, run_idx + 1, qa_idx + 1, len(qa_pairs))
                 continue
             
             # Evaluate comparison
@@ -329,6 +336,11 @@ def run_knowledge_qa_evaluation(
             )
             
             run_results.append(evaluation)
+            
+            # Update progress
+            current_item += 1
+            if progress_callback:
+                progress_callback(current_item, total_items, run_idx + 1, qa_idx + 1, len(qa_pairs))
         
         all_results.append(run_results)
     
