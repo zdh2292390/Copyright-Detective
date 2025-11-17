@@ -2364,7 +2364,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         )
 
     analyze_document = st.button(
-        "🔍 Analyze Document",
+        "🔍 Run: Document Memorization Detection",
         width='stretch',
         type="primary",
         key="analyze_pdf_button",
@@ -2551,8 +2551,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     reference_text = st.session_state.get("reference_text", "")
     reference_excerpt = reference_text.strip() if reference_text else ""
 
-    st.divider()
-    st.markdown("### 🧪 Evaluation Experiments")
     st.markdown(
         """
         <div class=\"analysis-callout\">
