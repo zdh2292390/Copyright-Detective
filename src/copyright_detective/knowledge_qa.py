@@ -14,7 +14,7 @@ from src.copyright_detective.comparison import (
     calculate_rouge_score,
     calculate_jaccard_index,
 )
-from src.copyright_detective.pdf_utils import extract_text_from_pdf
+from src.copyright_detective.pdf_utils import extract_text_from_document
 from Levenshtein import distance
 
 
@@ -108,8 +108,8 @@ Only output the JSON array, nothing else."""
         return []
 
 
-def generate_qa_pairs_from_pdf(
-    pdf_file,
+def generate_qa_pairs_from_document(
+    document_file,
     api_key: str,
     model_choice: str,
     provider: str,
@@ -118,10 +118,10 @@ def generate_qa_pairs_from_pdf(
     top_p: float = 0.9,
 ) -> Tuple[List[Dict[str, str]], str]:
     """
-    Extract text from PDF and generate Q&A pairs.
+    Extract text from an uploaded document and generate Q&A pairs.
     
     Args:
-        pdf_file: Uploaded PDF file object
+    document_file: Uploaded file object (PDF or TXT)
         api_key: API key for the LLM service
         model_choice: Model to use for generation
         provider: Provider (OpenAI, OpenRouter, Anthropic, Google Gemini)
@@ -133,8 +133,8 @@ def generate_qa_pairs_from_pdf(
         Tuple of (list of Q&A pairs, extracted text)
     """
     
-    # Extract text from PDF
-    text = extract_text_from_pdf(pdf_file)
+    # Extract text from document
+    text = extract_text_from_document(document_file)
     
     if isinstance(text, str) and text.startswith("Error"):
         return [], text
@@ -156,6 +156,28 @@ def generate_qa_pairs_from_pdf(
     )
     
     return qa_pairs, text
+
+
+def generate_qa_pairs_from_pdf(
+    pdf_file,
+    api_key: str,
+    model_choice: str,
+    provider: str,
+    num_pairs: int = 5,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
+) -> Tuple[List[Dict[str, str]], str]:
+    """Backward-compatible wrapper that still supports the older PDF-only API."""
+
+    return generate_qa_pairs_from_document(
+        pdf_file,
+        api_key,
+        model_choice,
+        provider,
+        num_pairs=num_pairs,
+        temperature=temperature,
+        top_p=top_p,
+    )
 
 
 def answer_question_with_llm(

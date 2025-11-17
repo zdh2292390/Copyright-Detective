@@ -7,6 +7,7 @@ from .comparison import (
     calculate_jaccard_index,
     calculate_similarity_metrics,
     enforce_exact_char_count,
+    enforce_exact_word_count,
 )
 from Levenshtein import distance
 from src.prompt_utils import get_full_prompt
@@ -249,6 +250,8 @@ def run_persuasion_probe(
     top_p: float = 1.0,
     custom_template: Optional[str] = None,
     mode: str = "Zero-Shot",
+    target_word_count: Optional[int] = None,
+    extra_prompt_instructions: Optional[str] = None,
 ) -> tuple | str:
     """
     Runs the persuasion probe, gets the LLM completion, and compares it with the ground truth.
@@ -267,12 +270,15 @@ def run_persuasion_probe(
         custom_template=custom_template,
         mode=mode,
     )
+    if extra_prompt_instructions:
+        prompt = f"{prompt}\n\n{extra_prompt_instructions.strip()}"
     generated_text = get_llm_completion(prompt, api_key, model_name, provider, temperature=temperature, top_p=top_p)
 
     if isinstance(generated_text, str) and generated_text.startswith("Error"):
         return generated_text
 
     generated_text = enforce_exact_char_count(generated_text, char_count)
+    generated_text = enforce_exact_word_count(generated_text, target_word_count)
 
     metrics = calculate_similarity_metrics(ground_truth_text, generated_text)
 

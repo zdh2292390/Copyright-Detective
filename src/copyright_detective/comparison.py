@@ -215,6 +215,18 @@ def enforce_exact_char_count(text: str, target: Optional[int]) -> str:
     
     return normalized_text
 
+
+def enforce_exact_word_count(text: str, target_words: Optional[int]) -> str:
+    """Clip the text to the first ``target_words`` tokens (space-delimited)."""
+    if not target_words:
+        return text
+
+    words = _normalize_spaces(text).split()
+    if len(words) <= target_words:
+        return " ".join(words)
+
+    return " ".join(words[:target_words])
+
 # Backward-compatible alias (internal use in legacy imports)
 _enforce_exact_char_count = enforce_exact_char_count
 
@@ -417,6 +429,8 @@ def compare_texts(
     continuation_method="Normal Continuation",
     custom_template: Optional[str] = None,
     mode: str = "Zero-Shot",
+    target_word_count: Optional[int] = None,
+    extra_prompt_instructions: Optional[str] = None,
 ):
     """
     Generates text based on the input_text according to prompt_type and compares it to reference_text.
@@ -468,15 +482,23 @@ def compare_texts(
             "Provide only a short, likely title or attribution for the following text snippet. Do NOT include commentary, summaries, or extra formatting — return only the inferred title/attribution.\n\nSnippet:\n" + input_text
         )
 
+    if extra_prompt_instructions:
+        prompt = f"{prompt}\n\n{extra_prompt_instructions.strip()}"
+
     generated_text = get_llm_completion(prompt, api_key, model_name, provider, temperature=temperature, top_p=top_p)
     # Return early if API error to avoid post-processing masking the error message
     if isinstance(generated_text, str) and generated_text.startswith("Error"):
-        return generated_text, 0.0, 0.0, 0
+        return generated_text, None
 
     # Enforce exact character length to match the ground truth
     generated_text = enforce_exact_char_count(
         generated_text,
         target_char_count,
+    )
+
+    generated_text = enforce_exact_word_count(
+        generated_text,
+        target_word_count,
     )
 
     # If a reference/target text is provided, compute similarity metrics; otherwise return zeros.

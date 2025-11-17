@@ -7,12 +7,12 @@ from src.ui import (
     render_adversarial_persuasion_page,
 )
 
-# Ensure the sidebar starts expanded (and we'll hide the toggle via CSS)
+# Configure Streamlit page - sidebar will be expandable/collapsible via native toggle
 st.set_page_config(
     page_title="Copyright Detective",
     page_icon="🕵️‍♂️",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="expanded",  # Sidebar starts expanded; users can toggle via ☰ button
 )
 
 st.markdown(

@@ -1,4 +1,3 @@
-import io
 import math
 import random
 import textwrap
@@ -18,9 +17,9 @@ from src.copyright_detective.comparison import (
     calculate_rouge_score,
     calculate_jaccard_index,
 )
-from src.copyright_detective.pdf_utils import extract_text_from_pdf, split_text_into_chunks
+from src.copyright_detective.pdf_utils import extract_text_from_document, split_text_into_chunks
 from src.copyright_detective.knowledge_qa import (
-    generate_qa_pairs_from_pdf,
+    generate_qa_pairs_from_document,
     run_knowledge_qa_evaluation,
     calculate_aggregate_metrics,
 )
@@ -144,6 +143,15 @@ PREDEFINED_QA_EXAMPLES = [
         "answer": "the orphanage"
     }
 ]
+
+
+def _get_verbose_generation_instruction() -> str:
+    """Instruction appended to prompts to encourage longer generations."""
+    return textwrap.dedent(
+        """
+        Important: Produce a richly detailed continuation that intentionally exceeds the configured chunk size. Do not add commentary, labels, or hedging statements—write seamless prose as if you were extending the source material. A downstream step will automatically trim your response back to the evaluation length, so err on verbosity.
+        """
+    ).strip()
 
 
 def _resolve_dataset_column(columns: List[str], candidates: List[str], fallback_keyword: str) -> Optional[str]:
@@ -688,6 +696,8 @@ def render_sidebar():
                     "nvidia/nemotron-nano-9b-v2:free",
                     "microsoft/wizardlm-2-8x22b:free",
                     "google/gemma-7b-it:free",
+                    "google/gemini-flash-1.5-8b:free",
+                    "google/gemini-1.5-flash:free",
                     "meta-llama/llama-3.2-3b-instruct:free",
                 ],
             )
@@ -747,6 +757,8 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         st.markdown(
             "Analyze text snippets to detect potential copyright infringement by comparing generated text with ground truth."
         )
+
+    long_output_instruction = _get_verbose_generation_instruction()
 
     # Prompt Selection (moved from sidebar to main page)
     st.markdown(
@@ -942,7 +954,9 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             "ℹ️ The length of the generated text will be adjusted to match the character count of your **Ground Truth** input."
         )
         # Render preview immediately so users can confirm the exact prompt that will be sent
+        prompt_to_preview = f"{prompt_to_preview}\n\n{long_output_instruction}"
         render_prompt_preview(prompt_to_preview)
+        st.caption("We now nudge the model to overwrite the limit and let the app trim it back to your configured chunk size.")
         
     elif prompt_type == "Prior-Context Reconstruction":
         preceding_method = st.selectbox(
@@ -978,7 +992,9 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             "ℹ️ The length of the generated text will be adjusted to match the character count of your **Ground Truth** input."
         )
         # Show the preview immediately after the continuation method selection so users can edit if needed
+        prompt_to_preview = f"{prompt_to_preview}\n\n{long_output_instruction}"
         render_prompt_preview(prompt_to_preview)
+        st.caption("The model is encouraged to output beyond the target length; we trim back automatically during scoring.")
 
     elif prompt_type == "Title Prediction":
         chunk_size_preview = len(text2.split()) if text2 else None
@@ -1025,7 +1041,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             help="Controls diversity via nucleus sampling. 0.5 means half of all likelihood-weighted options are considered.",
         )
 
-    run_analysis = st.button("🚀 Run Analysis", key="run_snippet_analysis_button", use_container_width=True)
+    run_analysis = st.button("🚀 Run: Text Memorization Detection", key="run_snippet_analysis_button", use_container_width=True)
 
     if run_analysis:
         if not api_key:
@@ -1051,6 +1067,9 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             prompt_mode = st.session_state.get("prompt_mode_selector", "Zero-Shot")
             target_char_count = len(text2)
             chunk_size = len(text2.split())
+            enforce_word_target = prompt_type != "Title Prediction"
+            prompt_instructions = long_output_instruction if enforce_word_target else None
+            target_word_count = chunk_size if enforce_word_target else None
 
             if continuation_method == "Custom Prompt" and not custom_template:
                 st.error("⚠️ Please provide a custom prompt template before running the analysis.")
@@ -1074,6 +1093,8 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                             top_p=top_p,
                             custom_template=custom_template,
                             mode=prompt_mode,
+                            target_word_count=target_word_count,
+                            extra_prompt_instructions=prompt_instructions,
                         )
                     else:
                         result = compare_texts(
@@ -1089,16 +1110,27 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                             continuation_method=continuation_method,
                             custom_template=custom_template,
                             mode=prompt_mode,
+                            target_word_count=target_word_count,
+                            extra_prompt_instructions=prompt_instructions,
                         )
                     
                     # Handle potential errors from both functions
                     error_occurred = False
-                    if isinstance(result, str) and result.startswith("Error"):
+                    # Check if result is a tuple and the first element is an error string
+                    if isinstance(result, tuple) and len(result) >= 2:
+                        generated_text, metrics = result
+                        if isinstance(generated_text, str) and generated_text.startswith("Error"):
+                            st.error(f"❌ {generated_text}")
+                            error_occurred = True
+                    elif isinstance(result, str) and result.startswith("Error"):
+                        # Legacy error handling for single string errors
                         st.error(f"❌ {result}")
+                        error_occurred = True
+                    else:
+                        st.error(f"❌ Unexpected result format: {type(result)}")
                         error_occurred = True
 
                     if not error_occurred:
-                        generated_text, metrics = result
                         metrics_map = metrics or {}
                         rouge_score = float(metrics_map.get("rouge_l", 0.0) or 0.0)
                         jaccard_index = float(metrics_map.get("jaccard_index", 0.0) or 0.0)
@@ -1152,6 +1184,8 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                             top_p=top_p,
                             custom_template=custom_template,
                             mode=prompt_mode,
+                            target_word_count=target_word_count,
+                            extra_prompt_instructions=prompt_instructions,
                         )
                     else:
                         result = compare_texts(
@@ -1167,17 +1201,30 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                             continuation_method=continuation_method,
                             custom_template=custom_template,
                             mode=prompt_mode,
+                            target_word_count=target_word_count,
+                            extra_prompt_instructions=prompt_instructions,
                         )
 
                     # Handle potential errors from both functions
                     error_occurred = False
-                    if isinstance(result, str) and result.startswith("Error"):
+                    # Check if result is a tuple and the first element is an error string
+                    if isinstance(result, tuple) and len(result) >= 2:
+                        generated_text, metrics = result
+                        if isinstance(generated_text, str) and generated_text.startswith("Error"):
+                            st.error(f"❌ {generated_text}")
+                            error_occurred = True
+                            break
+                    elif isinstance(result, str) and result.startswith("Error"):
+                        # Legacy error handling for single string errors
                         st.error(f"❌ {result}")
+                        error_occurred = True
+                        break
+                    else:
+                        st.error(f"❌ Unexpected result format: {type(result)}")
                         error_occurred = True
                         break
                     
                     if not error_occurred:
-                        generated_text, metrics = result
                         metrics_map = metrics or {}
                         if prompt_type not in {"Title Prediction"}:
                             generated_text = enforce_exact_char_count(generated_text, target_char_count)
@@ -1460,7 +1507,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
         <div class="analysis-callout">
             <div class="analysis-callout__title">Q&A-Based Detection Workflow</div>
             <ul class="analysis-callout__list">
-                <li>Upload a PDF document containing the knowledge to be tested.</li>
+                <li>Upload a PDF or TXT document containing the knowledge to be tested.</li>
                 <li>Configure an LLM to generate Q&A pairs from the document.</li>
                 <li>Use a second LLM to answer the questions and evaluate memorization.</li>
             </ul>
@@ -1469,13 +1516,13 @@ def render_qa_based_detection(api_key, model_choice, provider):
         unsafe_allow_html=True,
     )
     
-    # Step 1: PDF Upload
-    st.markdown('<p class="analysis-step-label">Step 2 · Upload PDF document</p>', unsafe_allow_html=True)
+    # Step 1: Document Upload
+    st.markdown('<p class="analysis-step-label">Step 2 · Upload PDF/TXT document</p>', unsafe_allow_html=True)
     
-    uploaded_pdf = st.file_uploader(
-        "📎 Choose a PDF file:",
-        type="pdf",
-        help="Select a PDF document to extract knowledge from",
+    uploaded_document = st.file_uploader(
+        "📎 Choose a PDF or TXT file:",
+        type=["pdf", "txt"],
+        help="Select a PDF or UTF-8 TXT document to extract knowledge from",
         key="knowledge_qa_pdf_upload"
     )
     
@@ -1567,7 +1614,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
             max_value=20,
             value=5,
             step=1,
-            help="How many question-answer pairs to generate from the PDF",
+            help="How many question-answer pairs to generate from the uploaded document",
             key="num_qa_pairs"
         )
     
@@ -1596,7 +1643,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
 
     # Button to generate Q&A pairs
     generate_qa = st.button(
-        "🚀 Generate Q&A Pairs from PDF",
+        "🚀 Generate Q&A Pairs from Document",
         key="generate_qa_button",
         type="primary",
         use_container_width=True
@@ -1605,21 +1652,21 @@ def render_qa_based_detection(api_key, model_choice, provider):
     # Initialize session state for Q&A pairs
     if 'generated_qa_pairs' not in st.session_state:
         st.session_state['generated_qa_pairs'] = []
-    if 'pdf_text_content' not in st.session_state:
-        st.session_state['pdf_text_content'] = ""
+    if 'document_text_content' not in st.session_state:
+        st.session_state['document_text_content'] = ""
     
     # Generate Q&A pairs
     if generate_qa:
-        if not uploaded_pdf:
-            st.warning("⚠️ Please upload a PDF file first.")
+        if not uploaded_document:
+            st.warning("⚠️ Please upload a document first.")
         elif not qa_gen_api_key:
             st.error("⚠️ Please provide an API key for Q&A generation.")
         else:
-            from src.copyright_detective.knowledge_qa import generate_qa_pairs_from_pdf
+            from src.copyright_detective.knowledge_qa import generate_qa_pairs_from_document
             
-            with st.spinner(f"🔄 Extracting text from PDF and generating {num_qa_pairs} Q&A pairs with {qa_gen_model}..."):
-                qa_pairs, pdf_text = generate_qa_pairs_from_pdf(
-                    uploaded_pdf,
+            with st.spinner(f"🔄 Extracting text from document and generating {num_qa_pairs} Q&A pairs with {qa_gen_model}..."):
+                qa_pairs, document_text = generate_qa_pairs_from_document(
+                    uploaded_document,
                     qa_gen_api_key,
                     qa_gen_model,
                     qa_gen_provider,
@@ -1628,21 +1675,21 @@ def render_qa_based_detection(api_key, model_choice, provider):
                     top_p=qa_gen_top_p,
                 )
                 
-                if isinstance(pdf_text, str) and pdf_text.startswith("Error"):
-                    st.error(f"❌ {pdf_text}")
+                if isinstance(document_text, str) and document_text.startswith("Error"):
+                    st.error(f"❌ {document_text}")
                 elif not qa_pairs:
                     st.error("❌ Failed to generate Q&A pairs. The LLM may not have returned valid JSON. Please try again or use a different model.")
                 else:
                     st.session_state['generated_qa_pairs'] = qa_pairs
-                    st.session_state['pdf_text_content'] = pdf_text
+                    st.session_state['document_text_content'] = document_text
                     st.success(f"✅ Successfully generated {len(qa_pairs)} Q&A pairs!")
     
     # Display generated Q&A pairs
     if st.session_state['generated_qa_pairs']:
         st.divider()
         st.markdown('<h4 class="section-header sm">📋 Generated Q&A Pairs</h4>', unsafe_allow_html=True)
-        st.caption(f"Generated {len(st.session_state['generated_qa_pairs'])} question-answer pairs from the PDF.")
-        
+        st.caption(f"Generated {len(st.session_state['generated_qa_pairs'])} question-answer pairs from the document.")
+
         for idx, qa_pair in enumerate(st.session_state['generated_qa_pairs'], 1):
             with st.expander(f"Q&A Pair #{idx}", expanded=False):
                 st.markdown("**Question:**")
@@ -1821,7 +1868,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                         "suggesting it is not recalling memorized content from this specific document."
                     )
     else:
-        st.info("👆 Upload a PDF and generate Q&A pairs to begin the knowledge memorization detection process.")
+        st.info("👆 Upload a PDF or TXT file and generate Q&A pairs to begin the knowledge memorization detection process.")
 
 
 def render_decop_detection(api_key, model_choice, provider):
@@ -2061,7 +2108,7 @@ def render_decop_detection(api_key, model_choice, provider):
 
 
 def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_header: bool = True):
-    """Render the document-scale PDF analysis workflow."""
+    """Render the document-scale analysis workflow for PDF/TXT uploads."""
 
     if show_page_header:
         # Page header with clear cache button
@@ -2069,7 +2116,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         with header_col:
             st.markdown('<h4 class="section-header">📄 Document Memorization Detection</h4>', unsafe_allow_html=True)
             st.markdown(
-                "Upload a whole PDF document to automatically analyze text chunks for potential copyright infringement."
+                "Upload a full PDF or TXT document to automatically analyze text chunks for potential copyright infringement."
             )
         with button_col:
             if st.button("🗑️ Clear Cache", key="clear_pdf_cache", help="Remove cached PDF analysis results"):
@@ -2105,7 +2152,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         temperature: float,
         top_p: float,
     ) -> None:
-        """Render ranked PDF chunk results with adjustable controls."""
+        """Render ranked document chunk results with adjustable controls."""
 
         if not results_data:
             st.info("No comparable chunks were produced for ranking.")
@@ -2224,7 +2271,11 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                     metrics=metrics_for_display,
                 )
 
-    uploaded_file = st.file_uploader("📎 Choose a PDF file:", type="pdf", help="Select a PDF document to analyze")
+    uploaded_file = st.file_uploader(
+        "📎 Choose a PDF or TXT file:",
+        type=["pdf", "txt"],
+        help="Select a PDF or UTF-8 TXT document to analyze"
+    )
 
     # Initialize variables to avoid UnboundLocalError
     score_type = None
@@ -2246,6 +2297,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
             step=25,
             help='Number of words per text chunk'
         )
+        st.caption("Chunk size must be at least 50 words to run document analysis.")
     with config_col2:
         continuation_method = st.selectbox(
             'Choose a Prompting Method:',
@@ -2260,9 +2312,9 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         custom_pdf_prompt = st.text_area(
             "Custom prompt template",
             height=180,
-            placeholder="Write the instruction to use for each PDF chunk. Include {input_text} where the chunk should appear (e.g., '[PDF chunk]'). Optional placeholders: {word_count}, {char_count}.",
+            placeholder="Write the instruction to use for each document chunk. Include {input_text} where the chunk should appear (e.g., '[Document chunk]'). Optional placeholders: {word_count}, {char_count}.",
             key="pdf_custom_prompt",
-            help="This template overrides the built-in strategies when analyzing PDF chunks.",
+            help="This template overrides the built-in strategies when analyzing document chunks.",
         )
         st.caption("Tip: Use placeholders like {input_text}, {word_count}, or {char_count} to auto-fill chunk details.")
         if not (custom_pdf_prompt or "").strip():
@@ -2275,14 +2327,19 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         if continuation_method == "Custom Prompt" and (custom_pdf_prompt or "").strip()
         else None
     )
+
+    long_output_instruction = _get_verbose_generation_instruction()
+
     preview_prompt = get_full_prompt(
         prompt_type="Next-Passage Prediction",
-        input_text="[PDF chunk]",
+        input_text="[Document chunk]",
         chunk_size=chunk_size,
         continuation_method=continuation_method,
         custom_template=preview_custom_template,
     )
+    preview_prompt = f"{preview_prompt}\n\n{long_output_instruction}"
     render_prompt_preview(preview_prompt)
+    st.caption("We now instruct the model to write past your chunk size and trim the result automatically to exactly that many words.")
 
     ctrl_col1, ctrl_col2 = st.columns(2)
     with ctrl_col1:
@@ -2306,8 +2363,8 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
             key='pdf_top_p'
         )
 
-    analyze_pdf = st.button(
-        "🔍 Analyze PDF",
+    analyze_document = st.button(
+        "🔍 Analyze Document",
         width='stretch',
         type="primary",
         key="analyze_pdf_button",
@@ -2322,7 +2379,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         unsafe_allow_html=True,
     )
 
-    if analyze_pdf:
+    if analyze_document:
         # Set default values for ranking parameters
         if score_type is None:
             score_type = "ROUGE-L"
@@ -2333,7 +2390,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
             st.error("⚠️ Please enter your API key in the sidebar.")
             return
         if uploaded_file is None:
-            st.error("⚠️ Please upload a PDF file before running the analysis.")
+            st.error("⚠️ Please upload a document before running the analysis.")
             return
         custom_template = None
         if continuation_method == "Custom Prompt":
@@ -2343,15 +2400,14 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                 return
 
         try:
-            progress_bar = st.progress(0, text=f"🔄 Analyzing PDF with {model_choice}... Preparing document...")
-            pdf_buffer = io.BytesIO(uploaded_file.getvalue())
-            pdf_text = extract_text_from_pdf(pdf_buffer)
-            if "Error" in pdf_text:
-                st.error(f"❌ {pdf_text}")
+            progress_bar = st.progress(0, text=f"🔄 Analyzing document with {model_choice}... Preparing content...")
+            document_text = extract_text_from_document(uploaded_file)
+            if isinstance(document_text, str) and document_text.startswith("Error"):
+                st.error(f"❌ {document_text}")
                 return
-            chunk_pairs = split_text_into_chunks(pdf_text, chunk_size=chunk_size)
+            chunk_pairs = split_text_into_chunks(document_text, chunk_size=chunk_size)
             if not chunk_pairs:
-                st.warning("⚠️ Could not split the PDF into enough text chunks for analysis.")
+                st.warning("⚠️ Could not split the document into enough text chunks for analysis.")
                 return
 
             results = []
@@ -2370,6 +2426,8 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                         temperature=temperature,
                         top_p=top_p,
                         custom_template=custom_template,
+                        target_word_count=target_words,
+                        extra_prompt_instructions=long_output_instruction,
                     )
                 else:
                     result = compare_texts(
@@ -2383,6 +2441,8 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                         top_p=top_p,
                         continuation_method=continuation_method,
                         custom_template=custom_template,
+                        target_word_count=target_words,
+                        extra_prompt_instructions=long_output_instruction,
                     )
                 if isinstance(result, str) and result.startswith("Error"):
                     st.error(f"❌ {result}")

@@ -629,17 +629,19 @@ body, input, button, select, textarea {
 [data-testid="stSidebar"] > div::before {
     content: none;
 }
-/* Hide sidebar toggles */
-[data-testid="collapsedControl"] { display: none !important; }
-section[data-testid="stSidebar"] button[kind="header"] { display: none !important; }
-button[title="Hide sidebar"], button[title="Show sidebar"] { display: none !important; }
-button[aria-label="Hide sidebar"], button[aria-label="Show sidebar"] { display: none !important; }
-button[aria-label*="sidebar" i], button[title*="sidebar" i] { display: none !important; }
-section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] button { display: none !important; }
-[role="banner"] button[aria-label*="sidebar" i], [role="banner"] button[title*="sidebar" i] { display: none !important; }
-[role="banner"] button[kind="header"] { display: none !important; }
-section[data-testid="stSidebar"] { min-width: 18rem !important; width: 18rem !important; }
-[data-testid="stAppViewContainer"] > .main { padding-left: 1rem; }
+
+/* Sidebar configuration - using Streamlit's native toggle button */
+/* When expanded, sidebar has default width; when collapsed, main content fills the space */
+section[data-testid="stSidebar"][aria-expanded="true"] { 
+    min-width: 18rem !important; 
+    width: 18rem !important; 
+}
+
+/* Main content area adjusts automatically based on sidebar state */
+[data-testid="stAppViewContainer"] > .main { 
+    padding-left: 1rem; 
+    transition: margin-left 0.3s ease-in-out;
+}
 
 /* Prevent the sticky Streamlit top banner from intercepting mouse wheel events */
 header[data-testid="stHeader"] { pointer-events: none; background: transparent; }
