@@ -1144,6 +1144,9 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     run_analysis = st.button("🚀 Run: Text Memorization Detection", key="run_snippet_analysis_button", use_container_width=True)
 
     if run_analysis:
+        # Clear previous results when starting a new analysis
+        st.session_state['text_analysis_results'] = None
+        
         if not api_key:
             st.error(f"⚠️ Please enter your API key in the sidebar.")
         elif not text1 or not text2:
@@ -1237,27 +1240,15 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                         if prompt_type not in {"Title Prediction"}:
                             generated_text = enforce_exact_char_count(generated_text, target_char_count)
 
-                        # Results section
-                        st.divider()
-                        st.markdown('<p class="analysis-step-label">Results</p>', unsafe_allow_html=True)
-                        st.markdown("### 📊 Analysis Results")
-                        st.caption(
-                            "Metrics reported: ROUGE-1, ROUGE-L, LCS (character/word), ACS (word), Levenshtein distance, semantic similarity, MinHash similarity, and Jaccard index."
-                        )
-
-                        # Highlighted overlap view
-                        st.markdown("**🧠 Direct Recall Overlap**")
-                        render_direct_recall_diff(text2, generated_text, metrics=metrics_map)
-
-                        # Conclusion
-                        if rouge_score > 0.5 or jaccard_index > 0.5:
-                            st.success(
-                                "🎯 **High similarity detected!** This may indicate potential copyright concerns."
-                            )
-                        else:
-                            st.info(
-                                "✅ **Low to moderate similarity.** The generated text appears sufficiently different."
-                            )
+                        # Store results in session state
+                        st.session_state['text_analysis_results'] = {
+                            'type': 'single',
+                            'text2': text2,
+                            'generated_text': generated_text,
+                            'metrics_map': metrics_map,
+                            'rouge_score': rouge_score,
+                            'jaccard_index': jaccard_index
+                        }
             else:
                 # Multiple runs: Inference Results Over Multiple Runs
                 st.divider()
@@ -1334,224 +1325,275 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 progress_bar.progress(1.0, text="✅ All runs completed!")
 
                 if similarity_scores:
-                    # Display generated texts for each run
-                    st.markdown('<h3 class="section-header sm">🤖 Generated Texts for Each Run</h3>', unsafe_allow_html=True)
-                    st.caption(
-                        "Each run reports ROUGE-1, ROUGE-L, LCS (character/word), ACS (word), Levenshtein distance, semantic similarity, MinHash similarity, and Jaccard index."
-                    )
-                    for i, text in enumerate(generated_texts):
-                        metrics_for_run = similarity_scores[i] if i < len(similarity_scores) else {}
-                        with st.expander(f"Run {i+1}", expanded=False):
-                            render_direct_recall_diff(text2, text, title=f"Run {i+1}", metrics=metrics_for_run)
+                    # Store results in session state
+                    st.session_state['text_analysis_results'] = {
+                        'type': 'multiple',
+                        'text2': text2,
+                        'generated_texts': generated_texts,
+                        'similarity_scores': similarity_scores,
+                        'inference_runs': inference_runs
+                    }
 
-                    metrics_df = pd.DataFrame(similarity_scores).apply(pd.to_numeric, errors="coerce")
 
-                    if not metrics_df.empty:
-                        # Set index to start from 1 instead of 0
-                        metrics_df.index = range(1, len(metrics_df) + 1)
-                        st.markdown('<h4 class="section-header sm">📄 Run Metrics Overview</h4>', unsafe_allow_html=True)
-                        column_order = [
-                            "rouge_l",
-                            "rouge_1",
-                            "jaccard_index",
-                            "lcs_char_ratio",
-                            "lcs_char_length",
-                            "lcs_word_ratio",
-                            "lcs_word_length",
-                            "acs_word",
-                            "semantic_similarity",
-                            "minhash_similarity",
-                            "levenshtein",
-                        ]
-                        available_columns = [col for col in column_order if col in metrics_df.columns]
-                        if available_columns:
-                            st.dataframe(metrics_df[available_columns].round(4))
-                        else:
-                            st.dataframe(metrics_df.round(4))
+    # Display results section (outside of run_analysis block to preserve results)
+    if st.session_state.get('text_analysis_results'):
+        results_data = st.session_state['text_analysis_results']
+        
+        if results_data['type'] == 'single':
+            # Single run results
+            text2 = results_data['text2']
+            generated_text = results_data['generated_text']
+            metrics_map = results_data['metrics_map']
+            rouge_score = results_data['rouge_score']
+            jaccard_index = results_data['jaccard_index']
+            
+            st.divider()
+            st.markdown('<p class="analysis-step-label">Results</p>', unsafe_allow_html=True)
+            st.markdown("### 📊 Analysis Results")
+            st.caption(
+                "Metrics reported: ROUGE-1, ROUGE-L, LCS (character/word), ACS (word), Levenshtein distance, semantic similarity, MinHash similarity, and Jaccard index."
+            )
 
-                        summary_labels = [
-                            ("rouge_l", "ROUGE-L"),
-                            ("rouge_1", "ROUGE-1"),
-                            ("jaccard_index", "Jaccard"),
-                            ("lcs_char_ratio", "LCS (Character)"),
-                            ("lcs_word_ratio", "LCS (Word)"),
-                            ("acs_word", "ACS (Word)"),
-                            ("levenshtein", "Levenshtein"),
-                            ("semantic_similarity", "Semantic Similarity"),
-                            ("minhash_similarity", "MinHash Similarity"),
-                        ]
+            # Highlighted overlap view
+            st.markdown("**🧠 Direct Recall Overlap**")
+            render_direct_recall_diff(text2, generated_text, metrics=metrics_map)
 
-                        summary_rows = []
-                        for key, label in summary_labels:
-                            if key not in metrics_df.columns:
-                                continue
-                            series = metrics_df[key].dropna()
-                            if series.empty:
-                                continue
-                            summary_rows.append(
-                                {
-                                    "Metric": label,
-                                    "Min": float(series.min()),
-                                    "Max": float(series.max()),
-                                    "Avg": float(series.mean()),
-                                }
-                            )
+            # Conclusion
+            if rouge_score > 0.5 or jaccard_index > 0.5:
+                st.success(
+                    "🎯 **High similarity detected!** This may indicate potential copyright concerns."
+                )
+            else:
+                st.info(
+                    "✅ **Low to moderate similarity.** The generated text appears sufficiently different."
+                )
+        
+        elif results_data['type'] == 'multiple':
+            # Multiple runs results
+            text2 = results_data['text2']
+            generated_texts = results_data['generated_texts']
+            similarity_scores = results_data['similarity_scores']
+            total_runs = len(generated_texts)
+            
+            st.divider()
+            st.markdown('<p class="analysis-step-label">Results</p>', unsafe_allow_html=True)
+            st.markdown('<h3 class="multi-run-title">🔄 Inference Results Over Multiple Runs</h3>', unsafe_allow_html=True)
+            
+            # Display generated texts for each run
+            st.markdown('<h3 class="section-header sm">🤖 Generated Texts for Each Run</h3>', unsafe_allow_html=True)
+            st.caption(
+                "Each run reports ROUGE-1, ROUGE-L, LCS (character/word), ACS (word), Levenshtein distance, semantic similarity, MinHash similarity, and Jaccard index."
+            )
+            for i, text in enumerate(generated_texts):
+                metrics_for_run = similarity_scores[i] if i < len(similarity_scores) else {}
+                with st.expander(f"Run {i+1}", expanded=False):
+                    render_direct_recall_diff(text2, text, title=f"Run {i+1}", metrics=metrics_for_run)
 
-                        st.markdown("---")
-                        st.markdown('<h3 class="section-header sm">📊 Statistical Results</h3>', unsafe_allow_html=True)
-                        if summary_rows:
-                            summary_df = pd.DataFrame(summary_rows).set_index("Metric")
-                            st.dataframe(summary_df.round(4))
-                        else:
-                            st.info("No similarity statistics could be computed for the current runs.")
+            metrics_df = pd.DataFrame(similarity_scores).apply(pd.to_numeric, errors="coerce")
 
-                        plot_df = metrics_df.fillna(0.0)
-                        rouge_scores = plot_df.get("rouge_l", pd.Series([0.0] * len(plot_df))).tolist()
-                        jaccard_scores = plot_df.get("jaccard_index", pd.Series([0.0] * len(plot_df))).tolist()
-                        levenshtein_scores = plot_df.get("levenshtein", pd.Series([0.0] * len(plot_df))).tolist()
+            if not metrics_df.empty:
+                # Set index to start from 1 instead of 0
+                metrics_df.index = range(1, len(metrics_df) + 1)
+                st.markdown('<h4 class="section-header sm">📄 Run Metrics Overview</h4>', unsafe_allow_html=True)
+                column_order = [
+                    "rouge_l",
+                    "rouge_1",
+                    "jaccard_index",
+                    "lcs_char_ratio",
+                    "lcs_char_length",
+                    "lcs_word_ratio",
+                    "lcs_word_length",
+                    "acs_word",
+                    "semantic_similarity",
+                    "minhash_similarity",
+                    "levenshtein",
+                ]
+                available_columns = [col for col in column_order if col in metrics_df.columns]
+                if available_columns:
+                    st.dataframe(metrics_df[available_columns].round(4))
+                else:
+                    st.dataframe(metrics_df.round(4))
 
-                        fig, ax = plt.subplots(1, 3, figsize=(15, 5))
+                summary_labels = [
+                    ("rouge_l", "ROUGE-L"),
+                    ("rouge_1", "ROUGE-1"),
+                    ("jaccard_index", "Jaccard"),
+                    ("lcs_char_ratio", "LCS (Character)"),
+                    ("lcs_word_ratio", "LCS (Word)"),
+                    ("acs_word", "ACS (Word)"),
+                    ("levenshtein", "Levenshtein"),
+                    ("semantic_similarity", "Semantic Similarity"),
+                    ("minhash_similarity", "MinHash Similarity"),
+                ]
 
-                        ax[0].plot(rouge_scores, marker='o', label='ROUGE-L')
-                        ax[0].set_title('ROUGE-L Scores')
-                        ax[0].set_xlabel('Run')
-                        ax[0].set_ylabel('Score')
-                        ax[0].legend()
-
-                        ax[1].plot(jaccard_scores, marker='o', label='Jaccard Index', color='orange')
-                        ax[1].set_title('Jaccard Index')
-                        ax[1].set_xlabel('Run')
-                        ax[1].set_ylabel('Score')
-                        ax[1].legend()
-
-                        ax[2].plot(levenshtein_scores, marker='o', label='Levenshtein Distance', color='green')
-                        ax[2].set_title('Levenshtein Distance')
-                        ax[2].set_xlabel('Run')
-                        ax[2].set_ylabel('Distance')
-                        ax[2].legend()
-
-                        st.pyplot(fig)
-
-                        additional_cols = [
-                            column
-                            for column in ["semantic_similarity", "minhash_similarity", "acs_word", "lcs_word_ratio"]
-                            if column in plot_df.columns
-                        ]
-                        if additional_cols:
-                            st.markdown('<h4 class="section-header sm">📈 Additional Metric Trends</h4>', unsafe_allow_html=True)
-                            st.line_chart(plot_df[additional_cols])
-
-                    # Output stability metrics
-                    st.markdown("---")
-                    st.markdown('<h3 class="diversity-title">🌈 Output Diversity Diagnostics</h3>', unsafe_allow_html=True)
-                    st.markdown('<div class="diversity-diagnostics">', unsafe_allow_html=True)
-
-                    unique_counts = Counter(generated_texts)
-                    total_runs = len(generated_texts)
-                    probabilities = [count / total_runs for count in unique_counts.values()]
-                    entropy_bits = -sum(p * math.log(p, 2) for p in probabilities if p > 0)
-                    max_entropy = math.log(len(unique_counts), 2) if len(unique_counts) > 1 else 0.0
-                    normalized_entropy = (entropy_bits / max_entropy) if max_entropy > 0 else 0.0
-                    max_probability = max(probabilities) if probabilities else 0.0
-
-                    diversity_metrics = [
+                summary_rows = []
+                for key, label in summary_labels:
+                    if key not in metrics_df.columns:
+                        continue
+                    series = metrics_df[key].dropna()
+                    if series.empty:
+                        continue
+                    summary_rows.append(
                         {
-                            "label": "Unique Variants",
-                            "value": f"{len(unique_counts)}",
-                            "detail": "Distinct generations observed",
-                        },
-                        {
-                            "label": "Entropy (bits)",
-                            "value": f"{entropy_bits:.3f}",
-                            "detail": "Shannon entropy across unique outputs",
-                        },
-                        {
-                            "label": "Top Probability",
-                            "value": f"{max_probability:.3f}",
-                            "detail": "Share of the most common generation",
-                        },
-                    ]
-
-                    metrics_rows = "\n".join(
-                        (
-                            "<tr>"
-                            f"<td class=\"diversity-metrics-label\">{metric['label']}</td>"
-                            f"<td class=\"diversity-metrics-value\">{metric['value']}</td>"
-                            f"<td class=\"diversity-metrics-detail\">{metric['detail']}</td>"
-                            "</tr>"
-                        )
-                        for metric in diversity_metrics
+                            "Metric": label,
+                            "Min": float(series.min()),
+                            "Max": float(series.max()),
+                            "Avg": float(series.mean()),
+                        }
                     )
 
-                    table_html = textwrap.dedent(
-                        f"""
-                        <div class=\"diversity-metrics-card\">
-                            <table class=\"diversity-metrics-table\">
-                                <thead>
-                                    <tr>
-                                        <th>Metric</th>
-                                        <th>Value</th>
-                                        <th>Details</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {metrics_rows}
-                                </tbody>
-                            </table>
-                        </div>
-                        """
-                    ).strip()
+                st.markdown("---")
+                st.markdown('<h3 class="section-header sm">📊 Statistical Results</h3>', unsafe_allow_html=True)
+                if summary_rows:
+                    summary_df = pd.DataFrame(summary_rows).set_index("Metric")
+                    st.dataframe(summary_df.round(4))
+                else:
+                    st.info("No similarity statistics could be computed for the current runs.")
 
-                    st.markdown(table_html, unsafe_allow_html=True)
+                plot_df = metrics_df.fillna(0.0)
+                rouge_scores = plot_df.get("rouge_l", pd.Series([0.0] * len(plot_df))).tolist()
+                jaccard_scores = plot_df.get("jaccard_index", pd.Series([0.0] * len(plot_df))).tolist()
+                levenshtein_scores = plot_df.get("levenshtein", pd.Series([0.0] * len(plot_df))).tolist()
 
-                    st.caption(
-                        f"Normalized entropy: {normalized_entropy * 100:.1f}% of the theoretical maximum for {len(unique_counts)} unique outputs."
+                fig, ax = plt.subplots(1, 3, figsize=(15, 5))
+
+                ax[0].plot(rouge_scores, marker='o', label='ROUGE-L')
+                ax[0].set_title('ROUGE-L Scores')
+                ax[0].set_xlabel('Run')
+                ax[0].set_ylabel('Score')
+                ax[0].legend()
+
+                ax[1].plot(jaccard_scores, marker='o', label='Jaccard Index', color='orange')
+                ax[1].set_title('Jaccard Index')
+                ax[1].set_xlabel('Run')
+                ax[1].set_ylabel('Score')
+                ax[1].legend()
+
+                ax[2].plot(levenshtein_scores, marker='o', label='Levenshtein Distance', color='green')
+                ax[2].set_title('Levenshtein Distance')
+                ax[2].set_xlabel('Run')
+                ax[2].set_ylabel('Distance')
+                ax[2].legend()
+
+                st.pyplot(fig)
+
+                additional_cols = [
+                    column
+                    for column in ["semantic_similarity", "minhash_similarity", "acs_word", "lcs_word_ratio"]
+                    if column in plot_df.columns
+                ]
+                if additional_cols:
+                    st.markdown('<h4 class="section-header sm">📈 Additional Metric Trends</h4>', unsafe_allow_html=True)
+                    st.line_chart(plot_df[additional_cols])
+
+            # Output stability metrics
+            st.markdown("---")
+            st.markdown('<h3 class="diversity-title">🌈 Output Diversity Diagnostics</h3>', unsafe_allow_html=True)
+            st.markdown('<div class="diversity-diagnostics">', unsafe_allow_html=True)
+
+            unique_counts = Counter(generated_texts)
+            probabilities = [count / total_runs for count in unique_counts.values()]
+            entropy_bits = -sum(p * math.log(p, 2) for p in probabilities if p > 0)
+            max_entropy = math.log(len(unique_counts), 2) if len(unique_counts) > 1 else 0.0
+            normalized_entropy = (entropy_bits / max_entropy) if max_entropy > 0 else 0.0
+            max_probability = max(probabilities) if probabilities else 0.0
+
+            diversity_metrics = [
+                {
+                    "label": "Unique Variants",
+                    "value": f"{len(unique_counts)}",
+                    "detail": "Distinct generations observed",
+                },
+                {
+                    "label": "Entropy (bits)",
+                    "value": f"{entropy_bits:.3f}",
+                    "detail": "Shannon entropy across unique outputs",
+                },
+                {
+                    "label": "Top Probability",
+                    "value": f"{max_probability:.3f}",
+                    "detail": "Share of the most common generation",
+                },
+            ]
+
+            metrics_rows = "\n".join(
+                (
+                    "<tr>"
+                    f"<td class=\"diversity-metrics-label\">{metric['label']}</td>"
+                    f"<td class=\"diversity-metrics-value\">{metric['value']}</td>"
+                    f"<td class=\"diversity-metrics-detail\">{metric['detail']}</td>"
+                    "</tr>"
+                )
+                for metric in diversity_metrics
+            )
+
+            table_html = textwrap.dedent(
+                f"""
+                <div class=\"diversity-metrics-card\">
+                    <table class=\"diversity-metrics-table\">
+                        <thead>
+                            <tr>
+                                <th>Metric</th>
+                                <th>Value</th>
+                                <th>Details</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {metrics_rows}
+                        </tbody>
+                    </table>
+                </div>
+                """
+            ).strip()
+
+            st.markdown(table_html, unsafe_allow_html=True)
+
+            st.caption(
+                f"Normalized entropy: {normalized_entropy * 100:.1f}% of the theoretical maximum for {len(unique_counts)} unique outputs."
+            )
+
+            if unique_counts:
+                top_k_limit = min(5, len(unique_counts))
+                most_common = unique_counts.most_common(top_k_limit)
+                top_k_records = []
+                for rank, (sample_text, count) in enumerate(most_common, start=1):
+                    probability = count / total_runs
+                    preview = sample_text.strip()
+                    if len(preview) > 120:
+                        preview = preview[:117].rstrip() + "…"
+                    top_k_records.append(
+                        {
+                            "Rank": rank,
+                            "Frequency": count,
+                            "Probability": probability,
+                            "Sample Preview": preview,
+                        }
                     )
 
-                    if unique_counts:
-                        top_k_limit = min(5, len(unique_counts))
-                        most_common = unique_counts.most_common(top_k_limit)
-                        top_k_records = []
-                        for rank, (sample_text, count) in enumerate(most_common, start=1):
-                            probability = count / total_runs
-                            preview = sample_text.strip()
-                            if len(preview) > 120:
-                                preview = preview[:117].rstrip() + "…"
-                            top_k_records.append(
-                                {
-                                    "Rank": rank,
-                                    "Frequency": count,
-                                    "Probability": probability,
-                                    "Sample Preview": preview,
-                                }
-                            )
+                st.markdown('<h4 class="diversity-subtitle">Top Sample Distribution</h4>', unsafe_allow_html=True)
+                render_top_sample_distribution(top_k_records)
 
-                        st.markdown('<h4 class="diversity-subtitle">Top Sample Distribution</h4>', unsafe_allow_html=True)
-                        render_top_sample_distribution(top_k_records)
+                labels = []
+                for record in top_k_records:
+                    preview_label = record["Sample Preview"]
+                    if preview_label:
+                        labels.append(f"#{record['Rank']} {preview_label}")
+                    else:
+                        labels.append(f"#{record['Rank']}")
+                prob_series = pd.Series(
+                    [count / total_runs for _, count in most_common],
+                    index=labels,
+                )
+                st.bar_chart(prob_series, height=260)
 
-                        labels = []
-                        for record in top_k_records:
-                            preview_label = record["Sample Preview"]
-                            if preview_label:
-                                labels.append(f"#{record['Rank']} {preview_label}")
-                            else:
-                                labels.append(f"#{record['Rank']}")
-                        prob_series = pd.Series(
-                            [count / total_runs for _, count in most_common],
-                            index=labels,
-                        )
-                        st.bar_chart(prob_series, height=260)
+            st.markdown("</div>", unsafe_allow_html=True)
 
-                    st.markdown("</div>", unsafe_allow_html=True)
+            if total_runs >= 3 and (normalized_entropy < 0.3 or max_probability > 0.6):
+                st.warning(
+                    "⚠️ Observed low output entropy or high mode concentration across runs. Stable generations may suggest residual memorization — consider increasing temperature or probing with alternative prompts."
+                )
 
-                    if total_runs >= 3 and (normalized_entropy < 0.3 or max_probability > 0.6):
-                        st.warning(
-                            "⚠️ Observed low output entropy or high mode concentration across runs. Stable generations may suggest residual memorization — consider increasing temperature or probing with alternative prompts."
-                        )
-
-                    st.markdown('</div>', unsafe_allow_html=True)
-
-
+            st.markdown('</div>', unsafe_allow_html=True)
 
     # The Jailbreak Persuasion Probe section is now integrated above.
     # render_jailbreak_persuasion_probe_section(api_key, model_choice, provider)
@@ -1825,7 +1867,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
         st.caption(f"Generated {len(st.session_state['qa_generated_qa_pairs'])} question-answer pairs from the document.")
 
         for idx, qa_pair in enumerate(st.session_state['qa_generated_qa_pairs'], 1):
-            with st.expander(f"Q&A Pair #{idx}", expanded=False):
+            with st.expander(f"Q&A Pair {idx}", expanded=False):
                 st.markdown("**Question:**")
                 st.write(qa_pair['question'])
                 st.markdown("**Answer:**")
@@ -2069,7 +2111,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
             reference_eval = run_details[0][1]
             question_preview = textwrap.shorten(reference_eval['question'], width=60, placeholder='…')
 
-            with st.expander(f"Q&A Pair #{qa_idx + 1} · {question_preview}", expanded=(qa_idx == 0)):
+            with st.expander(f"Q&A Pair {qa_idx + 1} · {question_preview}", expanded=(qa_idx == 0)):
                 st.markdown("**📥 Question**")
                 question_card_html = (
                     "<div style=\""
