@@ -12,12 +12,19 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import pandas as pd
 
 from openai import OpenAI
+from anthropic import Anthropic, HUMAN_PROMPT, AI_PROMPT
 
 from src.direct_recall.comparison import get_llm_completion
 from src.direct_recall.pdf_utils import extract_text_from_document
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DECOP_DATA_DIR = REPO_ROOT / "src" / "direct_recall" / "decop" / "data"
+DECOP_QA_PROMPT = (
+    "You are entering a multiple choice questions exam. You should directly answer each question by choosing "
+    "the correct option. Be concise and straight to the point in your answer. Output only the letter corresponding "
+    "to the correct answer."
+)
+ANSWER_PREFIX = "Answer:"
 OPTION_LABELS = ["A", "B", "C", "D"]
 LETTER_PATTERN = re.compile(r"[A-D]", re.IGNORECASE)
 
@@ -277,16 +284,32 @@ def load_dataset_excerpt(
     return combined_text, meta
 
 
-def _format_mcq_prompt(question: Dict[str, Any]) -> str:
-    option_lines = [f"{option['label']}. {option['text']}" for option in question.get("options", [])]
-    options_block = "\n".join(option_lines)
-    return (
-        "Answer the multiple-choice question by selecting the single best option. "
-        "Respond with only the letter (A, B, C, or D).\n\n"
-        f"Question: {question.get('question')}\n"
-        f"Options:\n{options_block}\n"
-        "Answer:"
+def _build_decop_prompt_body(question: Dict[str, Any]) -> Tuple[str, str]:
+    """Create DECOP-style prompt body for both OpenAI and Anthropic evaluators.
+
+    The downstream LLM must *never* see the source passage. We therefore reuse the
+    exact instructions from ``src/direct_recall/decop/2_decop_blackbox.py`` so the
+    evaluator only receives the synthetic question plus four options and is forced
+    to reply with a single letter.
+    """
+
+    prompt_question = _clean_text(question.get("question", "")) or (
+        "Which of the following options best matches the reference text?"
     )
+    option_lines = []
+    for option in question.get("options", []):
+        label = option.get("label") or ""
+        text = _clean_text(option.get("text", ""))
+        if not label or not text:
+            continue
+        option_lines.append(f"{label}. {text}")
+
+    options_block = "\n".join(option_lines)
+    question_block = f"Question: {prompt_question}\nOptions:\n{options_block}\n"
+
+    openai_prompt = f"{DECOP_QA_PROMPT} {question_block}{ANSWER_PREFIX} "
+    anthropic_prompt = f"{HUMAN_PROMPT} {DECOP_QA_PROMPT} {question_block}{AI_PROMPT} {ANSWER_PREFIX} "
+    return openai_prompt, anthropic_prompt
 
 
 def _extract_option_from_text(text: str) -> str:
@@ -354,9 +377,9 @@ def _try_openai_style_completion(
         "model": model_choice,
         "prompt": prompt,
         "max_tokens": 1,
-        "temperature": temperature,
-        "top_p": top_p,
-        "logprobs": 5,
+        "temperature": 0,
+        "top_p": 1,
+        "logprobs": 4,
         "stop": ["\n"],
     }
 
@@ -392,6 +415,32 @@ def _try_openai_style_completion(
     }
 
 
+def _try_anthropic_style_completion(
+    prompt: str,
+    api_key: str,
+    model_choice: str,
+) -> Optional[Dict[str, Any]]:
+    client = Anthropic(api_key=api_key)
+    try:
+        completion = client.completions.create(
+            model=model_choice,
+            prompt=prompt,
+            max_tokens_to_sample=1,
+            temperature=0,
+        )
+    except Exception:
+        return None
+
+    token_text = (completion.completion or "").strip()
+    selected = _extract_option_from_text(token_text)
+    return {
+        "choice": selected or "?",
+        "option_probabilities": None,
+        "raw_response": token_text,
+        "logit_mode": "text",
+    }
+
+
 def _evaluate_with_basic_completion(
     prompt: str,
     api_key: str,
@@ -405,9 +454,9 @@ def _evaluate_with_basic_completion(
         api_key,
         model_choice,
         provider,
-        temperature=temperature,
-        top_p=top_p,
-        max_output_tokens=8,
+        temperature=0.0,
+        top_p=1.0,
+        max_output_tokens=1,
         stop_sequences=["\n"],
         progress_message="Running single-choice evaluation",
     )
@@ -429,14 +478,19 @@ def evaluate_single_choice_question(
     temperature: float = 0.0,
     top_p: float = 1.0,
 ) -> Dict[str, Any]:
-    prompt = _format_mcq_prompt(question)
+    openai_prompt, anthropic_prompt = _build_decop_prompt_body(question)
 
     if provider in {"OpenAI", "OpenRouter"}:
-        result = _try_openai_style_completion(prompt, api_key, model_choice, provider, temperature, top_p)
+        result = _try_openai_style_completion(openai_prompt, api_key, model_choice, provider, temperature, top_p)
         if result:
             return result
 
-    return _evaluate_with_basic_completion(prompt, api_key, model_choice, provider, temperature, top_p)
+    if provider == "Anthropic":
+        result = _try_anthropic_style_completion(anthropic_prompt, api_key, model_choice)
+        if result:
+            return result
+
+    return _evaluate_with_basic_completion(openai_prompt, api_key, model_choice, provider, temperature, top_p)
 
 
 def run_single_choice_evaluation(
