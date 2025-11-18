@@ -462,14 +462,81 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
         
         # Get the report
         report = results.report()
-        st.markdown("**Summary Metrics:**")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Mean ROUGE-1", f"{report.get('mean_rouge1', 0) * 100:.2f}%")
-        with col2:
-            st.metric("Mean ROUGE-2", f"{report.get('mean_rouge2', 0) * 100:.2f}%")
-        with col3:
-            st.metric("Mean ROUGE-L", f"{report.get('mean_rougeL', 0) * 100:.2f}%")
+        entries = report.get('entries') or results.entries
+        total_examples = len(entries)
+
+        summary_metrics = [
+            {
+                "label": "Mean ROUGE-1",
+                "value": f"{report.get('mean_rouge1', 0.0) * 100:.2f}%",
+                "detail": "Average unigram overlap",
+            },
+            {
+                "label": "Mean ROUGE-2",
+                "value": f"{report.get('mean_rouge2', 0.0) * 100:.2f}%",
+                "detail": "Average bigram overlap",
+            },
+            {
+                "label": "Mean ROUGE-L",
+                "value": f"{report.get('mean_rougeL', 0.0) * 100:.2f}%",
+                "detail": "Longest common subsequence",
+            },
+            {
+                "label": "Evaluated QA Pairs",
+                "value": str(total_examples),
+                "detail": "Questions scored in this run",
+            },
+        ]
+
+        metrics_css = """
+        <style>
+        .knowmem-metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin: 0.8rem 0 1.2rem;
+        }
+        .knowmem-metric-card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 14px;
+            padding: 1rem 1.2rem;
+            box-shadow: 0 12px 35px rgba(0, 0, 0, 0.08);
+            backdrop-filter: blur(6px);
+        }
+        .knowmem-metric-label {
+            font-size: 0.85rem;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: rgba(255, 255, 255, 0.7);
+            margin-bottom: 0.25rem;
+        }
+        .knowmem-metric-value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: #42c6ff;
+            margin-bottom: 0.2rem;
+        }
+        .knowmem-metric-detail {
+            font-size: 0.9rem;
+            color: rgba(255, 255, 255, 0.6);
+        }
+        </style>
+        """
+
+        cards_html = "".join(
+            f"""
+            <div class=\"knowmem-metric-card\">
+                <div class=\"knowmem-metric-label\">{metric['label']}</div>
+                <div class=\"knowmem-metric-value\">{metric['value']}</div>
+                <div class=\"knowmem-metric-detail\">{metric['detail']}</div>
+            </div>
+            """
+            for metric in summary_metrics
+        )
+
+        st.markdown("**Summary Metrics:**", unsafe_allow_html=True)
+        st.markdown(metrics_css + f"<div class='knowmem-metrics-grid'>{cards_html}</div>", unsafe_allow_html=True)
         
         # Display detailed results for each example
         st.markdown("**Detailed Results:**")
@@ -1486,7 +1553,6 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
 
 
 
-    st.markdown("---")
     # The Jailbreak Persuasion Probe section is now integrated above.
     # render_jailbreak_persuasion_probe_section(api_key, model_choice, provider)
 
@@ -1495,10 +1561,22 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
     """Render the knowledge memorization detection workflow using QA pairs."""
     
     if show_page_header:
-        st.markdown('<h4 class="section-header">📚 Knowledge Memorization Detection</h4>', unsafe_allow_html=True)
-        st.markdown(
-            "Test if an LLM has been trained on specific materials using either Q&A-based or multiple-choice detection methods."
-        )
+        header_col, button_col = st.columns([4, 1])
+        with header_col:
+            st.markdown('<h4 class="section-header">📚 Knowledge Memorization Detection</h4>', unsafe_allow_html=True)
+            st.markdown(
+                "Test if an LLM has been trained on specific materials using either Q&A-based or multiple-choice detection methods."
+            )
+        with button_col:
+            if st.button(
+                "🗑️ Clear Cache",
+                key="clear_knowledge_data",
+                help="Reset cached Q&A generation, DECOP inputs, and evaluation results.",
+            ):
+                for key in list(st.session_state.keys()):
+                    if key.startswith('qa_') or key.startswith('decop_'):
+                        del st.session_state[key]
+                _trigger_rerun()
     
     # Mode selection
     st.markdown(
@@ -1516,28 +1594,14 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
     
     st.markdown('<p class="analysis-step-label">Step 1 · Select detection mode</p>', unsafe_allow_html=True)
     
-    # Add clear data button
-    col_mode, col_clear = st.columns([3, 1])
-    
-    with col_mode:
-        detection_mode = st.radio(
-            "Choose your detection method:",
-            ["Q&A-Based Detection", "Multiple-Choice Question Test (DECOP)"],
-            index=0,
-            help="Q&A mode generates open-ended questions. DECOP uses multiple-choice questions to detect training on specific books or papers.",
-            horizontal=True,
-            key="knowledge_detection_mode"
-        )
-    
-    with col_clear:
-        st.write("")  # Spacing
-        if st.button("🔄 Clear All Data", help="Reset all session data for this page", key="clear_knowledge_data"):
-            # Clear Q&A detection data
-            for key in list(st.session_state.keys()):
-                if key.startswith('qa_') or key.startswith('decop_'):
-                    del st.session_state[key]
-            st.success("✅ All data cleared!")
-            st.rerun()
+    detection_mode = st.radio(
+        "Choose your detection method:",
+        ["Q&A-Based Detection", "Multiple-Choice Question Test (DECOP)"],
+        index=0,
+        help="Q&A mode generates open-ended questions. DECOP uses multiple-choice questions to detect training on specific books or papers.",
+        horizontal=True,
+        key="knowledge_detection_mode"
+    )
 
     
     if detection_mode == "Q&A-Based Detection":
@@ -1598,13 +1662,13 @@ def render_qa_based_detection(api_key, model_choice, provider):
     # Step 2: Configure First LLM and Generate Q&A Pairs
     st.markdown('<p class="analysis-step-label">Step 3 · Configure first LLM to generate Q&A pairs</p>', unsafe_allow_html=True)
     st.markdown(
-        '<p class="analysis-step-caption">Select the model provider and configure generation parameters for creating questions.</p>',
+        '<p class="analysis-step-caption">Select the model provider and configure generation parameters for creating questions/answers.</p>',
         unsafe_allow_html=True,
     )
     
-    # Provider and model selection side by side
-    col_provider, col_model = st.columns(2)
-    
+    # Provider, model selection, and API key in one row
+    col_provider, col_model, col_api = st.columns(3)
+
     with col_provider:
         # Provider selection for first LLM (preserve selection across tabs)
         provider_options = ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"]
@@ -1617,7 +1681,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
         )
         # Update stored index when selection changes
         st.session_state['qa_gen_provider_index'] = provider_options.index(qa_gen_provider)
-    
+
     with col_model:
         # Model selection based on provider
         if qa_gen_provider == "OpenAI":
@@ -1665,13 +1729,14 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 ["gemini-1.5-flash", "gemini-1.5-pro"],
                 key="qa_gen_model"
             )
-    
-    qa_gen_api_key = st.text_input(
-        "API Key",
-        type="password",
-        help="Enter API key for the first LLM. Leave blank to use the same key from sidebar.",
-        key="qa_gen_api_key"
-    )
+
+    with col_api:
+        qa_gen_api_key = st.text_input(
+            "API Key",
+            type="password",
+            help="Enter API key for the first LLM. Leave blank to use the same key from sidebar.",
+            key="qa_gen_api_key"
+        )
     
     # Use sidebar API key if not provided
     if not qa_gen_api_key:
@@ -1880,35 +1945,111 @@ def render_qa_based_detection(api_key, model_choice, provider):
     if st.session_state['qa_evaluation_results']:
         all_results = st.session_state['qa_evaluation_results']
         
-        # Display results
-        st.markdown("---")
-        st.markdown('<p class="analysis-step-label">Evaluation Results</p>', unsafe_allow_html=True)
-        
         # Calculate aggregate metrics
         agg_metrics = calculate_aggregate_metrics(all_results)
         
-        # Display summary metrics
+        # Display summary metrics with elegant card design
         st.markdown("#### 📊 Summary Metrics")
-        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-        with col_m1:
-            st.metric("Avg ROUGE Score", f"{agg_metrics.get('avg_rouge_score', 0):.4f}")
-        with col_m2:
-            st.metric("Avg Jaccard Index", f"{agg_metrics.get('avg_jaccard_index', 0):.4f}")
-        with col_m3:
-            st.metric("Avg Levenshtein", f"{agg_metrics.get('avg_levenshtein_distance', 0):.2f}")
-        with col_m4:
-            st.metric("Avg Norm. Levenshtein", f"{agg_metrics.get('avg_normalized_levenshtein', 0):.4f}")
         
-        # Display min/max ranges
-        st.markdown("**Score Ranges:**")
-        col_r1, col_r2 = st.columns(2)
-        with col_r1:
-            st.write(f"ROUGE: {agg_metrics.get('min_rouge', 0):.4f} - {agg_metrics.get('max_rouge', 0):.4f}")
-        with col_r2:
-            st.write(f"Jaccard: {agg_metrics.get('min_jaccard', 0):.4f} - {agg_metrics.get('max_jaccard', 0):.4f}")
+        metrics_data = [
+            {
+                "label": "ROUGE Score",
+                "icon": "📝",
+                "value": f"{agg_metrics.get('avg_rouge_score', 0):.4f}",
+                "range": f"{agg_metrics.get('min_rouge', 0):.3f} - {agg_metrics.get('max_rouge', 0):.3f}",
+                "description": "Overlap similarity"
+            },
+            {
+                "label": "Jaccard Index",
+                "icon": "🔍",
+                "value": f"{agg_metrics.get('avg_jaccard_index', 0):.4f}",
+                "range": f"{agg_metrics.get('min_jaccard', 0):.3f} - {agg_metrics.get('max_jaccard', 0):.3f}",
+                "description": "Token intersection"
+            },
+            {
+                "label": "Levenshtein Distance",
+                "icon": "📏",
+                "value": f"{agg_metrics.get('avg_levenshtein_distance', 0):.1f}",
+                "range": "",
+                "description": "Character edits"
+            },
+            {
+                "label": "Normalized Edit",
+                "icon": "⚖️",
+                "value": f"{agg_metrics.get('avg_normalized_levenshtein', 0):.4f}",
+                "range": "",
+                "description": "Relative distance"
+            }
+        ]
+        
+        metrics_card_css = """
+        <style>
+        .qa-metrics-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1rem;
+            margin: 1rem 0 1.5rem;
+        }
+        .qa-metric-card {
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.05) 0%, rgba(147, 51, 234, 0.05) 100%);
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            border-radius: 12px;
+            padding: 1rem;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+        }
+        .qa-metric-card:hover {
+            box-shadow: 0 4px 16px rgba(59, 130, 246, 0.15);
+            border-color: rgba(59, 130, 246, 0.3);
+            transform: translateY(-2px);
+        }
+        .qa-metric-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.6rem;
+        }
+        .qa-metric-icon {
+            font-size: 1.2rem;
+        }
+        .qa-metric-label {
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: rgba(71, 85, 105, 0.9);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .qa-metric-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #1e40af;
+            margin-bottom: 0.3rem;
+            line-height: 1.2;
+        }
+        .qa-metric-range {
+            font-size: 0.75rem;
+            color: rgba(100, 116, 139, 0.7);
+            margin-bottom: 0.2rem;
+        }
+        .qa-metric-description {
+            font-size: 0.8rem;
+            color: rgba(100, 116, 139, 0.8);
+            font-style: italic;
+        }
+        </style>
+        """
+        
+        cards_html = ""
+        for metric in metrics_data:
+            range_html = f'<div class="qa-metric-range">Range: {metric["range"]}</div>' if metric['range'] else ''
+            cards_html += f'<div class="qa-metric-card"><div class="qa-metric-header"><span class="qa-metric-icon">{metric["icon"]}</span><span class="qa-metric-label">{metric["label"]}</span></div><div class="qa-metric-value">{metric["value"]}</div>{range_html}<div class="qa-metric-description">{metric["description"]}</div></div>'
+        
+        st.markdown(
+            metrics_card_css + f'<div class="qa-metrics-container">{cards_html}</div>',
+            unsafe_allow_html=True
+        )
         
         # Display detailed results grouped by Q&A pair
-        st.markdown("---")
         st.markdown("#### 📝 Detailed Results by Q&A Pair")
 
         qa_pairs_generated = st.session_state.get('qa_generated_qa_pairs', [])
@@ -1951,8 +2092,6 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 st.markdown(question_card_html, unsafe_allow_html=True)
 
                 for run_idx, eval_result in run_details:
-                    st.markdown(f"**Run #{run_idx} · Ground Truth vs. LLM Answer**")
-
                     metrics_payload = {
                         "rouge_l": eval_result.get('rouge_score'),
                         "jaccard_index": eval_result.get('jaccard_index'),
@@ -1965,14 +2104,11 @@ def render_qa_based_detection(api_key, model_choice, provider):
                     render_direct_recall_diff(
                         reference_eval['ground_truth'],
                         eval_result['llm_answer'],
-                        title=f"Run #{run_idx} · Answer Similarity",
+                        title=f"Run #{run_idx}",
                         metrics=metrics_payload,
                     )
-
-                    st.divider()
         
         # Interpretation
-        st.markdown("---")
         st.markdown("#### 🔍 Interpretation")
         avg_rouge = agg_metrics.get('avg_rouge_score', 0)
         avg_jaccard = agg_metrics.get('avg_jaccard_index', 0)
@@ -2018,9 +2154,9 @@ def render_decop_detection(api_key, model_choice, provider):
     st.markdown(
         """
         <div class="analysis-callout">
-            <div class="analysis-callout__title">DECOP: Multiple-Choice Copyright Detection</div>
+            <div class="analysis-callout__title">Multiple-Choice Copyright Detection</div>
             <ul class="analysis-callout__list">
-                <li>DECOP tests if an LLM can identify verbatim passages from copyrighted materials among paraphrased alternatives.</li>
+                <li>Test if an LLM can identify verbatim passages from copyrighted materials among paraphrased alternatives.</li>
                 <li>Choose a dataset (BookTection for books, arXivTection for academic papers).</li>
                 <li>Configure model parameters and run evaluation with permuted multiple-choice questions.</li>
                 <li>Analyze accuracy metrics to detect training memorization traces.</li>
