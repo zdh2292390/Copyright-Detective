@@ -708,7 +708,7 @@ def render_header():
         """
         <div class="app-header">
             <div class="title">🕵️‍♂️ Copyright Detective</div>
-            <div class="subtitle" style="font-size: 1.1em;">Analyze and find evidence for potential text copyright infringement in LLM application</div>
+                <div class="subtitle" style="font-size: 1.1em;">Analyze and find evidence of potential text copyright infringement in LLM applications</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1607,13 +1607,13 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
         with header_col:
             st.markdown('<h4 class="section-header">📚 Knowledge Memorization Detection</h4>', unsafe_allow_html=True)
             st.markdown(
-                "Test if an LLM has been trained on specific materials using either Q&A-based or multiple-choice detection methods."
+                "Test if an LLM has been trained on specific materials using either Open-ended Question or Single-Choice Question."
             )
         with button_col:
             if st.button(
                 "🗑️ Clear Cache",
                 key="clear_knowledge_data",
-                help="Reset cached Q&A generation, DECOP inputs, and evaluation results.",
+                help="Reset cached Q&A generation, single-choice inputs, and evaluation results.",
             ):
                 for key in list(st.session_state.keys()):
                     if key.startswith('qa_') or key.startswith('decop_'):
@@ -1626,8 +1626,8 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
         <div class="analysis-callout">
             <div class="analysis-callout__title">How Knowledge Memorization Detection works</div>
             <ul class="analysis-callout__list">
-                <li><strong>Q&A-Based Detection:</strong> Generate open-ended questions from documents and evaluate how well the target model answers them.</li>
-                <li><strong>Multiple-Choice Test:</strong> Use multiple-choice questions with verbatim passages and paraphrases to detect training on specific books or papers.</li>
+                <li><strong>Open-ended Question:</strong> Generate open-ended questions from documents and evaluate how well the target model answers them.</li>
+                <li><strong>Single-Choice Question:</strong> Design single-choice questions where the options include verbatim text and their paraphrases. Observing the model's selection bias helps infer prior exposure to the source text.</li>
             </ul>
         </div>
         """,
@@ -1638,22 +1638,22 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
     
     detection_mode = st.radio(
         "Choose your detection method:",
-        ["Q&A-Based Detection", "Multiple-Choice Question Test (DECOP)"],
+    ["Open-ended Question", "Single-Choice Question"],
         index=0,
-        help="Q&A mode generates open-ended questions. DECOP uses multiple-choice questions to detect training on specific books or papers.",
+    help="Open-ended Question mode generates open-ended questions. The Single-Choice Question mode designs single-choice questions where the options are closely matched but vary in key details; observing the model's selection bias helps infer prior exposure to the source text.",
         horizontal=True,
         key="knowledge_detection_mode"
     )
 
     
-    if detection_mode == "Q&A-Based Detection":
+    if detection_mode == "Open-ended Question":
         render_qa_based_detection(api_key, model_choice, provider)
     else:
         render_decop_detection(api_key, model_choice, provider)
 
 
 def render_qa_based_detection(api_key, model_choice, provider):
-    """Render Q&A-based knowledge memorization detection."""
+    """Render Open-ended Question knowledge memorization detection."""
     
     # Initialize session state for Q&A detection to preserve data across page switches
     if 'qa_generated_qa_pairs' not in st.session_state:
@@ -1680,7 +1680,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
     st.markdown(
         """
         <div class="analysis-callout">
-            <div class="analysis-callout__title">Q&A-Based Detection Workflow</div>
+            <div class="analysis-callout__title">Open-ended Question Workflow</div>
             <ul class="analysis-callout__list">
                 <li>Upload a PDF or TXT document containing the knowledge to be tested.</li>
                 <li>Configure an LLM to generate Q&A pairs from the document.</li>
@@ -1758,7 +1758,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
         elif qa_gen_provider == "Anthropic":
             qa_gen_model = st.selectbox(
                 "Choose a model",
-                [
+                               [
                     "claude-3-haiku-20240307",
                     "claude-3-sonnet-20240229",
                     "claude-3-opus-20240229",
@@ -1874,7 +1874,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 st.write(qa_pair['answer'])
     
     # Step 3: Evaluate with Second LLM
-    st.markdown('<p class="analysis-step-label">Step 4 · Evaluate with second LLM</p>', unsafe_allow_html=True)
+    st.markdown('<p class="analysis-step-label">Step 4 · Configure Second LLM To Answer</p>', unsafe_allow_html=True)
  
     col5, col6, col7 = st.columns(3)
     with col5:
@@ -1890,7 +1890,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
     
     with col6:
         st.slider(
-            "Temperature (Evaluation)",
+            "Temperature",
             min_value=0.0,
             max_value=1.0,
             value=st.session_state['qa_eval_temperature'],
@@ -1901,7 +1901,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
     
     with col7:
         st.slider(
-            "Top-P (Evaluation)",
+            "Top-P",
             min_value=0.0,
             max_value=1.0,
             value=st.session_state['qa_eval_top_p'],
@@ -2175,7 +2175,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
 
 
 def render_decop_detection(api_key, model_choice, provider):
-    """Render DECOP multiple-choice question test for copyright detection."""
+    """Render DECOP single-choice question test for copyright detection."""
     
     # Initialize session state for DECOP detection to preserve data across page switches
     if 'decop_dataset_index' not in st.session_state:
@@ -2186,21 +2186,16 @@ def render_decop_detection(api_key, model_choice, provider):
         st.session_state['decop_model_index'] = 0
     if 'decop_results_ready' not in st.session_state:
         st.session_state['decop_results_ready'] = False
-    if 'decop_dataset' not in st.session_state:
-        st.session_state['decop_dataset'] = None
-    if 'decop_passage_size' not in st.session_state:
-        st.session_state['decop_passage_size'] = None
     if 'decop_results_data' not in st.session_state:
         st.session_state['decop_results_data'] = None
     
     st.markdown(
         """
         <div class="analysis-callout">
-            <div class="analysis-callout__title">Multiple-Choice Copyright Detection</div>
+            <div class="analysis-callout__title">Single-Choice Copyright Detection</div>
             <ul class="analysis-callout__list">
-                <li>Test if an LLM can identify verbatim passages from copyrighted materials among paraphrased alternatives.</li>
                 <li>Choose a dataset (BookTection for books, arXivTection for academic papers).</li>
-                <li>Configure model parameters and run evaluation with permuted multiple-choice questions.</li>
+                <li>Configure model parameters and run evaluation with permuted single-choice questions.</li>
                 <li>Analyze accuracy metrics to detect training memorization traces.</li>
             </ul>
         </div>
@@ -2216,6 +2211,9 @@ def render_decop_detection(api_key, model_choice, provider):
     if not available_datasets:
         st.error("⚠️ No DECOP datasets found. Please ensure BookTection.csv or arXivTection.csv exists in src/decop/data/")
         return
+    default_dataset_index = min(st.session_state['decop_dataset_index'], len(available_datasets) - 1)
+    if st.session_state.get('decop_dataset') not in available_datasets:
+        st.session_state['decop_dataset'] = available_datasets[default_dataset_index]
     
     col1, col2 = st.columns(2)
     
@@ -2227,12 +2225,18 @@ def render_decop_detection(api_key, model_choice, provider):
             help="BookTection tests books, arXivTection tests academic papers",
             key="decop_dataset"
         )
+        if dataset_type not in available_datasets:
+            dataset_type = available_datasets[default_dataset_index]
+            st.session_state['decop_dataset'] = dataset_type
         # Update stored index
         st.session_state['decop_dataset_index'] = available_datasets.index(dataset_type)
     
     with col2:
         if dataset_type == "BookTection":
             passage_size_options = ["small", "medium", "large"]
+            default_passage_index = min(st.session_state['decop_passage_size_index'], len(passage_size_options) - 1)
+            if st.session_state.get('decop_passage_size') not in passage_size_options:
+                st.session_state['decop_passage_size'] = passage_size_options[default_passage_index]
             passage_size = st.selectbox(
                 "Passage Size",
                 passage_size_options,
@@ -2286,7 +2290,7 @@ def render_decop_detection(api_key, model_choice, provider):
     st.divider()
     st.markdown('<p class="analysis-step-label">Step 4 · Run evaluation</p>', unsafe_allow_html=True)
     st.markdown(
-        '<p class="analysis-step-caption">Generate all permutations and query the model for each multiple-choice question.</p>',
+        '<p class="analysis-step-caption">Generate all permutations and query the model for each single-choice question.</p>',
         unsafe_allow_html=True,
     )
     
@@ -2409,7 +2413,7 @@ def render_decop_detection(api_key, model_choice, provider):
                 if not pd.isna(claude_avg):
                     avg_accuracy = max(avg_accuracy, claude_avg)
             
-            # Random chance for 4-option multiple choice is 0.25
+            # Random chance for a 4-option single-choice question is 25%
             if avg_accuracy > 0.5:
                 st.error(
                     f"⚠️ **High Memorization Detected** (Accuracy: {avg_accuracy:.2%}): "
@@ -2596,7 +2600,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
             metrics_for_display = metric_values or {}
             rouge_l = float(metrics_for_display.get("rouge_l", 0.0) or 0.0)
             jaccard = float(metrics_for_display.get("jaccard_index", 0.0) or 0.0)
-            levenshtein_val = int(metrics_for_display.get("levenshtein", 0.0) or 0.0)
+            levenshtein = metrics_for_display.get("levenshtein", None)
             with render_streamlit_accordion(
                 f"Rank {rank}",
                 key=f"pdf_top_section_{rank}",
@@ -2770,7 +2774,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                 return
 
         try:
-            progress_bar = st.progress(0, text=f"🔄 Analyzing document with {model_choice}... Preparing content...")
+            progress_bar = st.progress(0, text=f"🔄 Analyzing document with {model_choice}...")
             document_text = extract_text_from_document(uploaded_file)
             if isinstance(document_text, str) and document_text.startswith("Error"):
                 st.error(f"❌ {document_text}")
@@ -2860,8 +2864,6 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
             temperature=cached_temperature,
             top_p=cached_top_p,
         )
-
-
 
 
 def render_adversarial_persuasion_page(api_key, model_choice, provider):
@@ -3175,7 +3177,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         })
                         
                     except Exception as e:
-                        st.warning(f"⚠️ Failed to evaluate mutation {eval_idx + 1}: {str(e)}")
+                        st.warning(f"⚠️ Failed to evaluate mutation {eval_idx + 1}: {e}")
                         continue
                     
                     progress_bar.progress((eval_idx + 1) / len(evaluations))
@@ -3291,7 +3293,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 eval_item["assessment"] = assessment
                                 
                             except Exception as e:
-                                st.warning(f"⚠️ Failed to judge mutation {judge_idx + 1}: {str(e)}")
+                                st.warning(f"⚠️ Failed to judge mutation {judge_idx + 1}: {e}")
                                 eval_item["assessment"] = None
                         
                         judging_progress.progress((judge_idx + 1) / len(evaluated_mutations))
@@ -3352,9 +3354,9 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                 metrics = evaluation.metrics
 
                 mutated_text = parsed.mutated_text.strip() if parsed and parsed.mutated_text else ""
-                rouge_l = metrics.rouge_l if metrics else 0.0
-                jaccard = metrics.jaccard if metrics else 0.0
-                levenshtein = metrics.levenshtein if metrics else None
+                rouge_l = float(metrics.get("rouge_l", 0.0) or 0.0)
+                jaccard = float(metrics.get("jaccard_index", 0.0) or 0.0)
+                levenshtein = metrics.get("levenshtein", None)
 
                 judge_passed = deserialised.judge_passed if judged_flag else None
                 if not judged_flag:
@@ -3499,6 +3501,8 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         else:
                             secondary_content = f"{status_icon} {status_text}"
                         sections.append(("⚖️ Secondary Validation", secondary_content, None))
+                        
+                        judge_response = judge_result.response if judge_result else ""
                         
                         judge_response = judge_result.response if judge_result else ""
                         if judge_response:
