@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional, Tuple
 
-from .comparison import (
+from src.direct_recall.comparison import (
     get_llm_completion,
     calculate_rouge_score,
     calculate_jaccard_index,

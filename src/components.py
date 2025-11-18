@@ -11,7 +11,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from src.copyright_detective.comparison import compute_direct_recall_overlap, DiffToken
+from src.direct_recall.comparison import compute_direct_recall_overlap, DiffToken
 
 
 _COLLAPSIBLE_COMPONENT_STYLE = """

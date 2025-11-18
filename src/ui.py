@@ -10,39 +10,32 @@ import pandas as pd
 from Levenshtein import distance
 import html
 from datasets import load_dataset, concatenate_datasets
-from src.copyright_detective.comparison import (
+from src.direct_recall import (
     compare_texts,
     enforce_exact_char_count,
     get_llm_completion,
     calculate_rouge_score,
     calculate_jaccard_index,
-)
-from src.copyright_detective.pdf_utils import extract_text_from_document, split_text_into_chunks
-from src.copyright_detective.knowledge_qa import (
+    extract_text_from_document,
+    split_text_into_chunks,
     generate_qa_pairs_from_document,
     run_knowledge_qa_evaluation,
     calculate_aggregate_metrics,
-)
-from src.copyright_detective.decop_analysis import (
+    generate_single_choice_questions_from_document,
+    generate_single_choice_questions_from_text,
+    list_dataset_documents,
+    load_dataset_excerpt,
+    run_single_choice_evaluation,
+    summarize_single_choice_results,
     get_available_datasets,
-    get_passage_sizes,
-    run_decop_evaluation,
-    calculate_results,
 )
 from src.config import DEFAULT_OPENROUTER_KEY
 
 import matplotlib.pyplot as plt
-from src.copyright_detective.jailbreak_probe import (
+from src.persuasive_jailbreak import (
     run_persuasion_probe,
     get_persuasion_template,
     get_persuasion_prompt,
-)
-from src.copyright_detective.unlearning import (
-    list_representational_features,
-    run_representational_analysis,
-    is_representational_analysis_available,
-)
-from src.copyright_detective.adversarial_prompting import (
     list_persuasion_strategies,
     get_mutation_instruction,
     run_inference_scaling,
@@ -58,7 +51,12 @@ from src.copyright_detective.adversarial_prompting import (
     MutationEvaluation,
     SimilarityMetrics,
 )
-from src.metrics.logger import RougeEvalLogger
+from src.unlearning_detection import (
+    list_representational_features,
+    run_representational_analysis,
+    is_representational_analysis_available,
+)
+from src.common.metrics.logger import RougeEvalLogger
 from src.prompt_utils import get_full_prompt
 from src.components import (
     render_collapsible_panel,
@@ -382,7 +380,7 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
     answers = [ex["answer"] for ex in eval_examples]
     
     try:
-        from src.copyright_detective.comparison import get_llm_completion, calculate_rouge_score, calculate_jaccard_index
+        from src.direct_recall.comparison import get_llm_completion, calculate_rouge_score, calculate_jaccard_index
         from Levenshtein import distance
         
         st.markdown("### 🧠 Running Knowmem Evaluation")
@@ -1664,10 +1662,6 @@ def render_qa_based_detection(api_key, model_choice, provider):
         st.session_state['qa_gen_provider_index'] = 0
     if 'qa_num_qa_pairs' not in st.session_state:
         st.session_state['qa_num_qa_pairs'] = 5
-    if 'qa_gen_temperature' not in st.session_state:
-        st.session_state['qa_gen_temperature'] = 0.7
-    if 'qa_gen_top_p' not in st.session_state:
-        st.session_state['qa_gen_top_p'] = 0.9
     if 'qa_num_eval_runs' not in st.session_state:
         st.session_state['qa_num_eval_runs'] = 1
     if 'qa_eval_temperature' not in st.session_state:
@@ -1801,7 +1795,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
             "Temperature",
             min_value=0.0,
             max_value=1.0,
-            value=st.session_state['qa_gen_temperature'],
+            value=0.7,
             step=0.05,
             help="Controls randomness in Q&A generation. Higher = more diverse questions.",
             key="qa_gen_temperature"
@@ -1812,7 +1806,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
             "Top-P",
             min_value=0.0,
             max_value=1.0,
-            value=st.session_state['qa_gen_top_p'],
+            value=0.9,
             step=0.05,
             help="Nucleus sampling parameter for controlling diversity during Q&A generation.",
             key="qa_gen_top_p"
@@ -1839,7 +1833,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
         elif not qa_gen_api_key:
             st.error("⚠️ Please provide an API key for Q&A generation.")
         else:
-            from src.copyright_detective.knowledge_qa import generate_qa_pairs_from_document
+            from src.direct_recall.knowledge_qa import generate_qa_pairs_from_document
             
             with st.spinner(f"🔄 Extracting text from document and generating {num_qa_pairs} Q&A pairs with {qa_gen_model}..."):
                 qa_pairs, document_text = generate_qa_pairs_from_document(
@@ -1909,12 +1903,6 @@ def render_qa_based_detection(api_key, model_choice, provider):
             help="Nucleus sampling parameter.",
             key="eval_top_p"
         )
-    
-    # Display which LLM will be used
-    if api_key and model_choice and provider:
-        st.info(f"📌 Using **{model_choice}** from **{provider}** (sidebar configuration) for answering questions.")
-    else:
-        st.warning(f"⚠️ Please configure the API key, model, and provider in the sidebar. Current: Provider={provider}, Model={model_choice}, API Key={'✓' if api_key else '✗'}")
     
     # Button to run evaluation
     run_evaluation = st.button(
@@ -2175,280 +2163,411 @@ def render_qa_based_detection(api_key, model_choice, provider):
 
 
 def render_decop_detection(api_key, model_choice, provider):
-    """Render DECOP single-choice question test for copyright detection."""
-    
-    # Initialize session state for DECOP detection to preserve data across page switches
-    if 'decop_dataset_index' not in st.session_state:
-        st.session_state['decop_dataset_index'] = 0
-    if 'decop_passage_size_index' not in st.session_state:
-        st.session_state['decop_passage_size_index'] = 0
-    if 'decop_model_index' not in st.session_state:
-        st.session_state['decop_model_index'] = 0
-    if 'decop_results_ready' not in st.session_state:
-        st.session_state['decop_results_ready'] = False
-    if 'decop_results_data' not in st.session_state:
-        st.session_state['decop_results_data'] = None
-    
+    """Render Single-Choice question test for copyright detection."""
+
+    default_state = {
+        'decop_source_mode': 'Upload Document',
+        'decop_generated_mcqs': [],
+        'decop_document_text': '',
+        'decop_dataset_document': None,
+        'decop_num_questions': 5,
+        'decop_gen_temperature': 0.4,
+        'decop_gen_top_p': 0.85,
+        'decop_gen_provider_index': 0,
+        'decop_evaluation_results': None,
+        'decop_eval_runs': 1,
+        'decop_eval_temperature': 0.0,
+        'decop_eval_top_p': 1.0,
+    }
+    for key, value in default_state.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
     st.markdown(
         """
         <div class="analysis-callout">
             <div class="analysis-callout__title">Single-Choice Copyright Detection</div>
             <ul class="analysis-callout__list">
-                <li>Choose a dataset (BookTection for books, arXivTection for academic papers).</li>
-                <li>Configure model parameters and run evaluation with permuted single-choice questions.</li>
-                <li>Analyze accuracy metrics to detect training memorization traces.</li>
+                <li>Start with a PDF, TXT, or curated DECOP excerpt as the ground-truth reference.</li>
+                <li>Use a generation model to craft single-choice questions with subtle distractors.</li>
+                <li>Evaluate your target model to see whether it consistently prefers the verbatim option.</li>
             </ul>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    
-    # Step 1: Dataset Selection
-    st.markdown('<p class="analysis-step-label">Step 2 · Select dataset and passage size</p>', unsafe_allow_html=True)
-    
+
+    # Step 1: Provide source content
+    st.markdown('<p class="analysis-step-label">Step 2 · Provide source content</p>', unsafe_allow_html=True)
     available_datasets = get_available_datasets()
-    
-    if not available_datasets:
-        st.error("⚠️ No DECOP datasets found. Please ensure BookTection.csv or arXivTection.csv exists in src/decop/data/")
-        return
-    default_dataset_index = min(st.session_state['decop_dataset_index'], len(available_datasets) - 1)
-    if st.session_state.get('decop_dataset') not in available_datasets:
-        st.session_state['decop_dataset'] = available_datasets[default_dataset_index]
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        dataset_type = st.selectbox(
-            "Choose Dataset",
-            available_datasets,
-            index=min(st.session_state['decop_dataset_index'], len(available_datasets) - 1),
-            help="BookTection tests books, arXivTection tests academic papers",
-            key="decop_dataset"
+    source_options = ["Upload Document"] + available_datasets
+    source_mode = st.radio(
+        "Where should the single-choice questions draw context from?",
+        source_options,
+        horizontal=True,
+        key="decop_source_mode",
+    )
+
+    uploaded_document = None
+    excerpt_preview = ""
+    excerpt_meta: Dict[str, Any] = {}
+
+    if source_mode == "Upload Document":
+        uploaded_document = st.file_uploader(
+            "📎 Upload PDF or TXT",
+            type=["pdf", "txt"],
+            help="Provide the copyrighted material you'd like to probe.",
+            key="decop_document_upload",
         )
-        if dataset_type not in available_datasets:
-            dataset_type = available_datasets[default_dataset_index]
-            st.session_state['decop_dataset'] = dataset_type
-        # Update stored index
-        st.session_state['decop_dataset_index'] = available_datasets.index(dataset_type)
-    
-    with col2:
-        if dataset_type == "BookTection":
-            passage_size_options = ["small", "medium", "large"]
-            default_passage_index = min(st.session_state['decop_passage_size_index'], len(passage_size_options) - 1)
-            if st.session_state.get('decop_passage_size') not in passage_size_options:
-                st.session_state['decop_passage_size'] = passage_size_options[default_passage_index]
-            passage_size = st.selectbox(
-                "Passage Size",
-                passage_size_options,
-                index=min(st.session_state['decop_passage_size_index'], len(passage_size_options) - 1),
-                help="Length of text passages to test",
-                key="decop_passage_size"
+    else:
+        doc_options = list_dataset_documents(source_mode, limit=50)
+        if not doc_options:
+            st.warning(
+                f"No examples found for {source_mode}. Ensure the CSV exists under src/direct_recall/decop/data/"
             )
-            st.session_state['decop_passage_size_index'] = passage_size_options.index(passage_size)
         else:
-            passage_size = None
-            st.info("arXivTection uses default passage size")
-    
-    # Step 2: Model Configuration
-    st.divider()
-    st.markdown('<p class="analysis-step-label">Step 3 · Configure model and API key</p>', unsafe_allow_html=True)
+            selected_doc = st.selectbox(
+                f"Choose a {source_mode} example",
+                doc_options,
+                key="decop_dataset_document",
+            )
+            if selected_doc:
+                excerpt_preview, excerpt_meta = load_dataset_excerpt(source_mode, selected_doc)
+                if excerpt_preview:
+                    st.caption(
+                        f"Loaded excerpt from {excerpt_meta.get('document_id', selected_doc)}"
+                        f" · Length: {excerpt_meta.get('length', 'N/A')}"
+                    )
+                    st.text_area(
+                        "Dataset excerpt preview",
+                        excerpt_preview[:3000],
+                        height=180,
+                        key="decop_dataset_preview",
+                        disabled=True,
+                    )
+                else:
+                    st.warning("Unable to load excerpt for the selected document.")
+
+    # Step 2: Configure generation model
+    st.markdown('<p class="analysis-step-label">Step 3 · Generate single-choice questions</p>', unsafe_allow_html=True)
     st.markdown(
-        '<p class="analysis-step-caption">Select the target model to test for copyright memorization.</p>',
+        '<p class="analysis-step-caption">A separate LLM creates tightly clustered options from the source text.</p>',
         unsafe_allow_html=True,
     )
-    
-    col3, col4 = st.columns(2)
-    
-    with col3:
-        model_options = ["ChatGPT", "Claude"]
-        decop_model = st.selectbox(
-            "Select Model",
-            model_options,
-            index=min(st.session_state['decop_model_index'], len(model_options) - 1),
-            help="ChatGPT uses gpt-3.5-turbo-instruct, Claude uses claude-2",
-            key="decop_model"
+
+    col_provider, col_model, col_api = st.columns(3)
+    provider_options = ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"]
+
+    with col_provider:
+        generation_provider = st.selectbox(
+            "Generation provider",
+            provider_options,
+            index=min(st.session_state['decop_gen_provider_index'], len(provider_options) - 1),
+            key="decop_gen_provider",
         )
-        st.session_state['decop_model_index'] = model_options.index(decop_model)
-    
-    with col4:
-        if decop_model == "ChatGPT":
-            decop_api_key = st.text_input(
-                "OpenAI API Key",
-                type="password",
-                help="Enter your OpenAI API key",
-                key="decop_openai_key"
-            )
+        st.session_state['decop_gen_provider_index'] = provider_options.index(generation_provider)
+
+    def _provider_models(provider_name: str) -> List[str]:
+        if provider_name == "OpenAI":
+            return [
+                "gpt-3.5-turbo",
+                "gpt-3.5-turbo-instruct",
+                "gpt-4o",
+                "gpt-4o-mini",
+            ]
+        if provider_name == "OpenRouter":
+            return [
+                "moonshotai/kimi-k2:free",
+                "meta-llama/llama-3.1-405b-instruct:free",
+                "qwen/qwen3-235b-a22b:free",
+                "meta-llama/llama-3.3-70b-instruct:free",
+                "mistralai/mistral-small-24b-instruct-2501:free",
+                "qwen/qwen-2.5-72b-instruct:free",
+            ]
+        if provider_name == "Anthropic":
+            return [
+                "claude-3-haiku-20240307",
+                "claude-3-sonnet-20240229",
+                "claude-3-opus-20240229",
+            ]
+        if provider_name == "Google Gemini":
+            return ["gemini-1.5-flash", "gemini-1.5-pro"]
+        return ["custom-model"]
+
+    with col_model:
+        generation_model = st.selectbox(
+            "Generation model",
+            _provider_models(generation_provider),
+            key="decop_gen_model",
+        )
+
+    with col_api:
+        generation_api_key = st.text_input(
+            "Generation API key",
+            type="password",
+            help="Leave blank to reuse the sidebar API key.",
+            key="decop_gen_api_key",
+        )
+
+    col_qty, col_temp, col_top_p = st.columns(3)
+    with col_qty:
+        st.number_input(
+            "Number of questions",
+            min_value=1,
+            max_value=20,
+            step=1,
+            key="decop_num_questions",
+        )
+    with col_temp:
+        st.slider(
+            "Generation temperature",
+            min_value=0.0,
+            max_value=1.0,
+            step=0.05,
+            key="decop_gen_temperature",
+        )
+    with col_top_p:
+        st.slider(
+            "Generation Top-P",
+            min_value=0.0,
+            max_value=1.0,
+            step=0.05,
+            key="decop_gen_top_p",
+        )
+
+    generate_questions = st.button(
+        "🚀 Generate single-choice questions",
+        key="decop_generate_mcq_button",
+        use_container_width=True,
+    )
+
+    if generate_questions:
+        effective_api_key = generation_api_key or api_key
+        if not effective_api_key:
+            st.error("⚠️ Provide an API key for the generation model or reuse the sidebar key.")
         else:
-            decop_api_key = st.text_input(
-                "Anthropic API Key",
-                type="password",
-                help="Enter your Anthropic API key",
-                key="decop_anthropic_key"
-            )
-    
-    # Step 3: Run Evaluation
-    st.divider()
-    st.markdown('<p class="analysis-step-label">Step 4 · Run evaluation</p>', unsafe_allow_html=True)
+            with st.spinner("Synthesizing tightly matched options..."):
+                if source_mode == "Upload Document":
+                    if not uploaded_document:
+                        st.warning("⚠️ Upload a PDF/TXT document first.")
+                        generated_mcqs, document_text = [], ""
+                    else:
+                        generated_mcqs, document_text = generate_single_choice_questions_from_document(
+                            uploaded_document,
+                            effective_api_key,
+                            generation_model,
+                            generation_provider,
+                            num_questions=st.session_state['decop_num_questions'],
+                            temperature=st.session_state['decop_gen_temperature'],
+                            top_p=st.session_state['decop_gen_top_p'],
+                        )
+                else:
+                    if not excerpt_preview:
+                        excerpt_preview, excerpt_meta = load_dataset_excerpt(
+                            source_mode,
+                            st.session_state.get('decop_dataset_document'),
+                        )
+                    document_text = excerpt_preview
+                    generated_mcqs = generate_single_choice_questions_from_text(
+                        document_text,
+                        effective_api_key,
+                        generation_model,
+                        generation_provider,
+                        num_questions=st.session_state['decop_num_questions'],
+                        temperature=st.session_state['decop_gen_temperature'],
+                        top_p=st.session_state['decop_gen_top_p'],
+                    )
+
+                if not generated_mcqs:
+                    st.error("❌ Failed to generate single-choice questions. Try adjusting the model or prompt parameters.")
+                else:
+                    st.session_state['decop_generated_mcqs'] = generated_mcqs
+                    st.session_state['decop_document_text'] = document_text
+                    st.session_state['decop_evaluation_results'] = None
+                    st.success(f"✅ Generated {len(generated_mcqs)} single-choice questions.")
+
+    if st.session_state['decop_generated_mcqs']:
+        st.markdown('<h4 class="section-header sm">🧩 Generated Single-Choice Questions</h4>', unsafe_allow_html=True)
+        for idx, mcq in enumerate(st.session_state['decop_generated_mcqs'], start=1):
+            with st.expander(f"Question {idx}", expanded=False):
+                st.markdown(f"**Question:** {mcq['question']}")
+                for option in mcq['options']:
+                    badge = "✅" if option['label'] == mcq['correct_option'] else ""
+                    st.write(f"{option['label']}. {option['text']} {badge}")
+                if mcq.get('explanation'):
+                    st.caption(f"Rationale: {mcq['explanation']}")
+
+    # Step 3: Evaluate with target model
+    st.markdown('<p class="analysis-step-label">Step 4 · Evaluate target model</p>', unsafe_allow_html=True)
     st.markdown(
-        '<p class="analysis-step-caption">Generate all permutations and query the model for each single-choice question.</p>',
+        '<p class="analysis-step-caption">Run the model configured in the sidebar and look for biased option selections.</p>',
         unsafe_allow_html=True,
     )
-    
-    st.caption("⚡ Processing time depends on dataset size. Results are cached for analysis.")
-    
-    run_evaluation = st.button(
-        "🚀 Run DECOP Evaluation",
-        key="run_decop_button",
-        use_container_width=True
+
+    eval_cols = st.columns(3)
+    with eval_cols[0]:
+        st.number_input(
+            "Evaluation runs",
+            min_value=1,
+            max_value=5,
+            step=1,
+            key="decop_eval_runs",
+        )
+    with eval_cols[1]:
+        st.slider(
+            "Evaluation temperature",
+            min_value=0.0,
+            max_value=1.0,
+            step=0.05,
+            key="decop_eval_temperature",
+        )
+    with eval_cols[2]:
+        st.slider(
+            "Evaluation Top-P",
+            min_value=0.0,
+            max_value=1.0,
+            step=0.05,
+            key="decop_eval_top_p",
+        )
+
+    run_single_choice_eval = st.button(
+        "🧪 Run Single-Choice Evaluation",
+        key="decop_run_eval_button",
+        use_container_width=True,
     )
-    
-    if run_evaluation:
-        if not decop_api_key:
-            st.error("⚠️ Please provide an API key for the selected model.")
+
+    if run_single_choice_eval:
+        if not st.session_state['decop_generated_mcqs']:
+            st.warning("⚠️ Generate single-choice questions before running the evaluation.")
+        elif not api_key or not api_key.strip():
+            st.error(f"⚠️ Configure an API key for {provider} in the sidebar.")
+        elif not model_choice:
+            st.error("⚠️ Select a target model in the sidebar before running evaluation.")
         else:
-            progress_container = st.empty()
+            total_questions = len(st.session_state['decop_generated_mcqs'])
+            total_items = total_questions * st.session_state['decop_eval_runs']
             progress_bar = st.progress(0.0)
-            status_text = st.empty()
-            
-            def progress_callback(progress, message):
-                progress_bar.progress(progress)
-                status_text.text(message)
-            
-            success, message, output_dir = run_decop_evaluation(
-                data_type=dataset_type,
-                model_name=decop_model,
-                api_key=decop_api_key,
-                passage_size=passage_size,
-                progress_callback=progress_callback
-            )
-            
-            progress_bar.empty()
-            status_text.empty()
-            
-            if success:
-                st.success(f"✅ {message}")
-                st.session_state['decop_results_ready'] = True
-                st.session_state['decop_dataset'] = dataset_type
-                st.session_state['decop_passage_size'] = passage_size
-            else:
-                st.error(f"❌ {message}")
-    
-    # Step 4: View Results
-    st.divider()
-    st.markdown('<p class="analysis-step-label">Step 5 · View results and interpretation</p>', unsafe_allow_html=True)
-    
-    calculate_button = st.button(
-        "📊 Calculate Accuracy & Metrics",
-        key="calculate_decop_results",
-        use_container_width=True
-    )
-    
-    # Show results if button clicked or if results exist in session state
-    if calculate_button or (st.session_state.get('decop_results_ready', False) and st.session_state.get('decop_results_data') is not None):
-        # Only recalculate if button is clicked or if we don't have cached results
-        if calculate_button or st.session_state.get('decop_results_data') is None:
-            success, message, results_df = calculate_results(
-                data_type=dataset_type,
-                passage_size=passage_size
-            )
-            
-            if success and results_df is not None:
-                # Store results in session state
-                st.session_state['decop_results_data'] = results_df
-                st.session_state['decop_results_message'] = message
-        
-        # Display cached or newly calculated results
-        if st.session_state.get('decop_results_data') is not None:
-            results_df = st.session_state['decop_results_data']
-            message = st.session_state.get('decop_results_message', 'Results loaded from cache')
-            
-            st.success(f"✅ {message}")
-            
-            # Display results table
-            st.markdown('<h4 class="section-header sm">📈 Accuracy Results by Document</h4>', unsafe_allow_html=True)
-            st.dataframe(
-                results_df,
-                use_container_width=True,
-                hide_index=True
-            )
-            
-            # Calculate summary statistics
-            st.markdown('<h4 class="section-header sm">📊 Summary Statistics</h4>', unsafe_allow_html=True)
-            
-            summary_cols = []
-            if 'ChatGPT_Accuracy' in results_df.columns:
-                chatgpt_acc = results_df['ChatGPT_Accuracy'].dropna()
-                if not chatgpt_acc.empty:
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("ChatGPT Avg Accuracy", f"{chatgpt_acc.mean():.4f}")
-                    with col2:
-                        st.metric("ChatGPT Min Accuracy", f"{chatgpt_acc.min():.4f}")
-                    with col3:
-                        st.metric("ChatGPT Max Accuracy", f"{chatgpt_acc.max():.4f}")
-            
-            if 'Claude_Accuracy' in results_df.columns:
-                claude_acc = results_df['Claude_Accuracy'].dropna()
-                if not claude_acc.empty:
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Claude Avg Accuracy", f"{claude_acc.mean():.4f}")
-                    with col2:
-                        st.metric("Claude Min Accuracy", f"{claude_acc.min():.4f}")
-                    with col3:
-                        st.metric("Claude Max Accuracy", f"{claude_acc.max():.4f}")
-            
-            # Interpretation
-            st.divider()
-            st.markdown('<h4 class="section-header sm">🔍 Interpretation</h4>', unsafe_allow_html=True)
-            
-            # Get average accuracy
-            avg_accuracy = 0
-            if 'ChatGPT_Accuracy' in results_df.columns:
-                chatgpt_avg = results_df['ChatGPT_Accuracy'].dropna().mean()
-                if not pd.isna(chatgpt_avg):
-                    avg_accuracy = max(avg_accuracy, chatgpt_avg)
-            if 'Claude_Accuracy' in results_df.columns:
-                claude_avg = results_df['Claude_Accuracy'].dropna().mean()
-                if not pd.isna(claude_avg):
-                    avg_accuracy = max(avg_accuracy, claude_avg)
-            
-            # Random chance for a 4-option single-choice question is 25%
-            if avg_accuracy > 0.5:
-                st.error(
-                    f"⚠️ **High Memorization Detected** (Accuracy: {avg_accuracy:.2%}): "
-                    "The model shows significantly above-chance performance (>50%) in identifying "
-                    "verbatim passages, strongly suggesting it has been trained on this material. "
-                    "Random guessing would yield ~25% accuracy."
+            progress_text = st.empty()
+
+            def update_progress(current, total, run_num, question_num, question_total):
+                pct = current / total if total else 0
+                progress_bar.progress(pct)
+                progress_text.text(
+                    f"🔄 Run {run_num}/{st.session_state['decop_eval_runs']} | "
+                    f"Question {question_num}/{question_total} | {current}/{total} evaluations"
                 )
-            elif avg_accuracy > 0.35:
+
+            try:
+                results = run_single_choice_evaluation(
+                    st.session_state['decop_generated_mcqs'],
+                    api_key,
+                    model_choice,
+                    provider,
+                    num_runs=st.session_state['decop_eval_runs'],
+                    temperature=st.session_state['decop_eval_temperature'],
+                    top_p=st.session_state['decop_eval_top_p'],
+                    progress_callback=update_progress,
+                )
+                progress_bar.empty()
+                progress_text.empty()
+                if not results:
+                    st.error("❌ Evaluation returned no results. Please try again.")
+                else:
+                    st.session_state['decop_evaluation_results'] = results
+                    st.success(f"✅ Completed {total_items} single-choice evaluations.")
+            except Exception as exc:  # noqa: BLE001
+                progress_bar.empty()
+                progress_text.empty()
+                st.error(f"❌ Evaluation failed: {exc}")
+
+    if st.session_state['decop_evaluation_results']:
+        results = st.session_state['decop_evaluation_results']
+        metrics = summarize_single_choice_results(results)
+        if metrics:
+            st.markdown('<h4 class="section-header sm">📊 Evaluation summary</h4>', unsafe_allow_html=True)
+            summary_cols = st.columns(4)
+            summary_cols[0].metric("Runs", str(metrics.get('total_runs', 0)))
+            summary_cols[1].metric("Attempts", str(metrics.get('total_attempts', 0)))
+            accuracy = metrics.get('overall_accuracy', 0)
+            summary_cols[2].metric("Accuracy", f"{accuracy * 100:.1f}%")
+            avg_conf = metrics.get('avg_correct_confidence')
+            summary_cols[3].metric(
+                "Avg confidence (correct)",
+                f"{avg_conf * 100:.1f}%" if isinstance(avg_conf, (int, float)) else "—",
+            )
+
+            option_distribution = metrics.get('option_distribution', {})
+            if option_distribution:
+                dist_df = pd.DataFrame(
+                    {
+                        'Option': list(option_distribution.keys()),
+                        'Count': list(option_distribution.values()),
+                    }
+                ).set_index('Option')
+                st.bar_chart(dist_df)
+
+            if accuracy >= 0.75:
+                st.error(
+                    "⚠️ **High memorization risk** — the model consistently prefers the verbatim option."
+                )
+            elif accuracy >= 0.5:
                 st.warning(
-                    f"⚠️ **Moderate Memorization** (Accuracy: {avg_accuracy:.2%}): "
-                    "The model performs better than random chance (25%) but not definitively. "
-                    "This could indicate partial exposure to the material during training."
+                    "⚠️ **Moderate memorization** — the model shows a noticeable bias toward the correct option."
                 )
             else:
                 st.success(
-                    f"✅ **Low Memorization** (Accuracy: {avg_accuracy:.2%}): "
-                    "The model's performance is close to random chance (25%), suggesting "
-                    "it has not been specifically trained on this copyrighted material."
+                    "✅ **Low memorization signal** — selections look close to chance level."
                 )
-            
-            # Download results
-            st.divider()
-            st.markdown('<h4 class="section-header sm">💾 Export Results</h4>', unsafe_allow_html=True)
-            
-            csv = results_df.to_csv(index=False)
-            st.download_button(
-                label="📥 Download Results as CSV",
-                data=csv,
-                file_name=f"decop_results_{dataset_type}_{passage_size if passage_size else 'default'}.csv",
-                mime="text/csv",
-                key="download_decop_csv"
-            )
-            
-        else:
-            st.error(f"❌ {message}")
+
+            per_question = metrics.get('per_question', [])
+            if per_question:
+                st.markdown("#### Question-level accuracy")
+                per_question_df = pd.DataFrame(
+                    [
+                        {
+                            "Question #": item['index'] + 1,
+                            "Accuracy": f"{item['accuracy'] * 100:.1f}%",
+                            "Attempts": item['attempts'],
+                            "Question": item['question'][:120] + ('…' if len(item['question']) > 120 else ''),
+                        }
+                        for item in per_question
+                    ]
+                )
+                st.dataframe(per_question_df, hide_index=True)
+
+        st.markdown("#### Detailed responses")
+        for question_idx, mcq in enumerate(st.session_state['decop_generated_mcqs'], start=1):
+            with st.expander(f"Question {question_idx}: {textwrap.shorten(mcq['question'], width=80, placeholder='…')}"):
+                st.markdown(f"**Question:** {mcq['question']}")
+                for option in mcq['options']:
+                    badge = "✅" if option['label'] == mcq['correct_option'] else ""
+                    st.write(f"{option['label']}. {option['text']} {badge}")
+                for run_idx, run_results in enumerate(results, start=1):
+                    if question_idx - 1 < len(run_results):
+                        eval_result = run_results[question_idx - 1]
+                        status = "✅" if eval_result.get('is_correct') else "❌"
+                        st.write(
+                            f"Run {run_idx}: chose {eval_result.get('llm_choice', '?')} {status}"
+                        )
+                        if eval_result.get('raw_response'):
+                            st.caption(f"Raw response: {eval_result['raw_response']}")
+                        probs = eval_result.get('option_probabilities')
+                        if isinstance(probs, dict):
+                            ordered = []
+                            for label in ["A", "B", "C", "D"]:
+                                if label in probs:
+                                    ordered.append(f"{label}: {probs[label] * 100:.1f}%")
+                            leftovers = [
+                                f"{label}: {value * 100:.1f}%"
+                                for label, value in probs.items()
+                                if label not in {"A", "B", "C", "D"}
+                            ]
+                            prob_line = ", ".join(ordered + leftovers)
+                            st.caption(f"Option probabilities » {prob_line}")
+
+                if st.session_state['decop_document_text']:
+                    with st.expander("📄 Source excerpt", expanded=False):
+                        st.write(st.session_state['decop_document_text'][:5000])
 
 
 def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_header: bool = True):

@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 # Add the decop directory to the path
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DECOP_DIR = REPO_ROOT / "src" / "decop"
+DECOP_DIR = REPO_ROOT / "src" / "direct_recall" / "decop"
 sys.path.insert(0, str(DECOP_DIR))
 
 from oversample_labels_fn import generate_permutations

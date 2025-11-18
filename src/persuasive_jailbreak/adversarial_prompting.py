@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from Levenshtein import distance
 
-from src.copyright_detective.comparison import (
+from src.direct_recall.comparison import (
     get_llm_completion,
     calculate_jaccard_index,
     calculate_rouge_score,

@@ -10,15 +10,15 @@ from typing import Iterable, List, Optional, Sequence, Tuple, Literal, Union
 # OpenAI SDK and tokeniser utilities were previously used for a perplexity-based
 # membership inference probe. That feature has been removed; keep imports minimal.
 
-from .comparison import get_llm_completion
+from src.direct_recall.comparison import get_llm_completion
 import io
 import contextlib
 import traceback
-from .progress import start_llm_progress, update_llm_progress, complete_llm_progress
+from src.common.progress import start_llm_progress, update_llm_progress, complete_llm_progress
 
 _run_feature_analysis = None
 try:  # pragma: no cover - prefer vendored toolkit for local fixes
-    from src.representational_toolkit.analysis import run_feature_analysis as _run_feature_analysis  # type: ignore[assignment]
+    from src.unlearning_detection.representational_toolkit.analysis import run_feature_analysis as _run_feature_analysis  # type: ignore[assignment]
 except Exception:  # pragma: no cover - optional dependency fallback
     try:
         from representational_toolkit.analysis import run_feature_analysis as _run_feature_analysis  # type: ignore[assignment]

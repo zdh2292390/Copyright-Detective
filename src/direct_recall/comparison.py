@@ -14,7 +14,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from src.prompt_utils import get_full_prompt
-from src.copyright_detective.progress import (
+from src.common.progress import (
     start_llm_progress,
     update_llm_progress,
     complete_llm_progress,

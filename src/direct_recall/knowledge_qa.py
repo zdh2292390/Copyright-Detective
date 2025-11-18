@@ -9,12 +9,12 @@ This module implements Q&A-based knowledge memorization detection for LLMs:
 
 from typing import List, Dict, Tuple, Optional, Any
 import json
-from src.copyright_detective.comparison import (
+from src.direct_recall.comparison import (
     get_llm_completion,
     calculate_rouge_score,
     calculate_jaccard_index,
 )
-from src.copyright_detective.pdf_utils import extract_text_from_document
+from src.direct_recall.pdf_utils import extract_text_from_document
 from Levenshtein import distance
 
 
