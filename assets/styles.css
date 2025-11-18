@@ -190,6 +190,68 @@ body, input, button, select, textarea {
 .metric-card .metric-label { font-size: 0.8rem; font-weight: 600; color: #475569; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 0.35rem; }
 .metric-card .metric-value { font-size: 1.6rem; font-weight: 800; color: var(--primary-800); line-height: 1; }
 
+/* Shared metric card grid (QA + DECOP) */
+.qa-metrics-container {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+    margin: 1rem 0 1.5rem;
+}
+
+.qa-metric-card {
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.05) 0%, rgba(147, 51, 234, 0.05) 100%);
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 12px;
+    padding: 1rem;
+    transition: all 0.3s ease;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.qa-metric-card:hover {
+    box-shadow: 0 4px 16px rgba(59, 130, 246, 0.15);
+    border-color: rgba(59, 130, 246, 0.3);
+    transform: translateY(-2px);
+}
+
+.qa-metric-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.6rem;
+}
+
+.qa-metric-icon {
+    font-size: 1.2rem;
+}
+
+.qa-metric-label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: rgba(71, 85, 105, 0.9);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.qa-metric-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #1e40af;
+    margin-bottom: 0.3rem;
+    line-height: 1.2;
+}
+
+.qa-metric-range {
+    font-size: 0.75rem;
+    color: rgba(100, 116, 139, 0.7);
+    margin-bottom: 0.2rem;
+}
+
+.qa-metric-description {
+    font-size: 0.8rem;
+    color: rgba(100, 116, 139, 0.8);
+    font-style: italic;
+}
+
 /* Sidebar */
 .sidebar-section { padding: 0.4rem 0; margin-bottom: 0.35rem; }
 .sidebar-section h3 { font-size: 0.95rem; font-weight: 700; color: #0f172a; margin-bottom: 0.35rem; display: flex; align-items: center; gap: 0.4rem; }

@@ -357,6 +357,44 @@ def render_selected_icl_examples() -> None:
         _trigger_rerun()
 
 
+def render_metric_cards(metrics_data: List[Dict[str, Any]]) -> None:
+    if not metrics_data:
+        return
+
+    cards_html_parts: List[str] = []
+    for metric in metrics_data:
+        label = metric.get("label", "")
+        icon = metric.get("icon", "")
+        value = metric.get("value", "—")
+        description = metric.get("description", "")
+        range_text = metric.get("range") or ""
+        range_html = f"<div class='qa-metric-range'>{range_text}</div>" if range_text else ""
+        card_html = "\n".join(
+            (
+                "<div class='qa-metric-card'>",
+                "  <div class='qa-metric-header'>",
+                f"    <span class='qa-metric-icon'>{icon}</span>",
+                f"    <span class='qa-metric-label'>{label}</span>",
+                "  </div>",
+                f"  <div class='qa-metric-value'>{value}</div>",
+                f"  {range_html}" if range_html else "",
+                f"  <div class='qa-metric-description'>{description}</div>",
+                "</div>",
+            )
+        ).strip()
+        cards_html_parts.append(card_html)
+
+    cards_html = "\n".join(cards_html_parts)
+    container_html = "\n".join(
+        (
+            "<div class='qa-metrics-container'>",
+            cards_html,
+            "</div>",
+        )
+    )
+    st.markdown(container_html, unsafe_allow_html=True)
+
+
 def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
     """Run knowmem evaluation on the queued QA examples using API."""
     ensure_qa_session_defaults()
@@ -1605,7 +1643,7 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
         with header_col:
             st.markdown('<h4 class="section-header">📚 Knowledge Memorization Detection</h4>', unsafe_allow_html=True)
             st.markdown(
-                "Test if an LLM has been trained on specific materials using either Open-ended Question or Single-Choice Question."
+                "Test if an LLM has been trained on specific materials using either Open-ended Question or Single-choice Question."
             )
         with button_col:
             if st.button(
@@ -1625,7 +1663,7 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
             <div class="analysis-callout__title">How Knowledge Memorization Detection works</div>
             <ul class="analysis-callout__list">
                 <li><strong>Open-ended Question:</strong> Generate open-ended questions from documents and evaluate how well the target model answers them.</li>
-                <li><strong>Single-Choice Question:</strong> Design single-choice questions where the options include verbatim text and their paraphrases. Observing the model's selection bias helps infer prior exposure to the source text.</li>
+                <li><strong>Single-choice Question:</strong> Design single-choice questions where the options include verbatim text and their paraphrases. Observing the model's selection bias helps infer prior exposure to the source text.</li>
             </ul>
         </div>
         """,
@@ -1636,9 +1674,9 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
     
     detection_mode = st.radio(
         "Choose your detection method:",
-    ["Open-ended Question", "Single-Choice Question"],
+    ["Open-ended Question", "Single-choice Question"],
         index=0,
-    help="Open-ended Question mode generates open-ended questions. The Single-Choice Question mode designs single-choice questions where the options are closely matched but vary in key details; observing the model's selection bias helps infer prior exposure to the source text.",
+    help="Open-ended Question mode generates open-ended questions. The Single-choice Question mode designs single-choice questions where the options are closely matched but vary in key details; observing the model's selection bias helps infer prior exposure to the source text.",
         horizontal=True,
         key="knowledge_detection_mode"
     )
@@ -1986,14 +2024,14 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 "label": "ROUGE Score",
                 "icon": "📝",
                 "value": f"{agg_metrics.get('avg_rouge_score', 0):.4f}",
-                "range": f"{agg_metrics.get('min_rouge', 0):.3f} - {agg_metrics.get('max_rouge', 0):.3f}",
+                "range": f"Range: {agg_metrics.get('min_rouge', 0):.3f} - {agg_metrics.get('max_rouge', 0):.3f}",
                 "description": "Overlap similarity"
             },
             {
                 "label": "Jaccard Index",
                 "icon": "🔍",
                 "value": f"{agg_metrics.get('avg_jaccard_index', 0):.4f}",
-                "range": f"{agg_metrics.get('min_jaccard', 0):.3f} - {agg_metrics.get('max_jaccard', 0):.3f}",
+                "range": f"Range: {agg_metrics.get('min_jaccard', 0):.3f} - {agg_metrics.get('max_jaccard', 0):.3f}",
                 "description": "Token intersection"
             },
             {
@@ -2011,73 +2049,8 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 "description": "Relative distance"
             }
         ]
-        
-        metrics_card_css = """
-        <style>
-        .qa-metrics-container {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 1rem;
-            margin: 1rem 0 1.5rem;
-        }
-        .qa-metric-card {
-            background: linear-gradient(135deg, rgba(59, 130, 246, 0.05) 0%, rgba(147, 51, 234, 0.05) 100%);
-            border: 1px solid rgba(148, 163, 184, 0.2);
-            border-radius: 12px;
-            padding: 1rem;
-            transition: all 0.3s ease;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
-        }
-        .qa-metric-card:hover {
-            box-shadow: 0 4px 16px rgba(59, 130, 246, 0.15);
-            border-color: rgba(59, 130, 246, 0.3);
-            transform: translateY(-2px);
-        }
-        .qa-metric-header {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            margin-bottom: 0.6rem;
-        }
-        .qa-metric-icon {
-            font-size: 1.2rem;
-        }
-        .qa-metric-label {
-            font-size: 0.8rem;
-            font-weight: 600;
-            color: rgba(71, 85, 105, 0.9);
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-        .qa-metric-value {
-            font-size: 1.5rem;
-            font-weight: 700;
-            color: #1e40af;
-            margin-bottom: 0.3rem;
-            line-height: 1.2;
-        }
-        .qa-metric-range {
-            font-size: 0.75rem;
-            color: rgba(100, 116, 139, 0.7);
-            margin-bottom: 0.2rem;
-        }
-        .qa-metric-description {
-            font-size: 0.8rem;
-            color: rgba(100, 116, 139, 0.8);
-            font-style: italic;
-        }
-        </style>
-        """
-        
-        cards_html = ""
-        for metric in metrics_data:
-            range_html = f'<div class="qa-metric-range">Range: {metric["range"]}</div>' if metric['range'] else ''
-            cards_html += f'<div class="qa-metric-card"><div class="qa-metric-header"><span class="qa-metric-icon">{metric["icon"]}</span><span class="qa-metric-label">{metric["label"]}</span></div><div class="qa-metric-value">{metric["value"]}</div>{range_html}<div class="qa-metric-description">{metric["description"]}</div></div>'
-        
-        st.markdown(
-            metrics_card_css + f'<div class="qa-metrics-container">{cards_html}</div>',
-            unsafe_allow_html=True
-        )
+
+        render_metric_cards(metrics_data)
         
         # Display detailed results grouped by Q&A pair
         st.markdown("#### 📝 Detailed Results by Q&A Pair")
@@ -2163,7 +2136,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
 
 
 def render_decop_detection(api_key, model_choice, provider):
-    """Render Single-Choice question test for copyright detection."""
+    """Render Single-choice question test for copyright detection."""
 
     default_state = {
         'decop_source_mode': 'Upload Document',
@@ -2387,7 +2360,7 @@ def render_decop_detection(api_key, model_choice, provider):
                     st.success(f"✅ Generated {len(generated_mcqs)} single-choice questions.")
 
     if st.session_state['decop_generated_mcqs']:
-        st.markdown('<h4 class="section-header sm">🧩 Generated Single-Choice Questions</h4>', unsafe_allow_html=True)
+        st.markdown('<h4 class="section-header sm">🧩 Generated Single-choice Questions</h4>', unsafe_allow_html=True)
         for idx, mcq in enumerate(st.session_state['decop_generated_mcqs'], start=1):
             with st.expander(f"Question {idx}", expanded=False):
                 st.markdown(f"**Question:** {mcq['question']}")
@@ -2485,16 +2458,42 @@ def render_decop_detection(api_key, model_choice, provider):
         metrics = summarize_single_choice_results(results)
         if metrics:
             st.markdown('<h4 class="section-header sm">📊 Evaluation summary</h4>', unsafe_allow_html=True)
-            summary_cols = st.columns(4)
-            summary_cols[0].metric("Runs", str(metrics.get('total_runs', 0)))
-            summary_cols[1].metric("Attempts", str(metrics.get('total_attempts', 0)))
             accuracy = metrics.get('overall_accuracy', 0)
-            summary_cols[2].metric("Accuracy", f"{accuracy * 100:.1f}%")
             avg_conf = metrics.get('avg_correct_confidence')
-            summary_cols[3].metric(
-                "Avg confidence (correct)",
-                f"{avg_conf * 100:.1f}%" if isinstance(avg_conf, (int, float)) else "—",
-            )
+            decop_metrics = [
+                {
+                    "label": "Runs",
+                    "icon": "🔁",
+                    "value": str(metrics.get('total_runs', 0)),
+                    "description": "Evaluation passes",
+                    "range": "",
+                },
+                {
+                    "label": "Attempts",
+                    "icon": "🧪",
+                    "value": str(metrics.get('total_attempts', 0)),
+                    "description": "Questions × runs",
+                    "range": "",
+                },
+                {
+                    "label": "Accuracy",
+                    "icon": "🎯",
+                    "value": f"{accuracy * 100:.1f}%",
+                    "description": "Correct option rate",
+                    "range": "",
+                },
+                {
+                    "label": "Avg confidence (correct)",
+                    "icon": "📈",
+                    "value": (
+                        f"{avg_conf * 100:.1f}%" if isinstance(avg_conf, (int, float)) else "—"
+                    ),
+                    "description": "Mean probability when right",
+                    "range": "",
+                },
+            ]
+
+            render_metric_cards(decop_metrics)
 
             option_distribution = metrics.get('option_distribution', {})
             if option_distribution:
