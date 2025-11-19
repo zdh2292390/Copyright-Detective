@@ -2159,7 +2159,7 @@ def render_decop_detection(api_key, model_choice, provider):
     st.markdown(
         """
         <div class="analysis-callout">
-            <div class="analysis-callout__title">Single-Choice Copyright Detection</div>
+            <div class="analysis-callout__title">Single-choice Copyright Detection</div>
             <ul class="analysis-callout__list">
                 <li>Start with a PDF, TXT, or curated DECOP excerpt as the ground-truth reference.</li>
                 <li>Use a generation model to craft single-choice questions with subtle distractors.</li>
