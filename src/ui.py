@@ -1853,7 +1853,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
 
     # Button to generate Q&A pairs
     generate_qa = st.button(
-        "🚀 Generate Q&A Pairs from Document",
+        "🚀 Run: Generate Q&A Pairs from Document",
         key="generate_qa_button",
         type="primary",
         use_container_width=True
@@ -1944,7 +1944,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
     
     # Button to run evaluation
     run_evaluation = st.button(
-        "🧪 Run Knowledge Memorization Evaluation",
+        "🧪 Run: Knowledge Memorization Evaluation",
         key="run_knowledge_eval_button",
         type="primary",
         use_container_width=True
