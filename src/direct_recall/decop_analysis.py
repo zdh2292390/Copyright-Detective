@@ -1,7 +1,7 @@
 """
-DECOP (DEtection of COPyrighted content) Analysis Module
+Dataset Analysis Module
 
-This module provides wrapper functions for running DECOP multiple-choice tests
+This module provides wrapper functions for running single-choice multiple-choice tests
 to detect if an LLM has been trained on specific copyrighted materials.
 """
 
@@ -16,10 +16,10 @@ from openai import OpenAI
 from anthropic import Anthropic, HUMAN_PROMPT, AI_PROMPT
 from tqdm import tqdm
 
-# Add the decop directory to the path
+# Add the data directory to the path
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DECOP_DIR = REPO_ROOT / "src" / "direct_recall" / "decop"
-sys.path.insert(0, str(DECOP_DIR))
+DATA_DIR = REPO_ROOT / "src" / "direct_recall" / "decop" / "data"
+sys.path.insert(0, str(DATA_DIR.parent))
 
 from oversample_labels_fn import generate_permutations
 
@@ -29,13 +29,12 @@ mapping = {0: 'A', 1: 'B', 2: 'C', 3: 'D'}
 
 
 def get_available_datasets() -> List[str]:
-    """Get list of available DECOP datasets."""
-    data_dir = DECOP_DIR / "data"
+    """Get list of available datasets."""
     datasets = []
     
-    if (data_dir / "BookTection.csv").exists():
+    if (DATA_DIR / "BookTection.csv").exists():
         datasets.append("BookTection")
-    if (data_dir / "arXivTection.csv").exists():
+    if (DATA_DIR / "arXivTection.csv").exists():
         datasets.append("arXivTection")
     
     return datasets
@@ -132,7 +131,7 @@ def query_llm_claude(
     return completion.completion.strip()
 
 
-def run_decop_evaluation(
+def run_dataset_evaluation(
     data_type: str,
     model_name: str,
     api_key: str,
@@ -140,7 +139,7 @@ def run_decop_evaluation(
     progress_callback=None
 ) -> Tuple[bool, str, Optional[Path]]:
     """
-    Run DECOP evaluation on the selected dataset.
+    Run evaluation on the selected dataset.
     
     Args:
         data_type: "BookTection" or "arXivTection"
@@ -176,7 +175,7 @@ def run_decop_evaluation(
         return False, f"Failed to initialize API client: {str(e)}", None
     
     # Load dataset
-    data_path = DECOP_DIR / "data" / f"{data_type}.csv"
+    data_path = DATA_DIR / f"{data_type}.csv"
     if not data_path.exists():
         return False, f"Dataset file not found: {data_path}", None
     
@@ -195,9 +194,9 @@ def run_decop_evaluation(
     
     # Create output directory
     if data_type == "BookTection":
-        out_dir = DECOP_DIR / f'DECOP_{data_type}_{passage_size}'
+        out_dir = DATA_DIR / f'results_{data_type}_{passage_size}'
     else:
-        out_dir = DECOP_DIR / f'DECOP_{data_type}'
+        out_dir = DATA_DIR / f'results_{data_type}'
     
     out_dir.mkdir(exist_ok=True)
     
@@ -281,7 +280,7 @@ def calculate_results(
     passage_size: Optional[str] = None
 ) -> Tuple[bool, str, Optional[pd.DataFrame]]:
     """
-    Calculate accuracy and ROC metrics from DECOP results.
+    Calculate accuracy and ROC metrics from evaluation results.
     
     Args:
         data_type: "BookTection" or "arXivTection"
@@ -295,10 +294,10 @@ def calculate_results(
     if data_type == "BookTection":
         if not passage_size:
             return False, "Passage size required for BookTection", None
-        results_dir = DECOP_DIR / f'DECOP_{data_type}_{passage_size}'
+        results_dir = DATA_DIR / f'results_{data_type}_{passage_size}'
         pattern = f"*Paraphrases_Oversampling_{passage_size}.xlsx"
     else:
-        results_dir = DECOP_DIR / f'DECOP_{data_type}'
+        results_dir = DATA_DIR / f'results_{data_type}'
         pattern = "*Paraphrases_Oversampling*.xlsx"
     
     if not results_dir.exists():

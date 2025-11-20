@@ -44,6 +44,6 @@ __all__ = [
     "load_dataset_excerpt",
     "run_single_choice_evaluation",
     "summarize_single_choice_results",
-    # decop_analysis
+    # dataset management
     "get_available_datasets",
 ]

@@ -737,6 +737,28 @@ CONTINUATION_STRATEGIES = [
     "Custom Prompt",
 ]
 
+LEGAL_CASES = [
+    {
+        "title": "GEMA vs. OpenAI — Unauthorized lyric ingestion",
+        "date": "2025-11-11",
+        "jurisdiction": "Munich I Regional Court, Germany",
+        "case_number": "42O14139/24",
+        "plaintiff": "GEMA (German musical works collective management organization)",
+        "defendant": "OpenAI",
+        "summary": (
+            "The court found that OpenAI ingested copyrighted song lyrics without authorization "
+            "to train ChatGPT, constituting copyright infringement under German law."
+        ),
+        "status": "First-instance ruling; not yet final — OpenAI expected to appeal.",
+        "implications": [
+            "Confirms that LLM providers can be held liable for ingesting copyrighted corpora without licenses.",
+            "Supports the business case for forensic tools that document memorization traces and provenance issues.",
+            "Signals growing regulatory scrutiny across the EU ahead of broader AI Act enforcement.",
+        ],
+        "notes": "Judgment emphasizes the need for transparent training data logs and opt-out workflows.",
+    }
+]
+
 
 def render_header():
     """Render the app header with title and description."""
@@ -822,6 +844,7 @@ def render_sidebar():
                 "Recall Test",
                 "Persuasive Jailbreak Test",
                 "Unlearning Detection Test",
+                "Legal Case Display",
             ],
             label_visibility="collapsed",
         )
@@ -1643,16 +1666,16 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
         with header_col:
             st.markdown('<h4 class="section-header">📚 Knowledge Memorization Detection</h4>', unsafe_allow_html=True)
             st.markdown(
-                "Test if an LLM has been trained on specific materials using either Open-ended Question or Single-choice Question."
+                "Test if an LLM has been trained on specific materials using either open-ended question or single-choice question."
             )
         with button_col:
             if st.button(
                 "🗑️ Clear Cache",
                 key="clear_knowledge_data",
-                help="Reset cached Q&A generation, single-choice inputs, and evaluation results.",
+                help="Reset cached Q/A generation, single-choice inputs, and evaluation results.",
             ):
                 for key in list(st.session_state.keys()):
-                    if key.startswith('qa_') or key.startswith('decop_'):
+                    if key.startswith('qa_') or key.startswith('sc_'):
                         del st.session_state[key]
                 _trigger_rerun()
     
@@ -1662,8 +1685,8 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
         <div class="analysis-callout">
             <div class="analysis-callout__title">How Knowledge Memorization Detection works</div>
             <ul class="analysis-callout__list">
-                <li><strong>Open-ended Question:</strong> Generate open-ended questions from documents and evaluate how well the target model answers them.</li>
-                <li><strong>Single-choice Question:</strong> Design single-choice questions where the options include verbatim text and their paraphrases. Observing the model's selection bias helps infer prior exposure to the source text.</li>
+                <li><strong>Open-ended Question:</strong> Generate open-ended questions and evaluate how well the target model answers them.</li>
+                <li><strong>Single-choice Question:</strong> Design single-choice questions where the options include verbatim text and nearly identical but distinct alternatives. Observing the model's selection bias helps infer prior exposure to the source text.</li>
             </ul>
         </div>
         """,
@@ -1685,17 +1708,23 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
     if detection_mode == "Open-ended Question":
         render_qa_based_detection(api_key, model_choice, provider)
     else:
-        render_decop_detection(api_key, model_choice, provider)
+        render_sc_detection(api_key, model_choice, provider)
 
 
 def render_qa_based_detection(api_key, model_choice, provider):
     """Render Open-ended Question knowledge memorization detection."""
     
-    # Initialize session state for Q&A detection to preserve data across page switches
+    # Initialize session state for Q/A detection to preserve data across page switches
     if 'qa_generated_qa_pairs' not in st.session_state:
         st.session_state['qa_generated_qa_pairs'] = []
     if 'qa_document_text_content' not in st.session_state:
         st.session_state['qa_document_text_content'] = ""
+    if 'qa_source_mode' not in st.session_state:
+        st.session_state['qa_source_mode'] = 'Input Text'
+    if 'qa_input_text' not in st.session_state:
+        st.session_state['qa_input_text'] = ''
+    if 'qa_dataset_document' not in st.session_state:
+        st.session_state['qa_dataset_document'] = None
     if 'qa_gen_provider_index' not in st.session_state:
         st.session_state['qa_gen_provider_index'] = 0
     if 'qa_num_qa_pairs' not in st.session_state:
@@ -1712,29 +1741,90 @@ def render_qa_based_detection(api_key, model_choice, provider):
     st.markdown(
         """
         <div class="analysis-callout">
-            <div class="analysis-callout__title">Open-ended Question Workflow</div>
+            <div class="analysis-callout__title">Open-ended Question Detection</div>
             <ul class="analysis-callout__list">
-                <li>Upload a PDF or TXT document containing the knowledge to be tested.</li>
-                <li>Configure an LLM to generate Q&A pairs from the document.</li>
-                <li>Use a second LLM to answer the questions and evaluate memorization.</li>
+                <li>Provide source text through direct input, document upload, or dataset selection.</li>
+                <li>Configure a generator LLM to create open-ended question/answer pairs from the source content.</li>
+                <li>Use the target LLM (configured in the sidebar) to answer questions and evaluate memorization.</li>
             </ul>
         </div>
         """,
         unsafe_allow_html=True,
     )
     
-    # Step 1: Document Upload
-    st.markdown('<p class="analysis-step-label">Step 2 · Upload PDF/TXT document</p>', unsafe_allow_html=True)
+    # Step 1: Provide source content
+    st.markdown('<p class="analysis-step-label">Step 2 · Provide source content</p>', unsafe_allow_html=True)
+    available_datasets = get_available_datasets()
     
-    uploaded_document = st.file_uploader(
-        "📎 Choose a PDF or TXT file:",
-        type=["pdf", "txt"],
-        help="Select a PDF or UTF-8 TXT document to extract knowledge from",
-        key="knowledge_qa_pdf_upload"
+    # Create labeled options to distinguish custom input from example datasets
+    custom_options = ["Input Text", "Upload Document"]
+    example_datasets = [f"{ds} (Example)" for ds in available_datasets]
+    source_options = custom_options + example_datasets
+    
+    qa_source_mode_display = st.radio(
+        "Where should the open-ended questions/answers draw context from?",
+        source_options,
+        horizontal=True,
+        key="qa_source_mode",
+        help="Choose 'Input Text' or 'Upload Document' for custom input, or select a pre-curated example dataset.",
     )
     
-    # Step 2: Configure First LLM and Generate Q&A Pairs
-    st.markdown('<p class="analysis-step-label">Step 3 · Configure first LLM to generate Q&A pairs</p>', unsafe_allow_html=True)
+    # Remove the "(Example)" suffix to get the actual dataset name
+    qa_source_mode = qa_source_mode_display.replace(" (Example)", "")
+    
+    uploaded_document = None
+    source_text = ""
+    source_meta: Dict[str, Any] = {}
+    
+    if qa_source_mode == "Input Text":
+        st.markdown("**📝 Custom Input: Enter your text**")
+        st.text_area(
+            "Enter your text",
+            height=200,
+            placeholder="Paste or type the text you want to generate Q/A pairs from...",
+            help="Provide the text content you'd like to test for knowledge memorization.",
+            key="qa_input_text",
+        )
+        if st.session_state.get("qa_input_text", "").strip():
+            source_text = st.session_state["qa_input_text"].strip()
+            st.caption(f"Text length: {len(source_text)} characters · {len(source_text.split())} words")
+    elif qa_source_mode == "Upload Document":
+        st.markdown("**📎 Custom Input: Upload your document**")
+        uploaded_document = st.file_uploader(
+            "Choose a PDF or TXT file:",
+            type=["pdf", "txt"],
+            help="Select a PDF or UTF-8 TXT document to extract knowledge from",
+            key="knowledge_qa_pdf_upload"
+        )
+    else:
+        # This is an example dataset
+        st.markdown(f"**📚 Example Dataset: {qa_source_mode}**")
+        doc_options = list_dataset_documents(qa_source_mode, limit=50)
+        if not doc_options:
+            st.warning(
+                f"No examples found for {qa_source_mode}. Ensure the CSV exists under src/direct_recall/decop/data/"
+            )
+        else:
+            selected_doc = st.selectbox(
+                f"Choose a {qa_source_mode} example",
+                doc_options,
+                key="qa_dataset_document",
+            )
+            if selected_doc:
+                source_text, source_meta = load_dataset_excerpt(qa_source_mode, selected_doc)
+                if source_text:
+                    st.text_area(
+                        "Dataset excerpt preview",
+                        source_text[:3000],
+                        height=180,
+                        key="qa_dataset_preview",
+                        disabled=True,
+                    )
+                else:
+                    st.warning("Unable to load excerpt for the selected document.")
+    
+    # Step 2: Configure First LLM and Generate Q/A Pairs
+    st.markdown('<p class="analysis-step-label">Step 3 · Configure first LLM to generate Q/A pairs</p>', unsafe_allow_html=True)
     st.markdown(
         '<p class="analysis-step-caption">Select the model provider and configure generation parameters for creating questions/answers.</p>',
         unsafe_allow_html=True,
@@ -1819,7 +1909,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
     col3, col4, col5 = st.columns(3)
     with col3:
         st.number_input(
-            "Number of Q&A Pairs to Generate",
+            "Number of Q/A Pairs to Generate",
             min_value=1,
             max_value=20,
             value=st.session_state['qa_num_qa_pairs'],
@@ -1835,7 +1925,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
             max_value=1.0,
             value=0.7,
             step=0.05,
-            help="Controls randomness in Q&A generation. Higher = more diverse questions.",
+            help="Controls randomness in Q/A generation. Higher = more diverse questions.",
             key="qa_gen_temperature"
         )
 
@@ -1846,60 +1936,100 @@ def render_qa_based_detection(api_key, model_choice, provider):
             max_value=1.0,
             value=0.9,
             step=0.05,
-            help="Nucleus sampling parameter for controlling diversity during Q&A generation.",
+            help="Nucleus sampling parameter for controlling diversity during Q/A generation.",
             key="qa_gen_top_p"
         )
     
 
-    # Button to generate Q&A pairs
+    # Button to generate Q/A pairs
     generate_qa = st.button(
-        "🚀 Run: Generate Q&A Pairs from Document",
+        "🚀 Run: Generate Q/A Pairs",
         key="generate_qa_button",
         type="primary",
         use_container_width=True
     )
     
-    # Generate Q&A pairs
+    # Generate Q/A pairs
     if generate_qa:
         # Get values from session state
         num_qa_pairs = st.session_state.get('num_qa_pairs', 5)
         qa_gen_temperature = st.session_state.get('qa_gen_temperature', 0.7)
         qa_gen_top_p = st.session_state.get('qa_gen_top_p', 0.9)
         
-        if not uploaded_document:
-            st.warning("⚠️ Please upload a document first.")
-        elif not qa_gen_api_key:
-            st.error("⚠️ Please provide an API key for Q&A generation.")
+        if not qa_gen_api_key:
+            st.error("⚠️ Please provide an API key for Q/A generation.")
         else:
-            from src.direct_recall.knowledge_qa import generate_qa_pairs_from_document
+            from src.direct_recall.knowledge_qa import generate_qa_pairs_from_document, generate_qa_pairs_from_text
             
-            with st.spinner(f"🔄 Extracting text from document and generating {num_qa_pairs} Q&A pairs with {qa_gen_model}..."):
-                qa_pairs, document_text = generate_qa_pairs_from_document(
-                    uploaded_document,
-                    qa_gen_api_key,
-                    qa_gen_model,
-                    qa_gen_provider,
-                    num_pairs=num_qa_pairs,
-                    temperature=qa_gen_temperature,
-                    top_p=qa_gen_top_p,
-                )
+            with st.spinner(f"🔄 Generating {num_qa_pairs} Q/A pairs with {qa_gen_model}..."):
+                qa_pairs = []
+                document_text = ""
+                
+                if qa_source_mode == "Input Text":
+                    input_text = st.session_state.get("qa_input_text", "").strip()
+                    if not input_text:
+                        st.warning("⚠️ Please enter some text first.")
+                    else:
+                        document_text = input_text
+                        qa_pairs = generate_qa_pairs_from_text(
+                            document_text,
+                            qa_gen_api_key,
+                            qa_gen_model,
+                            qa_gen_provider,
+                            num_pairs=num_qa_pairs,
+                            temperature=qa_gen_temperature,
+                            top_p=qa_gen_top_p,
+                        )
+                elif qa_source_mode == "Upload Document":
+                    if not uploaded_document:
+                        st.warning("⚠️ Please upload a document first.")
+                    else:
+                        qa_pairs, document_text = generate_qa_pairs_from_document(
+                            uploaded_document,
+                            qa_gen_api_key,
+                            qa_gen_model,
+                            qa_gen_provider,
+                            num_pairs=num_qa_pairs,
+                            temperature=qa_gen_temperature,
+                            top_p=qa_gen_top_p,
+                        )
+                else:
+                    # Dataset mode
+                    if not source_text:
+                        source_text, source_meta = load_dataset_excerpt(
+                            qa_source_mode,
+                            st.session_state.get('qa_dataset_document'),
+                        )
+                    if not source_text:
+                        st.warning("⚠️ Please select a dataset document first.")
+                    else:
+                        document_text = source_text
+                        qa_pairs = generate_qa_pairs_from_text(
+                            document_text,
+                            qa_gen_api_key,
+                            qa_gen_model,
+                            qa_gen_provider,
+                            num_pairs=num_qa_pairs,
+                            temperature=qa_gen_temperature,
+                            top_p=qa_gen_top_p,
+                        )
                 
                 if isinstance(document_text, str) and document_text.startswith("Error"):
                     st.error(f"❌ {document_text}")
                 elif not qa_pairs:
-                    st.error("❌ Failed to generate Q&A pairs. The LLM may not have returned valid JSON. Please try again or use a different model.")
+                    st.error("❌ Failed to generate Q/A pairs. The LLM may not have returned valid JSON. Please try again or use a different model.")
                 else:
                     st.session_state['qa_generated_qa_pairs'] = qa_pairs
                     st.session_state['qa_document_text_content'] = document_text
-                    st.success(f"✅ Successfully generated {len(qa_pairs)} Q&A pairs!")
+                    st.success(f"✅ Successfully generated {len(qa_pairs)} Q/A pairs!")
     
-    # Display generated Q&A pairs
+    # Display generated Q/A pairs
     if st.session_state['qa_generated_qa_pairs']:
-        st.markdown('<h4 class="section-header sm">📋 Generated Q&A Pairs</h4>', unsafe_allow_html=True)
+        st.markdown('<h4 class="section-header sm">📋 Generated Q/A Pairs</h4>', unsafe_allow_html=True)
         st.caption(f"Generated {len(st.session_state['qa_generated_qa_pairs'])} question-answer pairs from the document.")
 
         for idx, qa_pair in enumerate(st.session_state['qa_generated_qa_pairs'], 1):
-            with st.expander(f"Q&A Pair {idx}", expanded=False):
+            with st.expander(f"Q/A Pair {idx}", expanded=False):
                 st.markdown("**Question:**")
                 st.write(qa_pair['question'])
                 st.markdown("**Answer:**")
@@ -1957,7 +2087,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
         eval_top_p = st.session_state.get('eval_top_p', 1.0)
         
         if not st.session_state['qa_generated_qa_pairs']:
-            st.warning("⚠️ Please generate Q&A pairs first before running evaluation.")
+            st.warning("⚠️ Please generate Q/A pairs first before running evaluation.")
         elif not api_key or not api_key.strip():
             st.error(f"⚠️ Please configure the API key for **{provider}** in the sidebar before running evaluation.")
         elif not model_choice:
@@ -1975,7 +2105,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 """Update progress bar and text."""
                 progress = current / total if total > 0 else 0
                 progress_bar.progress(progress)
-                progress_text.text(f"🔄 Run {run_num}/{num_eval_runs} | Q&A {qa_num}/{qa_total} | Overall: {current}/{total}")
+                progress_text.text(f"🔄 Run {run_num}/{num_eval_runs} | Q/A {qa_num}/{qa_total} | Overall: {current}/{total}")
             
             try:
                 all_results = run_knowledge_qa_evaluation(
@@ -1990,7 +2120,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 )
                 
                 progress_bar.progress(1.0)
-                progress_text.text(f"✅ Completed {num_eval_runs} run(s) × {total_qa_pairs} Q&A pairs = {total_items} evaluations")
+                progress_text.text(f"✅ Completed {num_eval_runs} run(s) × {total_qa_pairs} Q/A pairs = {total_items} evaluations")
                 progress_bar.empty()
                 progress_text.empty()
             except Exception as e:
@@ -2052,14 +2182,14 @@ def render_qa_based_detection(api_key, model_choice, provider):
 
         render_metric_cards(metrics_data)
         
-        # Display detailed results grouped by Q&A pair
-        st.markdown("#### 📝 Detailed Results by Q&A Pair")
+        # Display detailed results grouped by Q/A pair
+        st.markdown("#### 📝 Detailed Results by Q/A Pair")
 
         qa_pairs_generated = st.session_state.get('qa_generated_qa_pairs', [])
         total_pairs = max(len(qa_pairs_generated), max((len(run) for run in all_results), default=0))
 
         for qa_idx in range(total_pairs):
-            # Gather per-run evaluations for this Q&A index
+            # Gather per-run evaluations for this Q/A index
             run_details = []
             for run_idx, run_results in enumerate(all_results, 1):
                 if qa_idx < len(run_results):
@@ -2072,7 +2202,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
             reference_eval = run_details[0][1]
             question_preview = textwrap.shorten(reference_eval['question'], width=60, placeholder='…')
 
-            with st.expander(f"Q&A Pair {qa_idx + 1} · {question_preview}", expanded=(qa_idx == 0)):
+            with st.expander(f"Q/A Pair {qa_idx + 1} · {question_preview}", expanded=(qa_idx == 0)):
                 st.markdown("**📥 Question**")
                 question_card_html = (
                     "<div style=\""
@@ -2132,25 +2262,26 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 "suggesting it is not recalling memorized content from this specific document."
             )
     elif not st.session_state['qa_generated_qa_pairs']:
-        st.info("👆 Upload a PDF or TXT file and generate Q&A pairs to begin the knowledge memorization detection process.")
+        st.info("👆 Upload a PDF or TXT file and generate Q/A pairs to begin the knowledge memorization detection process.")
 
 
-def render_decop_detection(api_key, model_choice, provider):
+def render_sc_detection(api_key, model_choice, provider):
     """Render Single-choice question test for copyright detection."""
 
     default_state = {
-        'decop_source_mode': 'Upload Document',
-        'decop_generated_mcqs': [],
-        'decop_document_text': '',
-        'decop_dataset_document': None,
-        'decop_num_questions': 5,
-        'decop_gen_temperature': 0.4,
-        'decop_gen_top_p': 0.85,
-        'decop_gen_provider_index': 0,
-        'decop_evaluation_results': None,
-        'decop_eval_runs': 1,
-        'decop_eval_temperature': 0.0,
-        'decop_eval_top_p': 1.0,
+        'sc_source_mode': 'Input Text',
+        'sc_generated_mcqs': [],
+        'sc_document_text': '',
+        'sc_input_text': '',
+        'sc_dataset_document': None,
+        'sc_num_questions': 5,
+        'sc_gen_temperature': 0.4,
+        'sc_gen_top_p': 0.85,
+        'sc_gen_provider_index': 0,
+        'sc_evaluation_results': None,
+        'sc_eval_runs': 1,
+        'sc_eval_temperature': 0.0,
+        'sc_eval_top_p': 1.0,
     }
     for key, value in default_state.items():
         if key not in st.session_state:
@@ -2159,11 +2290,11 @@ def render_decop_detection(api_key, model_choice, provider):
     st.markdown(
         """
         <div class="analysis-callout">
-            <div class="analysis-callout__title">Single-choice Copyright Detection</div>
+            <div class="analysis-callout__title">Single-choice Question Detection</div>
             <ul class="analysis-callout__list">
-                <li>Start with a PDF, TXT, or curated DECOP excerpt as the ground-truth reference.</li>
-                <li>Use a generation model to craft single-choice questions with subtle distractors.</li>
-                <li>Evaluate your target model to see whether it consistently prefers the verbatim option.</li>
+                <li>Provide source text through direct input, document upload, or dataset selection.</li>
+                <li>Configure a generator LLM to craft single-choice questions with subtle distractors.</li>
+                <li>Evaluate your target LLM to see whether it consistently prefers the verbatim option.</li>
             </ul>
         </div>
         """,
@@ -2173,26 +2304,50 @@ def render_decop_detection(api_key, model_choice, provider):
     # Step 1: Provide source content
     st.markdown('<p class="analysis-step-label">Step 2 · Provide source content</p>', unsafe_allow_html=True)
     available_datasets = get_available_datasets()
-    source_options = ["Upload Document"] + available_datasets
-    source_mode = st.radio(
+    
+    # Create labeled options to distinguish custom input from example datasets
+    custom_options = ["Input Text", "Upload Document"]
+    example_datasets = [f"{ds} (Example)" for ds in available_datasets]
+    source_options = custom_options + example_datasets
+    
+    source_mode_display = st.radio(
         "Where should the single-choice questions draw context from?",
         source_options,
         horizontal=True,
-        key="decop_source_mode",
+        key="sc_source_mode",
+        help="Choose 'Input Text' or 'Upload Document' for custom input, or select a pre-curated example dataset.",
     )
+    
+    # Remove the "(Example)" suffix to get the actual dataset name
+    source_mode = source_mode_display.replace(" (Example)", "")
 
     uploaded_document = None
     excerpt_preview = ""
     excerpt_meta: Dict[str, Any] = {}
 
-    if source_mode == "Upload Document":
+    if source_mode == "Input Text":
+        st.markdown("**📝 Custom Input: Enter your text**")
+        st.text_area(
+            "Enter your text",
+            height=200,
+            placeholder="Paste or type the text you want to use for generating single-choice questions...",
+            help="Provide the text content you'd like to probe for memorization detection.",
+            key="sc_input_text",
+        )
+        if st.session_state.get("sc_input_text", "").strip():
+            excerpt_preview = st.session_state["sc_input_text"].strip()
+            st.caption(f"Text length: {len(excerpt_preview)} characters · {len(excerpt_preview.split())} words")
+    elif source_mode == "Upload Document":
+        st.markdown("**📎 Custom Input: Upload your document**")
         uploaded_document = st.file_uploader(
-            "📎 Upload PDF or TXT",
+            "Upload PDF or TXT",
             type=["pdf", "txt"],
             help="Provide the copyrighted material you'd like to probe.",
-            key="decop_document_upload",
+            key="sc_document_upload",
         )
     else:
+        # This is an example dataset
+        st.markdown(f"**📚 Example Dataset: {source_mode}**")
         doc_options = list_dataset_documents(source_mode, limit=50)
         if not doc_options:
             st.warning(
@@ -2202,20 +2357,16 @@ def render_decop_detection(api_key, model_choice, provider):
             selected_doc = st.selectbox(
                 f"Choose a {source_mode} example",
                 doc_options,
-                key="decop_dataset_document",
+                key="sc_dataset_document",
             )
             if selected_doc:
                 excerpt_preview, excerpt_meta = load_dataset_excerpt(source_mode, selected_doc)
                 if excerpt_preview:
-                    st.caption(
-                        f"Loaded excerpt from {excerpt_meta.get('document_id', selected_doc)}"
-                        f" · Length: {excerpt_meta.get('length', 'N/A')}"
-                    )
                     st.text_area(
                         "Dataset excerpt preview",
                         excerpt_preview[:3000],
                         height=180,
-                        key="decop_dataset_preview",
+                        key="sc_dataset_preview",
                         disabled=True,
                     )
                 else:
@@ -2235,10 +2386,10 @@ def render_decop_detection(api_key, model_choice, provider):
         generation_provider = st.selectbox(
             "Generation provider",
             provider_options,
-            index=min(st.session_state['decop_gen_provider_index'], len(provider_options) - 1),
-            key="decop_gen_provider",
+            index=min(st.session_state['sc_gen_provider_index'], len(provider_options) - 1),
+            key="sc_gen_provider",
         )
-        st.session_state['decop_gen_provider_index'] = provider_options.index(generation_provider)
+        st.session_state['sc_gen_provider_index'] = provider_options.index(generation_provider)
 
     def _provider_models(provider_name: str) -> List[str]:
         if provider_name == "OpenAI":
@@ -2271,7 +2422,7 @@ def render_decop_detection(api_key, model_choice, provider):
         generation_model = st.selectbox(
             "Generation model",
             _provider_models(generation_provider),
-            key="decop_gen_model",
+            key="sc_gen_model",
         )
 
     with col_api:
@@ -2279,7 +2430,7 @@ def render_decop_detection(api_key, model_choice, provider):
             "Generation API key",
             type="password",
             help="Leave blank to reuse the sidebar API key.",
-            key="decop_gen_api_key",
+            key="sc_gen_api_key",
         )
 
     col_qty, col_temp, col_top_p = st.columns(3)
@@ -2289,7 +2440,7 @@ def render_decop_detection(api_key, model_choice, provider):
             min_value=1,
             max_value=20,
             step=1,
-            key="decop_num_questions",
+            key="sc_num_questions",
         )
     with col_temp:
         st.slider(
@@ -2297,7 +2448,7 @@ def render_decop_detection(api_key, model_choice, provider):
             min_value=0.0,
             max_value=1.0,
             step=0.05,
-            key="decop_gen_temperature",
+            key="sc_gen_temperature",
         )
     with col_top_p:
         st.slider(
@@ -2305,12 +2456,12 @@ def render_decop_detection(api_key, model_choice, provider):
             min_value=0.0,
             max_value=1.0,
             step=0.05,
-            key="decop_gen_top_p",
+            key="sc_gen_top_p",
         )
 
     generate_questions = st.button(
         "🚀 Generate single-choice questions",
-        key="decop_generate_mcq_button",
+        key="sc_generate_mcq_button",
         use_container_width=True,
     )
 
@@ -2320,7 +2471,23 @@ def render_decop_detection(api_key, model_choice, provider):
             st.error("⚠️ Provide an API key for the generation model or reuse the sidebar key.")
         else:
             with st.spinner("Synthesizing tightly matched options..."):
-                if source_mode == "Upload Document":
+                if source_mode == "Input Text":
+                    input_text = st.session_state.get("sc_input_text", "").strip()
+                    if not input_text:
+                        st.warning("⚠️ Please enter some text first.")
+                        generated_mcqs, document_text = [], ""
+                    else:
+                        document_text = input_text
+                        generated_mcqs = generate_single_choice_questions_from_text(
+                            document_text,
+                            effective_api_key,
+                            generation_model,
+                            generation_provider,
+                            num_questions=st.session_state['sc_num_questions'],
+                            temperature=st.session_state['sc_gen_temperature'],
+                            top_p=st.session_state['sc_gen_top_p'],
+                        )
+                elif source_mode == "Upload Document":
                     if not uploaded_document:
                         st.warning("⚠️ Upload a PDF/TXT document first.")
                         generated_mcqs, document_text = [], ""
@@ -2330,15 +2497,15 @@ def render_decop_detection(api_key, model_choice, provider):
                             effective_api_key,
                             generation_model,
                             generation_provider,
-                            num_questions=st.session_state['decop_num_questions'],
-                            temperature=st.session_state['decop_gen_temperature'],
-                            top_p=st.session_state['decop_gen_top_p'],
+                            num_questions=st.session_state['sc_num_questions'],
+                            temperature=st.session_state['sc_gen_temperature'],
+                            top_p=st.session_state['sc_gen_top_p'],
                         )
                 else:
                     if not excerpt_preview:
                         excerpt_preview, excerpt_meta = load_dataset_excerpt(
                             source_mode,
-                            st.session_state.get('decop_dataset_document'),
+                            st.session_state.get('sc_dataset_document'),
                         )
                     document_text = excerpt_preview
                     generated_mcqs = generate_single_choice_questions_from_text(
@@ -2346,22 +2513,22 @@ def render_decop_detection(api_key, model_choice, provider):
                         effective_api_key,
                         generation_model,
                         generation_provider,
-                        num_questions=st.session_state['decop_num_questions'],
-                        temperature=st.session_state['decop_gen_temperature'],
-                        top_p=st.session_state['decop_gen_top_p'],
+                        num_questions=st.session_state['sc_num_questions'],
+                        temperature=st.session_state['sc_gen_temperature'],
+                        top_p=st.session_state['sc_gen_top_p'],
                     )
 
                 if not generated_mcqs:
                     st.error("❌ Failed to generate single-choice questions. Try adjusting the model or prompt parameters.")
                 else:
-                    st.session_state['decop_generated_mcqs'] = generated_mcqs
-                    st.session_state['decop_document_text'] = document_text
-                    st.session_state['decop_evaluation_results'] = None
+                    st.session_state['sc_generated_mcqs'] = generated_mcqs
+                    st.session_state['sc_document_text'] = document_text
+                    st.session_state['sc_evaluation_results'] = None
                     st.success(f"✅ Generated {len(generated_mcqs)} single-choice questions.")
 
-    if st.session_state['decop_generated_mcqs']:
+    if st.session_state['sc_generated_mcqs']:
         st.markdown('<h4 class="section-header sm">🧩 Generated Single-choice Questions</h4>', unsafe_allow_html=True)
-        for idx, mcq in enumerate(st.session_state['decop_generated_mcqs'], start=1):
+        for idx, mcq in enumerate(st.session_state['sc_generated_mcqs'], start=1):
             with st.expander(f"Question {idx}", expanded=False):
                 st.markdown(f"**Question:** {mcq['question']}")
                 for option in mcq['options']:
@@ -2384,7 +2551,7 @@ def render_decop_detection(api_key, model_choice, provider):
             min_value=1,
             max_value=5,
             step=1,
-            key="decop_eval_runs",
+            key="sc_eval_runs",
         )
     with eval_cols[1]:
         st.slider(
@@ -2392,7 +2559,7 @@ def render_decop_detection(api_key, model_choice, provider):
             min_value=0.0,
             max_value=1.0,
             step=0.05,
-            key="decop_eval_temperature",
+            key="sc_eval_temperature",
         )
     with eval_cols[2]:
         st.slider(
@@ -2400,25 +2567,25 @@ def render_decop_detection(api_key, model_choice, provider):
             min_value=0.0,
             max_value=1.0,
             step=0.05,
-            key="decop_eval_top_p",
+            key="sc_eval_top_p",
         )
 
     run_single_choice_eval = st.button(
         "🧪 Run Single-Choice Evaluation",
-        key="decop_run_eval_button",
+        key="sc_run_eval_button",
         use_container_width=True,
     )
 
     if run_single_choice_eval:
-        if not st.session_state['decop_generated_mcqs']:
+        if not st.session_state['sc_generated_mcqs']:
             st.warning("⚠️ Generate single-choice questions before running the evaluation.")
         elif not api_key or not api_key.strip():
             st.error(f"⚠️ Configure an API key for {provider} in the sidebar.")
         elif not model_choice:
             st.error("⚠️ Select a target model in the sidebar before running evaluation.")
         else:
-            total_questions = len(st.session_state['decop_generated_mcqs'])
-            total_items = total_questions * st.session_state['decop_eval_runs']
+            total_questions = len(st.session_state['sc_generated_mcqs'])
+            total_items = total_questions * st.session_state['sc_eval_runs']
             progress_bar = st.progress(0.0)
             progress_text = st.empty()
 
@@ -2426,19 +2593,19 @@ def render_decop_detection(api_key, model_choice, provider):
                 pct = current / total if total else 0
                 progress_bar.progress(pct)
                 progress_text.text(
-                    f"🔄 Run {run_num}/{st.session_state['decop_eval_runs']} | "
+                    f"🔄 Run {run_num}/{st.session_state['sc_eval_runs']} | "
                     f"Question {question_num}/{question_total} | {current}/{total} evaluations"
                 )
 
             try:
                 results = run_single_choice_evaluation(
-                    st.session_state['decop_generated_mcqs'],
+                    st.session_state['sc_generated_mcqs'],
                     api_key,
                     model_choice,
                     provider,
-                    num_runs=st.session_state['decop_eval_runs'],
-                    temperature=st.session_state['decop_eval_temperature'],
-                    top_p=st.session_state['decop_eval_top_p'],
+                    num_runs=st.session_state['sc_eval_runs'],
+                    temperature=st.session_state['sc_eval_temperature'],
+                    top_p=st.session_state['sc_eval_top_p'],
                     progress_callback=update_progress,
                 )
                 progress_bar.empty()
@@ -2446,21 +2613,21 @@ def render_decop_detection(api_key, model_choice, provider):
                 if not results:
                     st.error("❌ Evaluation returned no results. Please try again.")
                 else:
-                    st.session_state['decop_evaluation_results'] = results
+                    st.session_state['sc_evaluation_results'] = results
                     st.success(f"✅ Completed {total_items} single-choice evaluations.")
             except Exception as exc:  # noqa: BLE001
                 progress_bar.empty()
                 progress_text.empty()
                 st.error(f"❌ Evaluation failed: {exc}")
 
-    if st.session_state['decop_evaluation_results']:
-        results = st.session_state['decop_evaluation_results']
+    if st.session_state['sc_evaluation_results']:
+        results = st.session_state['sc_evaluation_results']
         metrics = summarize_single_choice_results(results)
         if metrics:
             st.markdown('<h4 class="section-header sm">📊 Evaluation summary</h4>', unsafe_allow_html=True)
             accuracy = metrics.get('overall_accuracy', 0)
             avg_conf = metrics.get('avg_correct_confidence')
-            decop_metrics = [
+            sc_metrics = [
                 {
                     "label": "Runs",
                     "icon": "🔁",
@@ -2493,7 +2660,7 @@ def render_decop_detection(api_key, model_choice, provider):
                 },
             ]
 
-            render_metric_cards(decop_metrics)
+            render_metric_cards(sc_metrics)
 
             option_distribution = metrics.get('option_distribution', {})
             if option_distribution:
@@ -2535,7 +2702,7 @@ def render_decop_detection(api_key, model_choice, provider):
                 st.dataframe(per_question_df, hide_index=True)
 
         st.markdown("#### Detailed responses")
-        for question_idx, mcq in enumerate(st.session_state['decop_generated_mcqs'], start=1):
+        for question_idx, mcq in enumerate(st.session_state['sc_generated_mcqs'], start=1):
             with st.expander(f"Question {question_idx}: {textwrap.shorten(mcq['question'], width=80, placeholder='…')}"):
                 st.markdown(f"**Question:** {mcq['question']}")
                 for option in mcq['options']:
@@ -2564,9 +2731,60 @@ def render_decop_detection(api_key, model_choice, provider):
                             prob_line = ", ".join(ordered + leftovers)
                             st.caption(f"Option probabilities » {prob_line}")
 
-                if st.session_state['decop_document_text']:
+                if st.session_state['sc_document_text']:
                     with st.expander("📄 Source excerpt", expanded=False):
-                        st.write(st.session_state['decop_document_text'][:5000])
+                        st.write(st.session_state['sc_document_text'][:5000])
+
+
+def render_legal_case_display_page():
+    """Showcase real-world lawsuits that underscore memorization risk."""
+
+    st.markdown("### ⚖️ Legal Case Display")
+    st.caption(
+        "Curated legal milestones that illustrate why Copyright Detective workflows are essential."
+    )
+
+    st.markdown(
+        """
+        <div class="analysis-callout">
+            <div class="analysis-callout__title">Why track legal exposure?</div>
+            <ul class="analysis-callout__list">
+                <li>Courts are beginning to treat opaque training pipelines as copyright violations.</li>
+                <li>Detection workflows (Recall · Q/A · Single-choice) create defensible audit trails.</li>
+                <li>Use these case briefs to brief legal, compliance, and product leadership teams.</li>
+            </ul>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    for case in LEGAL_CASES:
+        st.markdown("---")
+        st.markdown(f"#### {case['title']}")
+
+        meta_cols = st.columns([2, 1])
+        with meta_cols[0]:
+            st.write(f"**Date:** {case['date']}")
+            st.write(f"**Jurisdiction:** {case['jurisdiction']}")
+            st.write(f"**Case number:** {case['case_number']}")
+        with meta_cols[1]:
+            st.write(f"**Plaintiff:** {case['plaintiff']}")
+            st.write(f"**Defendant:** {case['defendant']}")
+
+        st.info(case['summary'])
+        st.markdown(f"**Status:** {case['status']}")
+
+        st.markdown("**Implications for LLM builders**")
+        for item in case['implications']:
+            st.markdown(f"- {item}")
+
+        if case.get('notes'):
+            st.caption(case['notes'])
+
+        st.markdown(
+            "<div class=\"analysis-step-caption\">Tie these findings back to your Recall / Q/A / Single-choice reports to show proactive mitigation.</div>",
+            unsafe_allow_html=True,
+        )
 
 
 def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_header: bool = True):
@@ -3116,7 +3334,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     )
 
     if baseline_prompts:
-        no_preset_option = "Keep current text"
+        no_preset_option = "Custom Input"
 
         def _apply_stage1_preset() -> None:
             selected = st.session_state.get("stage1_baseline_selector")

@@ -5,6 +5,7 @@ from src.ui import (
     render_snippet_to_document_page,
     render_unlearning_detection_page,
     render_adversarial_persuasion_page,
+    render_legal_case_display_page,
 )
 
 # Configure Streamlit page - sidebar will be expandable/collapsible via native toggle
@@ -42,6 +43,8 @@ elif page == "Unlearning Detection Test":
     render_unlearning_detection_page(api_key, model_choice, provider)
 elif page == "Persuasive Jailbreak Test":
     render_adversarial_persuasion_page(api_key, model_choice, provider)
+elif page == "Legal Case Display":
+    render_legal_case_display_page()
 
 # Footer (commented out as it's not defined)
 # render_footer()

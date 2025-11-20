@@ -190,7 +190,7 @@ body, input, button, select, textarea {
 .metric-card .metric-label { font-size: 0.8rem; font-weight: 600; color: #475569; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 0.35rem; }
 .metric-card .metric-value { font-size: 1.6rem; font-weight: 800; color: var(--primary-800); line-height: 1; }
 
-/* Shared metric card grid (QA + DECOP) */
+/* Shared metric card grid (QA + Single-choice) */
 .qa-metrics-container {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

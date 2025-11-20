@@ -18,8 +18,8 @@ from src.direct_recall.comparison import get_llm_completion
 from src.direct_recall.pdf_utils import extract_text_from_document
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DECOP_DATA_DIR = REPO_ROOT / "src" / "direct_recall" / "decop" / "data"
-DECOP_QA_PROMPT = (
+SC_DATA_DIR = REPO_ROOT / "src" / "direct_recall" / "decop" / "data"
+SC_QA_PROMPT = (
     "You are entering a multiple choice questions exam. You should directly answer each question by choosing "
     "the correct option. Be concise and straight to the point in your answer. Output only the letter corresponding "
     "to the correct answer."
@@ -227,7 +227,7 @@ def generate_single_choice_questions_from_document(
 def list_dataset_documents(dataset_name: str, limit: int = 50) -> List[str]:
     """List a subset of document IDs available in a dataset."""
 
-    data_path = DECOP_DATA_DIR / f"{dataset_name}.csv"
+    data_path = SC_DATA_DIR / f"{dataset_name}.csv"
     if not data_path.exists():
         return []
 
@@ -248,9 +248,9 @@ def load_dataset_excerpt(
     document_id: Optional[str] = None,
     max_rows: int = 3,
 ) -> Tuple[str, Dict[str, Any]]:
-    """Load a short excerpt from the DECOP datasets for question generation."""
+    """Load a short excerpt from the dataset for question generation."""
 
-    data_path = DECOP_DATA_DIR / f"{dataset_name}.csv"
+    data_path = SC_DATA_DIR / f"{dataset_name}.csv"
     if not data_path.exists():
         return "", {}
 
@@ -284,13 +284,12 @@ def load_dataset_excerpt(
     return combined_text, meta
 
 
-def _build_decop_prompt_body(question: Dict[str, Any]) -> Tuple[str, str]:
-    """Create DECOP-style prompt body for both OpenAI and Anthropic evaluators.
+def _build_sc_prompt_body(question: Dict[str, Any]) -> Tuple[str, str]:
+    """Create single-choice prompt body for both OpenAI and Anthropic evaluators.
 
-    The downstream LLM must *never* see the source passage. We therefore reuse the
-    exact instructions from ``src/direct_recall/decop/2_decop_blackbox.py`` so the
-    evaluator only receives the synthetic question plus four options and is forced
-    to reply with a single letter.
+    The downstream LLM must *never* see the source passage. We therefore follow
+    standard multiple-choice exam format where the evaluator only receives the 
+    synthetic question plus four options and is forced to reply with a single letter.
     """
 
     prompt_question = _clean_text(question.get("question", "")) or (
@@ -307,8 +306,8 @@ def _build_decop_prompt_body(question: Dict[str, Any]) -> Tuple[str, str]:
     options_block = "\n".join(option_lines)
     question_block = f"Question: {prompt_question}\nOptions:\n{options_block}\n"
 
-    openai_prompt = f"{DECOP_QA_PROMPT} {question_block}{ANSWER_PREFIX} "
-    anthropic_prompt = f"{HUMAN_PROMPT} {DECOP_QA_PROMPT} {question_block}{AI_PROMPT} {ANSWER_PREFIX} "
+    openai_prompt = f"{SC_QA_PROMPT} {question_block}{ANSWER_PREFIX} "
+    anthropic_prompt = f"{HUMAN_PROMPT} {SC_QA_PROMPT} {question_block}{AI_PROMPT} {ANSWER_PREFIX} "
     return openai_prompt, anthropic_prompt
 
 
@@ -478,7 +477,7 @@ def evaluate_single_choice_question(
     temperature: float = 0.0,
     top_p: float = 1.0,
 ) -> Dict[str, Any]:
-    openai_prompt, anthropic_prompt = _build_decop_prompt_body(question)
+    openai_prompt, anthropic_prompt = _build_sc_prompt_body(question)
 
     if provider in {"OpenAI", "OpenRouter"}:
         result = _try_openai_style_completion(openai_prompt, api_key, model_choice, provider, temperature, top_p)
