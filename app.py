@@ -36,7 +36,7 @@ render_header()
 api_key, model_choice, provider, page = render_sidebar()
 
 # Render main content based on selected page
-if page == "Direct Recall Test":
+if page == "Recall Test":
     render_snippet_to_document_page(api_key, model_choice, provider)
 elif page == "Unlearning Detection Test":
     render_unlearning_detection_page(api_key, model_choice, provider)

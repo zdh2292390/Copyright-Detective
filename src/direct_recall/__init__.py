@@ -1,4 +1,4 @@
-"""Direct Recall Test Module - Text and document memorization detection."""
+"""Recall Test Module - Text and document memorization detection."""
 
 from .comparison import (
     compare_texts,

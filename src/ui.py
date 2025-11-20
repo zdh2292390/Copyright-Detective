@@ -819,7 +819,7 @@ def render_sidebar():
         page = st.radio(
             "Go to",
             [
-                "Direct Recall Test",
+                "Recall Test",
                 "Persuasive Jailbreak Test",
                 "Unlearning Detection Test",
             ],
@@ -833,7 +833,7 @@ def render_sidebar():
 def render_snippet_to_document_page(api_key, model_choice, provider):
     """Render the combined snippet-to-document analysis workspace."""
 
-    st.markdown("### 🔎 Direct Recall Test")
+    st.markdown("### 🔎 Recall Test")
 
 
     snippet_tab, pdf_tab, knowledge_tab = st.tabs([
@@ -885,7 +885,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     st.markdown(
         """
         <div class=\"analysis-callout\">
-            <div class=\"analysis-callout__title\">How the Direct Recall Test works</div>
+            <div class=\"analysis-callout__title\">How the Recall Test works</div>
             <ul class=\"analysis-callout__list\">
                 <li>Provide an input snippet and the expected ground-truth passage.</li>
                 <li>Select a prompting strategy to probe potential memorization.</li>
@@ -1391,7 +1391,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             )
 
             # Highlighted overlap view
-            st.markdown("**🧠 Direct Recall Overlap**")
+            st.markdown("**🧠 Recall Overlap**")
             render_direct_recall_diff(text2, generated_text, metrics=metrics_map)
 
             # Conclusion
@@ -2745,7 +2745,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                     """,
                     unsafe_allow_html=True,
                 )
-                st.markdown("**🧠 Direct Recall Overlap**")
+                st.markdown("**🧠 Recall Overlap**")
                 render_direct_recall_diff(
                     lower,
                     gen,
@@ -4378,7 +4378,7 @@ def main():
     render_header()
     api_key, model_choice, provider, page = render_sidebar()
 
-    if page == "Direct Recall Test":
+    if page == "Recall Test":
         render_snippet_to_document_page(api_key, model_choice, provider)
     elif page == "Unlearning Detection Test":
         render_unlearning_detection_page(api_key, model_choice, provider)

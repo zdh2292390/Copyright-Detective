@@ -434,7 +434,7 @@ def render_direct_recall_diff(
 
     metrics_html = f'<div class="dr-diff-metrics">{"".join(metric_entries)}</div>'
 
-    section_title = title or "Direct Recall Comparison"
+    section_title = title or "Recall Comparison"
 
     st.markdown(
         f"""
