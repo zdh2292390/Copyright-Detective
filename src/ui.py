@@ -23,11 +23,15 @@ from src.direct_recall import (
     calculate_aggregate_metrics,
     generate_single_choice_questions_from_document,
     generate_single_choice_questions_from_text,
+    generate_single_choice_questions_from_fragments,
+    generate_single_choice_questions_from_document_fragments,
     list_dataset_documents,
     load_dataset_excerpt,
     run_single_choice_evaluation,
     summarize_single_choice_results,
     get_available_datasets,
+    parse_question_indices,
+    get_predefined_examples_index,
 )
 from src.config import DEFAULT_OPENROUTER_KEY
 
@@ -1378,6 +1382,7 @@ def render_sidebar():
             "Go to",
             [
                 "Recall Test",
+                "Single Choice Detection",
                 "Persuasive Jailbreak Test",
                 "Unlearning Detection Test",
                 "Legal Cases Display",
@@ -2290,19 +2295,17 @@ def render_qa_based_detection(api_key, model_choice, provider):
     
     # Step 1: Provide source content
     st.markdown('<p class="analysis-step-label">Step 2 · Provide source content</p>', unsafe_allow_html=True)
-    available_datasets = get_available_datasets()
     
     # Create labeled options to distinguish custom input from example datasets
     custom_options = ["Input Text", "Upload Document"]
-    example_datasets = [f"{ds} (Example)" for ds in available_datasets]
-    source_options = custom_options + example_datasets
+    source_options = custom_options
     
     qa_source_mode_display = st.radio(
         "Where should the open-ended questions/answers draw context from?",
         source_options,
         horizontal=True,
         key="qa_source_mode",
-        help="Choose 'Input Text' or 'Upload Document' for custom input, or select a pre-curated example dataset.",
+        help="Choose 'Input Text' or 'Upload Document' for custom input.",
     )
     
     # Remove the "(Example)" suffix to get the actual dataset name
@@ -2333,33 +2336,25 @@ def render_qa_based_detection(api_key, model_choice, provider):
             key="knowledge_qa_pdf_upload"
         )
     else:
-        # This is an example dataset
-        st.markdown(f"**📚 Example Dataset: {qa_source_mode}**")
-        doc_options = list_dataset_documents(qa_source_mode, limit=50)
-        if not doc_options:
-            st.warning(
-                f"No examples found for {qa_source_mode}. Ensure the CSV exists under src/direct_recall/decop/data/"
+        # Dataset mode
+        if not source_text:
+            source_text, source_meta = load_dataset_excerpt(
+                qa_source_mode,
+                st.session_state.get('qa_dataset_document'),
             )
+        if not source_text:
+            st.warning("⚠️ Please select a dataset document first.")
         else:
-            selected_doc = st.selectbox(
-                f"Choose a {qa_source_mode} example",
-                doc_options,
-                key="qa_dataset_document",
+            document_text = source_text
+            qa_pairs = generate_qa_pairs_from_text(
+                document_text,
+                qa_gen_api_key,
+                qa_gen_model,
+                qa_gen_provider,
+                num_pairs=num_qa_pairs,
+                temperature=qa_gen_temperature,
+                top_p=qa_gen_top_p,
             )
-            if selected_doc:
-                source_text, source_meta = load_dataset_excerpt(qa_source_mode, selected_doc)
-                if source_text:
-                    st.text_area(
-                        "Dataset excerpt preview",
-                        source_text[:3000],
-                        height=180,
-                        key="qa_dataset_preview",
-                        disabled=True,
-                    )
-                else:
-                    st.warning("Unable to load excerpt for the selected document.")
-    
-    # Step 2: Configure First LLM and Generate Q/A Pairs
     st.markdown('<p class="analysis-step-label">Step 3 · Configure first LLM to generate Q/A pairs</p>', unsafe_allow_html=True)
     st.markdown(
         '<p class="analysis-step-caption">Select the model provider and configure generation parameters for creating questions/answers.</p>',
@@ -2529,27 +2524,6 @@ def render_qa_based_detection(api_key, model_choice, provider):
                             temperature=qa_gen_temperature,
                             top_p=qa_gen_top_p,
                         )
-                else:
-                    # Dataset mode
-                    if not source_text:
-                        source_text, source_meta = load_dataset_excerpt(
-                            qa_source_mode,
-                            st.session_state.get('qa_dataset_document'),
-                        )
-                    if not source_text:
-                        st.warning("⚠️ Please select a dataset document first.")
-                    else:
-                        document_text = source_text
-                        qa_pairs = generate_qa_pairs_from_text(
-                            document_text,
-                            qa_gen_api_key,
-                            qa_gen_model,
-                            qa_gen_provider,
-                            num_pairs=num_qa_pairs,
-                            temperature=qa_gen_temperature,
-                            top_p=qa_gen_top_p,
-                        )
-                
                 if isinstance(document_text, str) and document_text.startswith("Error"):
                     st.error(f"❌ {document_text}")
                 elif not qa_pairs:
@@ -2828,8 +2802,9 @@ def render_sc_detection(api_key, model_choice, provider):
         <div class="analysis-callout">
             <div class="analysis-callout__title">Single-choice Question Detection</div>
             <ul class="analysis-callout__list">
-                <li>Provide source text through direct input, document upload, or dataset selection.</li>
-                <li>Configure a generator LLM to craft single-choice questions with subtle distractors.</li>
+                <li>Provide source text through direct input or document upload.</li>
+                <li>Extract text fragments from your content as correct answers.</li>
+                <li>Use a generator LLM to create distractor options from the fragments.</li>
                 <li>Evaluate your target LLM to see whether it consistently prefers the verbatim option.</li>
             </ul>
         </div>
@@ -2838,31 +2813,28 @@ def render_sc_detection(api_key, model_choice, provider):
     )
 
     # Step 1: Provide source content
-    st.markdown('<p class="analysis-step-label">Step 2 · Provide source content</p>', unsafe_allow_html=True)
-    available_datasets = get_available_datasets()
+    st.markdown('<p class="analysis-step-label">Step 1 · Provide source content</p>', unsafe_allow_html=True)
     
-    # Create labeled options to distinguish custom input from example datasets
-    custom_options = ["Input Text", "Upload Document"]
-    example_datasets = [f"{ds} (Example)" for ds in available_datasets]
-    source_options = custom_options + example_datasets
+    # Create options for custom input or predefined examples
+    custom_options = ["Input Text", "Upload Document", "Predefined Examples"]
     
     source_mode_display = st.radio(
-        "Where should the single-choice questions draw context from?",
-        source_options,
+        "Where should the text fragments come from?",
+        custom_options,
         horizontal=True,
         key="sc_source_mode",
-        help="Choose 'Input Text' or 'Upload Document' for custom input, or select a pre-curated example dataset.",
+        help="Choose 'Input Text' or 'Upload Document' for custom input, or 'Predefined Examples' to use built-in evaluation datasets.",
     )
     
-    # Remove the "(Example)" suffix to get the actual dataset name
-    source_mode = source_mode_display.replace(" (Example)", "")
+    # No need to remove suffix since we don't have datasets
+    source_mode = source_mode_display
 
     uploaded_document = None
     excerpt_preview = ""
     excerpt_meta: Dict[str, Any] = {}
 
     if source_mode == "Input Text":
-        st.markdown("**📝 Custom Input: Enter your text**")
+        st.markdown("**📝 Input your text**")
         st.text_area(
             "Enter your text",
             height=200,
@@ -2874,139 +2846,221 @@ def render_sc_detection(api_key, model_choice, provider):
             excerpt_preview = st.session_state["sc_input_text"].strip()
             st.caption(f"Text length: {len(excerpt_preview)} characters · {len(excerpt_preview.split())} words")
     elif source_mode == "Upload Document":
-        st.markdown("**📎 Custom Input: Upload your document**")
+        st.markdown("**📎 Upload your document**")
         uploaded_document = st.file_uploader(
             "Upload PDF or TXT",
             type=["pdf", "txt"],
             help="Provide the copyrighted material you'd like to probe.",
             key="sc_document_upload",
         )
-    else:
-        # This is an example dataset
-        st.markdown(f"**📚 Example Dataset: {source_mode}**")
-        doc_options = list_dataset_documents(source_mode, limit=50)
-        if not doc_options:
-            st.warning(
-                f"No examples found for {source_mode}. Ensure the CSV exists under src/direct_recall/decop/data/"
+    elif source_mode == "Predefined Examples":
+        st.markdown("**📚 Select predefined evaluation dataset**")
+        dataset_options = ["arXivTection", "BookTection"]
+        selected_dataset = st.selectbox(
+            "Choose evaluation dataset",
+            dataset_options,
+            help="Select a predefined dataset containing single-choice questions for copyright detection evaluation.",
+            key="sc_dataset_selection",
+        )
+        
+        # Show dataset info
+        dataset_info = {
+            "arXivTection": "Academic paper excerpts (label=1: appeared in training, label=0: not seen)",
+            "BookTection": "Book excerpts (label=1: appeared in training, label=0: not seen)"
+        }
+        st.caption(f"📖 {dataset_info[selected_dataset]}")
+        
+        # Try to get dataset size
+        try:
+            import pandas as pd
+            from pathlib import Path
+            csv_path = Path("src/direct_recall/decop/data") / f"{selected_dataset}.csv"
+            if csv_path.exists():
+                df_size = len(pd.read_csv(csv_path))
+                st.caption(f"📊 Dataset contains {df_size} questions (indices: 1-{df_size})")
+        except:
+            pass
+        
+        # Add question index selection
+        st.markdown("**🔍 Select specific questions**")
+        col_idx, col_preview = st.columns([1, 2])
+        with col_idx:
+            question_indices = st.text_input(
+                "Question indices",
+                placeholder="e.g., 1,5,10-15,20",
+                help="Enter question indices (comma-separated, ranges with hyphens). Leave empty to load all questions.",
+                key="sc_question_indices",
             )
-        else:
-            selected_doc = st.selectbox(
-                f"Choose a {source_mode} example",
-                doc_options,
-                key="sc_dataset_document",
-            )
-            if selected_doc:
-                excerpt_preview, excerpt_meta = load_dataset_excerpt(source_mode, selected_doc)
-                if excerpt_preview:
-                    st.text_area(
-                        "Dataset excerpt preview",
-                        excerpt_preview[:3000],
-                        height=180,
-                        key="sc_dataset_preview",
-                        disabled=True,
-                    )
+        
+        with col_preview:
+            if question_indices.strip():
+                try:
+                    indices = parse_question_indices(question_indices.strip())
+                    st.caption(f"Selected {len(indices)} questions: {indices[:10]}{'...' if len(indices) > 10 else ''}")
+                except ValueError as e:
+                    st.error(f"Invalid format: {e}")
+            else:
+                st.caption("Loading all questions from dataset")
+        
+        # Load button for predefined examples
+        load_examples = st.button(
+            "📥 Load Selected Questions",
+            key="sc_load_examples_button",
+            use_container_width=True,
+        )
+        
+        if load_examples:
+            try:
+                from src.direct_recall.single_choice import load_predefined_examples
+                indices_to_load = None
+                if question_indices.strip():
+                    try:
+                        indices_to_load = parse_question_indices(question_indices.strip())
+                    except ValueError as e:
+                        st.error(f"Invalid question indices format: {e}")
+                        indices_to_load = None
+                
+                generated_mcqs = load_predefined_examples(selected_dataset, indices_to_load)
+                if generated_mcqs:
+                    st.session_state['sc_generated_mcqs'] = generated_mcqs
+                    st.session_state['sc_document_text'] = f"Predefined dataset: {selected_dataset}"
+                    if indices_to_load:
+                        st.session_state['sc_document_text'] += f" (questions: {indices_to_load})"
+                    st.session_state['sc_evaluation_results'] = None
+                    st.success(f"✅ Loaded {len(generated_mcqs)} predefined single-choice questions from {selected_dataset}.")
                 else:
-                    st.warning("Unable to load excerpt for the selected document.")
+                    st.error(f"❌ No questions found for the specified indices in {selected_dataset}.")
+            except Exception as exc:
+                st.error(f"❌ Failed to load predefined examples: {exc}")
 
-    # Step 2: Configure generation model
-    st.markdown('<p class="analysis-step-label">Step 3 · Generate single-choice questions</p>', unsafe_allow_html=True)
-    st.markdown(
-        '<p class="analysis-step-caption">A separate LLM creates tightly clustered options from the source text.</p>',
-        unsafe_allow_html=True,
-    )
-
-    col_provider, col_model, col_api = st.columns(3)
-    provider_options = ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"]
-
-    with col_provider:
-        generation_provider = st.selectbox(
-            "Generation provider",
-            provider_options,
-            index=min(st.session_state['sc_gen_provider_index'], len(provider_options) - 1),
-            key="sc_gen_provider",
-        )
-        st.session_state['sc_gen_provider_index'] = provider_options.index(generation_provider)
-
-    def _provider_models(provider_name: str) -> List[str]:
-        if provider_name == "OpenAI":
-            return [
-                "gpt-3.5-turbo",
-                "gpt-3.5-turbo-instruct",
-                "gpt-4o",
-                "gpt-4o-mini",
-            ]
-        if provider_name == "OpenRouter":
-            return [
-                "moonshotai/kimi-k2:free",
-                "meta-llama/llama-3.1-405b-instruct:free",
-                "qwen/qwen3-235b-a22b:free",
-                "meta-llama/llama-3.3-70b-instruct:free",
-                "mistralai/mistral-small-24b-instruct-2501:free",
-                "qwen/qwen-2.5-72b-instruct:free",
-            ]
-        if provider_name == "Anthropic":
-            return [
-                "claude-3-haiku-20240307",
-                "claude-3-sonnet-20240229",
-                "claude-3-opus-20240229",
-            ]
-        if provider_name == "Google Gemini":
-            return ["gemini-1.5-flash", "gemini-1.5-pro"]
-        return ["custom-model"]
-
-    with col_model:
-        generation_model = st.selectbox(
-            "Generation model",
-            _provider_models(generation_provider),
-            key="sc_gen_model",
+    # Step 2: Configure generation model and parameters (only for custom input)
+    if source_mode in ["Input Text", "Upload Document"]:
+        st.markdown('<p class="analysis-step-label">Step 2 · Configure text fragment extraction and distractor generation</p>', unsafe_allow_html=True)
+        st.markdown(
+            '<p class="analysis-step-caption">Extract text fragments and use a generator LLM to create distractor options.</p>',
+            unsafe_allow_html=True,
         )
 
-    with col_api:
-        generation_api_key = st.text_input(
-            "Generation API key",
-            type="password",
-            help="Leave blank to reuse the sidebar API key.",
-            key="sc_gen_api_key",
-        )
+        col_provider, col_model, col_api = st.columns(3)
+        provider_options = ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"]
 
-    col_qty, col_temp, col_top_p = st.columns(3)
-    with col_qty:
-        st.number_input(
-            "Number of questions",
-            min_value=1,
-            max_value=20,
-            step=1,
-            key="sc_num_questions",
-        )
-    with col_temp:
-        st.slider(
-            "Generation temperature",
-            min_value=0.0,
-            max_value=1.0,
-            step=0.05,
-            key="sc_gen_temperature",
-        )
-    with col_top_p:
-        st.slider(
-            "Generation Top-P",
-            min_value=0.0,
-            max_value=1.0,
-            step=0.05,
-            key="sc_gen_top_p",
-        )
+        with col_provider:
+            generation_provider = st.selectbox(
+                "Generation provider",
+                provider_options,
+                index=min(st.session_state['sc_gen_provider_index'], len(provider_options) - 1),
+                key="sc_gen_provider",
+            )
+            st.session_state['sc_gen_provider_index'] = provider_options.index(generation_provider)
 
-    generate_questions = st.button(
-        "🚀 Generate single-choice questions",
-        key="sc_generate_mcq_button",
-        use_container_width=True,
-    )
+        def _provider_models(provider_name: str) -> List[str]:
+            if provider_name == "OpenAI":
+                return [
+                    "gpt-3.5-turbo",
+                    "gpt-3.5-turbo-instruct",
+                    "gpt-4o",
+                    "gpt-4o-mini",
+                ]
+            if provider_name == "OpenRouter":
+                return [
+                    "moonshotai/kimi-k2:free",
+                    "meta-llama/llama-3.1-405b-instruct:free",
+                    "qwen/qwen3-235b-a22b:free",
+                    "meta-llama/llama-3.3-70b-instruct:free",
+                    "mistralai/mistral-small-24b-instruct-2501:free",
+                    "qwen/qwen-2.5-72b-instruct:free",
+                ]
+            if provider_name == "Anthropic":
+                return [
+                    "claude-3-haiku-20240307",
+                    "claude-3-sonnet-20240229",
+                    "claude-3-opus-20240229",
+                ]
+            if provider_name == "Google Gemini":
+                return ["gemini-1.5-flash", "gemini-1.5-pro"]
+            return ["custom-model"]
+
+        with col_model:
+            generation_model = st.selectbox(
+                "Generation model",
+                _provider_models(generation_provider),
+                key="sc_gen_model",
+            )
+
+        with col_api:
+            generation_api_key = st.text_input(
+                "Generation API key",
+                type="password",
+                help="Leave blank to reuse the sidebar API key.",
+                key="sc_gen_api_key",
+            )
+
+        col_qty, col_dist, col_temp, col_top_p = st.columns(4)
+        with col_qty:
+            st.number_input(
+                "Number of questions",
+                min_value=1,
+                max_value=20,
+                step=1,
+                key="sc_num_questions",
+            )
+        with col_dist:
+            st.number_input(
+                "Number of distractors",
+                min_value=1,
+                value=3,
+                step=1,
+                help="Number of incorrect options to generate for each question.",
+                key="sc_num_distractors",
+            )
+        with col_temp:
+            st.slider(
+                "Generation temperature",
+                min_value=0.0,
+                max_value=1.0,
+                step=0.05,
+                key="sc_gen_temperature",
+            )
+        with col_top_p:
+            st.slider(
+                "Generation Top-P",
+                min_value=0.0,
+                max_value=1.0,
+                step=0.05,
+                key="sc_gen_top_p",
+            )
+
+        generate_questions = st.button(
+            "🚀 Generate single-choice questions",
+            key="sc_generate_mcq_button",
+            use_container_width=True,
+        )
+    else:
+        # For predefined examples, skip generation and go directly to evaluation
+        generate_questions = False
 
     if generate_questions:
         effective_api_key = generation_api_key or api_key
         if not effective_api_key:
             st.error("⚠️ Provide an API key for the generation model or reuse the sidebar key.")
         else:
-            with st.spinner("Synthesizing tightly matched options..."):
+            # Calculate total operations for progress bar
+            num_questions = st.session_state['sc_num_questions']
+            num_distractors = st.session_state['sc_num_distractors']
+            total_operations = num_questions * (num_distractors + 1)  # +1 for question creation
+            
+            progress_bar = st.progress(0.0)
+            progress_text = st.empty()
+            
+            def update_generation_progress(current, total, question_num):
+                pct = current / total if total else 0
+                progress_bar.progress(pct)
+                progress_text.text(
+                    f"🔄 Generating question {question_num}/{num_questions} | "
+                    f"Creating distractors... ({current}/{total})"
+                )
+            
+            try:
                 if source_mode == "Input Text":
                     input_text = st.session_state.get("sc_input_text", "").strip()
                     if not input_text:
@@ -3014,46 +3068,39 @@ def render_sc_detection(api_key, model_choice, provider):
                         generated_mcqs, document_text = [], ""
                     else:
                         document_text = input_text
-                        generated_mcqs = generate_single_choice_questions_from_text(
+                        generated_mcqs = generate_single_choice_questions_from_fragments(
                             document_text,
                             effective_api_key,
                             generation_model,
                             generation_provider,
                             num_questions=st.session_state['sc_num_questions'],
+                            num_distractors=st.session_state['sc_num_distractors'],
                             temperature=st.session_state['sc_gen_temperature'],
                             top_p=st.session_state['sc_gen_top_p'],
+                            progress_callback=update_generation_progress,
                         )
                 elif source_mode == "Upload Document":
                     if not uploaded_document:
                         st.warning("⚠️ Upload a PDF/TXT document first.")
                         generated_mcqs, document_text = [], ""
                     else:
-                        generated_mcqs, document_text = generate_single_choice_questions_from_document(
+                        generated_mcqs, document_text = generate_single_choice_questions_from_document_fragments(
                             uploaded_document,
                             effective_api_key,
                             generation_model,
                             generation_provider,
                             num_questions=st.session_state['sc_num_questions'],
+                            num_distractors=st.session_state['sc_num_distractors'],
                             temperature=st.session_state['sc_gen_temperature'],
                             top_p=st.session_state['sc_gen_top_p'],
+                            progress_callback=update_generation_progress,
                         )
                 else:
-                    if not excerpt_preview:
-                        excerpt_preview, excerpt_meta = load_dataset_excerpt(
-                            source_mode,
-                            st.session_state.get('sc_dataset_document'),
-                        )
-                    document_text = excerpt_preview
-                    generated_mcqs = generate_single_choice_questions_from_text(
-                        document_text,
-                        effective_api_key,
-                        generation_model,
-                        generation_provider,
-                        num_questions=st.session_state['sc_num_questions'],
-                        temperature=st.session_state['sc_gen_temperature'],
-                        top_p=st.session_state['sc_gen_top_p'],
-                    )
-
+                    generated_mcqs, document_text = [], ""
+                
+                progress_bar.empty()
+                progress_text.empty()
+                
                 if not generated_mcqs:
                     st.error("❌ Failed to generate single-choice questions. Try adjusting the model or prompt parameters.")
                 else:
@@ -3061,20 +3108,41 @@ def render_sc_detection(api_key, model_choice, provider):
                     st.session_state['sc_document_text'] = document_text
                     st.session_state['sc_evaluation_results'] = None
                     st.success(f"✅ Generated {len(generated_mcqs)} single-choice questions.")
+                    
+            except Exception as exc:
+                progress_bar.empty()
+                progress_text.empty()
+                st.error(f"❌ Generation failed: {exc}")
+
+    # Handle predefined examples - load them directly
+    if source_mode == "Predefined Examples":
+        pass  # Loading is now handled by the load button above
 
     if st.session_state['sc_generated_mcqs']:
-        st.markdown('<h4 class="section-header sm">🧩 Generated Single-choice Questions</h4>', unsafe_allow_html=True)
+        section_title = "🧩 Generated Single-choice Questions" if source_mode in ["Input Text", "Upload Document"] else "📚 Predefined Single-choice Questions"
+        st.markdown(f'<h4 class="section-header sm">{section_title}</h4>', unsafe_allow_html=True)
         for idx, mcq in enumerate(st.session_state['sc_generated_mcqs'], start=1):
-            with st.expander(f"Question {idx}", expanded=False):
+            question_title = mcq['question']
+            if source_mode == "Predefined Examples":
+                # For predefined examples, show more descriptive title
+                question_title = f"Question {idx} ({mcq['question']})"
+            
+            with st.expander(question_title, expanded=False):
                 st.markdown(f"**Question:** {mcq['question']}")
                 for option in mcq['options']:
                     badge = "✅" if option['label'] == mcq['correct_option'] else ""
                     st.write(f"{option['label']}. {option['text']} {badge}")
                 if mcq.get('explanation'):
                     st.caption(f"Rationale: {mcq['explanation']}")
+                # Show label for predefined examples
+                if source_mode == "Predefined Examples" and 'label' in mcq:
+                    label_text = "Training data (appeared in training)" if mcq['label'] == 1 else "Non-training data (not seen during training)"
+                    original_id = mcq.get('original_id', '')
+                    st.caption(f"Label: {mcq['label']} - {label_text}" + (f" | Original ID: {original_id}" if original_id else ""))
 
     # Step 3: Evaluate with target model
-    st.markdown('<p class="analysis-step-label">Step 4 · Evaluate target model</p>', unsafe_allow_html=True)
+    step_label = "Step 3" if source_mode in ["Input Text", "Upload Document"] else "Step 2"
+    st.markdown(f'<p class="analysis-step-label">{step_label} · Evaluate target model</p>', unsafe_allow_html=True)
     st.markdown(
         '<p class="analysis-step-caption">Run the model configured in the sidebar and look for biased option selections.</p>',
         unsafe_allow_html=True,
@@ -3085,7 +3153,6 @@ def render_sc_detection(api_key, model_choice, provider):
         st.number_input(
             "Evaluation runs",
             min_value=1,
-            max_value=5,
             step=1,
             key="sc_eval_runs",
         )
@@ -3196,6 +3263,46 @@ def render_sc_detection(api_key, model_choice, provider):
                 },
             ]
 
+    if st.session_state['sc_evaluation_results']:
+        results = st.session_state['sc_evaluation_results']
+        metrics = summarize_single_choice_results(results)
+        if metrics:
+            st.markdown('<h4 class="section-header sm">📊 Evaluation summary</h4>', unsafe_allow_html=True)
+            accuracy = metrics.get('overall_accuracy', 0)
+            avg_conf = metrics.get('avg_correct_confidence')
+            sc_metrics = [
+                {
+                    "label": "Runs",
+                    "icon": "🔁",
+                    "value": str(metrics.get('total_runs', 0)),
+                    "description": "Evaluation passes",
+                    "range": "",
+                },
+                {
+                    "label": "Attempts",
+                    "icon": "🧪",
+                    "value": str(metrics.get('total_attempts', 0)),
+                    "description": "Questions × runs",
+                    "range": "",
+                },
+                {
+                    "label": "Accuracy",
+                    "icon": "🎯",
+                    "value": f"{accuracy * 100:.1f}%",
+                    "description": "Correct option rate",
+                    "range": "",
+                },
+                {
+                    "label": "Avg confidence (correct)",
+                    "icon": "📈",
+                    "value": (
+                        f"{avg_conf * 100:.1f}%" if isinstance(avg_conf, (int, float)) else "—"
+                    ),
+                    "description": "Mean probability when right",
+                    "range": "",
+                },
+            ]
+
             render_metric_cards(sc_metrics)
 
             option_distribution = metrics.get('option_distribution', {})
@@ -3207,6 +3314,63 @@ def render_sc_detection(api_key, model_choice, provider):
                     }
                 ).set_index('Option')
                 st.bar_chart(dist_df)
+
+            # Add analysis for predefined examples
+            if source_mode == "Predefined Examples" and st.session_state.get('sc_generated_mcqs'):
+                st.markdown("#### 📈 Memorization Analysis by Data Source")
+                selected_dataset = st.session_state.get("sc_dataset_selection", "arXivTection")
+
+                # Calculate accuracy by label
+                training_correct = 0
+                training_total = 0
+                non_training_correct = 0
+                non_training_total = 0
+
+                for question_idx, mcq in enumerate(st.session_state['sc_generated_mcqs']):
+                    label = mcq.get('label', 0)
+                    for run_results in results:
+                        if question_idx < len(run_results):
+                            eval_result = run_results[question_idx]
+                            is_correct = eval_result.get('is_correct', False)
+                            if label == 1:  # Training data
+                                training_total += 1
+                                if is_correct:
+                                    training_correct += 1
+                            else:  # Non-training data
+                                non_training_total += 1
+                                if is_correct:
+                                    non_training_correct += 1
+
+                training_accuracy = training_correct / training_total if training_total > 0 else 0
+                non_training_accuracy = non_training_correct / non_training_total if non_training_total > 0 else 0
+
+                memorization_metrics = [
+                    {
+                        "label": "Training Data Accuracy",
+                        "icon": "📚",
+                        "value": f"{training_accuracy * 100:.1f}%",
+                        "description": f"Questions from training data (label=1)",
+                        "range": f"{training_correct}/{training_total}",
+                    },
+                    {
+                        "label": "Non-training Data Accuracy",
+                        "icon": "🆕",
+                        "value": f"{non_training_accuracy * 100:.1f}%",
+                        "description": f"Questions from non-training data (label=0)",
+                        "range": f"{non_training_correct}/{non_training_total}",
+                    },
+                    {
+                        "label": "Memorization Gap",
+                        "icon": "📊",
+                        "value": f"{(training_accuracy - non_training_accuracy) * 100:.1f}%",
+                        "description": "Difference between training and non-training accuracy",
+                        "range": "",
+                    },
+                ]
+
+                render_metric_cards(memorization_metrics)
+
+                st.caption(f"Dataset: {selected_dataset}. Higher accuracy on training data (label=1) indicates potential memorization of training content.")
 
             if accuracy >= 0.75:
                 st.error(
@@ -5228,6 +5392,8 @@ def main():
 
     if page == "Recall Test":
         render_snippet_to_document_page(api_key, model_choice, provider)
+    elif page == "Single Choice Detection":
+        render_single_choice_detection_page(api_key, model_choice, provider)
     elif page == "Unlearning Detection Test":
         render_unlearning_detection_page(api_key, model_choice, provider)
     elif page == "Persuasive Jailbreak Test":

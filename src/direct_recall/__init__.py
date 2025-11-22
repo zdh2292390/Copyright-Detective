@@ -16,10 +16,15 @@ from .knowledge_qa import (
 from .single_choice import (
     generate_single_choice_questions_from_document,
     generate_single_choice_questions_from_text,
+    generate_single_choice_questions_from_fragments,
+    generate_single_choice_questions_from_document_fragments,
     list_dataset_documents,
     load_dataset_excerpt,
+    load_predefined_examples,
+    parse_question_indices,
     run_single_choice_evaluation,
     summarize_single_choice_results,
+    get_predefined_examples_index,
 )
 from .decop_analysis import get_available_datasets
 
@@ -40,10 +45,15 @@ __all__ = [
     # single_choice
     "generate_single_choice_questions_from_document",
     "generate_single_choice_questions_from_text",
+    "generate_single_choice_questions_from_fragments",
+    "generate_single_choice_questions_from_document_fragments",
     "list_dataset_documents",
     "load_dataset_excerpt",
+    "load_predefined_examples",
+    "parse_question_indices",
     "run_single_choice_evaluation",
     "summarize_single_choice_results",
+    "get_predefined_examples_index",
     # dataset management
     "get_available_datasets",
 ]

@@ -191,6 +191,203 @@ Source text:
     return mcq_bank
 
 
+def extract_text_fragments(text: str, fragment_size: int = 30, num_fragments: int = 5) -> List[str]:
+    """Extract text fragments of specified word count from the input text."""
+    words = text.split()
+    if len(words) < fragment_size:
+        return [text]  # Return the whole text if it's shorter than fragment size
+    
+    fragments = []
+    step = max(1, (len(words) - fragment_size) // max(1, num_fragments - 1))
+    
+    for i in range(0, min(len(words) - fragment_size + 1, num_fragments * step), step):
+        fragment = " ".join(words[i:i + fragment_size])
+        fragments.append(fragment)
+        if len(fragments) >= num_fragments:
+            break
+    
+    return fragments
+
+
+def generate_distractors_for_fragment(
+    correct_fragment: str,
+    api_key: str,
+    model_choice: str,
+    provider: str,
+    num_distractors: int = 3,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
+) -> List[str]:
+    """Generate distractor options for a correct text fragment."""
+    
+    prompt = f"""Given the correct text fragment below, generate EXACTLY {num_distractors} distractor options that are very similar but incorrect. The distractors should:
+
+1. Have nearly identical word count and structure
+2. Contain subtle but meaningful differences
+3. Be plausible but not verbatim from any real source
+4. Maintain similar vocabulary and style
+
+Correct fragment: "{correct_fragment}"
+
+Return ONLY a JSON array of strings, like: ["distractor 1", "distractor 2", "distractor 3"]
+"""
+
+    response = get_llm_completion(
+        prompt,
+        api_key,
+        model_choice,
+        provider,
+        temperature=temperature,
+        top_p=top_p,
+        max_output_tokens=1000,
+    )
+
+    if isinstance(response, str) and response.startswith("Error"):
+        return []
+
+    if not isinstance(response, str):
+        return []
+
+    # Try to extract JSON array
+    start_idx = response.find("[")
+    end_idx = response.rfind("]") + 1
+    if start_idx == -1 or end_idx <= start_idx:
+        return []
+
+    json_str = response[start_idx:end_idx]
+    try:
+        distractors = json.loads(json_str)
+        if isinstance(distractors, list):
+            return [str(d) for d in distractors[:num_distractors]]
+    except json.JSONDecodeError:
+        pass
+
+    return []
+
+
+def generate_single_choice_questions_from_fragments(
+    text: str,
+    api_key: str,
+    model_choice: str,
+    provider: str,
+    num_questions: int = 5,
+    fragment_size: int = 30,
+    num_distractors: int = 3,
+    temperature: float = 0.5,
+    top_p: float = 0.8,
+    progress_callback: Optional[Callable[[int, int, int], None]] = None,
+) -> List[Dict[str, Any]]:
+    """Generate single-choice questions by extracting text fragments and creating distractors."""
+    
+    # Extract text fragments
+    fragments = extract_text_fragments(text, fragment_size, num_questions)
+    if not fragments:
+        return []
+    
+    mcq_bank: List[Dict[str, Any]] = []
+    total_operations = len(fragments) * (num_distractors + 1)  # +1 for fragment extraction
+    current_operation = 0
+    
+    for i, correct_fragment in enumerate(fragments):
+        # Generate distractors for this fragment
+        distractors = generate_distractors_for_fragment(
+            correct_fragment,
+            api_key,
+            model_choice,
+            provider,
+            num_distractors=num_distractors,
+            temperature=temperature,
+            top_p=top_p,
+        )
+        
+        current_operation += num_distractors
+        if progress_callback:
+            progress_callback(current_operation, total_operations, i + 1)
+        
+        if len(distractors) < num_distractors:
+            continue  # Skip if we couldn't generate enough distractors
+        
+        # Create the question
+        question_text = f"Which of the following passages is verbatim from the source text?"
+        
+        # Combine correct answer and distractors
+        all_options = [correct_fragment] + distractors
+        
+        # Shuffle the options (correct answer can be in any position)
+        import random
+        random.seed(42 + i)  # For reproducibility
+        shuffled_indices = list(range(len(all_options)))
+        random.shuffle(shuffled_indices)
+        
+        # Find where the correct answer ended up
+        correct_position = shuffled_indices.index(0) # 0 is the index of correct fragment
+        correct_label = OPTION_LABELS[correct_position]
+        
+        # Create options list
+        options = []
+        for j, idx in enumerate(shuffled_indices):
+            options.append({
+                "label": OPTION_LABELS[j],
+                "text": all_options[idx]
+            })
+        
+        mcq = {
+            "question": question_text,
+            "options": options,
+            "correct_option": correct_label,
+            "explanation": f"The correct option matches the verbatim text from the source.",
+            "source_fragment": correct_fragment
+        }
+        
+        mcq_bank.append(mcq)
+        current_operation += 1
+        if progress_callback:
+            progress_callback(current_operation, total_operations, i + 1)
+        
+        if len(mcq_bank) >= num_questions:
+            break
+    
+    return mcq_bank
+
+
+def generate_single_choice_questions_from_document_fragments(
+    document_file,
+    api_key: str,
+    model_choice: str,
+    provider: str,
+    num_questions: int = 5,
+    fragment_size: int = 30,
+    num_distractors: int = 3,
+    temperature: float = 0.5,
+    top_p: float = 0.8,
+    progress_callback: Optional[Callable[[int, int, int], None]] = None,
+) -> Tuple[List[Dict[str, Any]], str]:
+    """Extract text from a document and generate single-choice questions from fragments."""
+
+    text = extract_text_from_document(document_file)
+    if isinstance(text, str) and text.startswith("Error"):
+        return [], text
+
+    words = text.split()
+    if len(words) > 3500:
+        text = " ".join(words[:3500])
+
+    questions = generate_single_choice_questions_from_fragments(
+        text,
+        api_key,
+        model_choice,
+        provider,
+        num_questions=num_questions,
+        fragment_size=fragment_size,
+        num_distractors=num_distractors,
+        temperature=temperature,
+        top_p=top_p,
+        progress_callback=progress_callback,
+    )
+
+    return questions, text
+
+
 def generate_single_choice_questions_from_document(
     document_file,
     api_key: str,
@@ -236,7 +433,7 @@ def list_dataset_documents(dataset_name: str, limit: int = 50) -> List[str]:
     except Exception:
         return []
 
-    doc_ids = sorted(df["ID"].dropna().unique().tolist())
+    doc_ids = sorted(df["ID"].dropna().astype(str).str.strip().unique().tolist())
     if limit:
         doc_ids = doc_ids[:limit]
     return doc_ids
@@ -246,9 +443,17 @@ def list_dataset_documents(dataset_name: str, limit: int = 50) -> List[str]:
 def load_dataset_excerpt(
     dataset_name: str,
     document_id: Optional[str] = None,
-    max_rows: int = 3,
+    max_rows: Optional[int] = None,
+    max_chars: Optional[int] = None,
 ) -> Tuple[str, Dict[str, Any]]:
-    """Load a short excerpt from the dataset for question generation."""
+    """Load a dataset document for question generation.
+
+    By default this function returns the full document (all rows matching
+    `document_id` or the sampled document). If `max_rows` is set to an int,
+    only the first `max_rows` rows will be returned (backwards-compatible
+    truncation control). If `max_chars` is set, the combined text will be
+    truncated to that many characters.
+    """
 
     data_path = SC_DATA_DIR / f"{dataset_name}.csv"
     if not data_path.exists():
@@ -259,26 +464,82 @@ def load_dataset_excerpt(
     except Exception:
         return "", {}
 
+    df["ID"] = df["ID"].astype(str).str.strip()
+
     doc_df = df
     if document_id and document_id in df["ID"].values:
         doc_df = df[df["ID"] == document_id]
     else:
         doc_df = df.sample(n=1, random_state=42)
 
-    doc_df = doc_df.head(max_rows)
+    # If max_rows is provided, keep only the first `max_rows` rows. If
+    # max_rows is None (the default), return the full document.
+    if max_rows is not None:
+        doc_df = doc_df.head(max_rows)
 
-    excerpts: List[str] = []
+    example_columns = [col for col in doc_df.columns if col and col.lower().startswith("example")]
+    if not example_columns:
+        example_columns = ["Example_A", "Example_B"]
+
+    row_texts: List[str] = []
     for _, row in doc_df.iterrows():
-        passages = [row.get(col, "") for col in ["Example_A", "Example_B"]]
-        passages = [_clean_text(p) for p in passages if isinstance(p, str) and p.strip()]
+        passages: List[str] = []
+        for column in example_columns:
+            value = row.get(column, "")
+            if isinstance(value, str) and value.strip():
+                passages.append(_clean_text(value))
         if passages:
-            excerpts.append(" ".join(passages))
+            row_texts.append(" ".join(passages))
 
-    combined_text = "\n\n".join(excerpts)
+    rows_available = len(row_texts)
+    rows_returned = 0
+    partial_row = False
+    was_truncated = False
+
+    if max_chars is not None and max_chars > 0:
+        remaining = max_chars
+        chunks: List[str] = []
+        for row_text in row_texts:
+            if remaining <= 0:
+                was_truncated = True
+                break
+            addition = row_text if not chunks else f"\n\n{row_text}"
+            addition_len = len(addition)
+            if addition_len <= remaining:
+                chunks.append(addition)
+                remaining -= addition_len
+                rows_returned += 1
+            else:
+                if remaining > 0:
+                    chunks.append(addition[:remaining])
+                    rows_returned += 1
+                    partial_row = True
+                was_truncated = True
+                remaining = 0
+                break
+        combined_text = "".join(chunks)
+        if remaining == 0 and rows_returned < rows_available:
+            was_truncated = True
+    else:
+        combined_text = "\n\n".join(row_texts)
+        rows_returned = rows_available
+
+    chars_returned = len(combined_text)
+
+    # Build simple metadata from the first row but include details so callers
+    # know if they received the full document or a truncated slice.
     meta = {
-        "document_id": doc_df.iloc[0].get("ID", ""),
-        "label": doc_df.iloc[0].get("Label", ""),
-        "length": doc_df.iloc[0].get("Length", ""),
+        "document_id": doc_df.iloc[0].get("ID", "") if not doc_df.empty else "",
+        "label": doc_df.iloc[0].get("Label", "") if not doc_df.empty else "",
+        "length": doc_df.iloc[0].get("Length", "") if not doc_df.empty else "",
+        "rows_sampled": len(doc_df),
+        "rows_available": rows_available,
+        "rows_returned": rows_returned,
+        "chars_returned": chars_returned,
+        "was_truncated": was_truncated,
+        "partial_row": partial_row,
+        "max_rows": max_rows,
+        "max_chars": max_chars,
     }
 
     return combined_text, meta
@@ -602,3 +863,153 @@ def summarize_single_choice_results(all_results: List[List[Dict[str, Any]]]) -> 
         if correct_confidences
         else None,
     }
+
+
+def load_predefined_examples(dataset_name: str, indices: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+    """Load predefined single-choice questions from CSV files for evaluation.
+
+    Args:
+        dataset_name: Name of the dataset ("arXivTection" or "BookTection")
+        indices: Optional list of question indices to load (0-based). If None, load all.
+
+    Returns:
+        List of MCQ dictionaries with question, options, correct_option, and label
+    """
+    csv_filename = f"{dataset_name}.csv"
+    csv_path = SC_DATA_DIR / csv_filename
+
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Dataset file not found: {csv_path}")
+
+    df = pd.read_csv(csv_path)
+
+    mcqs = []
+    for idx, row in df.iterrows():
+        # Skip if indices specified and current index not in the list
+        if indices is not None and idx not in indices:
+            continue
+            
+        # Extract options from columns Example_A, Example_B, Example_C, Example_D
+        options = []
+        for label in OPTION_LABELS:
+            option_text = row.get(f"Example_{label}", "").strip()
+            if option_text:
+                options.append({"label": label, "text": option_text})
+
+        if not options:
+            continue
+
+        # Create MCQ format with dataset-specific question ID
+        question_id = f"{dataset_name}_{idx + 1}"  # 1-based indexing for display
+        mcq = {
+            "question": question_id,  # Use formatted ID as question identifier
+            "options": options,
+            "correct_option": row.get("Answer", "").strip().upper(),
+            "label": int(row.get("Label", 0)),  # 1 = training data, 0 = non-training data
+            "original_id": row.get("ID", "").strip(),  # Keep original ID for reference
+        }
+
+        mcqs.append(mcq)
+
+    return mcqs
+
+
+def get_predefined_examples_index() -> Dict[str, List[Dict[str, Any]]]:
+    """Get index information for all predefined examples from CSV files.
+    
+    Returns:
+        Dictionary with dataset names as keys and list of example info as values.
+        Each example info contains: index, id, label, source_type
+    """
+    datasets = ["arXivTection", "BookTection"]
+    index_info = {}
+    
+    for dataset_name in datasets:
+        csv_filename = f"{dataset_name}.csv"
+        csv_path = SC_DATA_DIR / csv_filename
+        
+        if not csv_path.exists():
+            continue
+            
+        df = pd.read_csv(csv_path)
+        examples = []
+        
+        for idx, row in df.iterrows():
+            # Determine source type based on dataset
+            if dataset_name == "arXivTection":
+                source_type = "arXiv Paper"
+            elif dataset_name == "BookTection":
+                source_type = "Book"
+            else:
+                source_type = "Unknown"
+            
+            example_info = {
+                "index": idx + 1,  # 1-based indexing for display
+                "id": row.get("ID", "").strip(),
+                "label": int(row.get("Label", 0)),  # 1 = training data, 0 = non-training data
+                "source_type": source_type,
+                "dataset": dataset_name
+            }
+            examples.append(example_info)
+        
+        index_info[dataset_name] = examples
+    
+    return index_info
+
+
+def parse_question_indices(indices_str: str) -> List[int]:
+    """Parse question indices string into a list of integers.
+    
+    Supports formats like:
+    - "1,5,10" (individual indices)
+    - "10-15" (ranges)
+    - "1,5,10-15,20" (mixed)
+    
+    Args:
+        indices_str: String containing indices specification
+        
+    Returns:
+        List of 0-based indices
+        
+    Raises:
+        ValueError: If the format is invalid
+    """
+    indices = []
+    parts = indices_str.split(',')
+    
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+            
+        if '-' in part:
+            # Handle range
+            range_parts = part.split('-')
+            if len(range_parts) != 2:
+                raise ValueError(f"Invalid range format: {part}")
+            
+            try:
+                start = int(range_parts[0].strip())
+                end = int(range_parts[1].strip())
+                if start > end:
+                    raise ValueError(f"Invalid range: start > end in {part}")
+                # Convert to 0-based indexing
+                indices.extend(range(start - 1, end))
+            except ValueError:
+                raise ValueError(f"Invalid range values: {part}")
+        else:
+            # Handle single index
+            try:
+                idx = int(part)
+                indices.append(idx - 1)  # Convert to 0-based
+            except ValueError:
+                raise ValueError(f"Invalid index: {part}")
+    
+    # Remove duplicates and sort
+    indices = sorted(list(set(indices)))
+    
+    # Validate indices are non-negative
+    if any(idx < 0 for idx in indices):
+        raise ValueError("Question indices must be positive")
+        
+    return indices
