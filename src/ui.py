@@ -2821,42 +2821,6 @@ def render_qa_based_detection(api_key, model_choice, provider):
         # Calculate aggregate metrics
         agg_metrics = calculate_aggregate_metrics(all_results)
         
-        # Display summary metrics with elegant card design
-        st.markdown("#### 📊 Summary Metrics")
-        
-        metrics_data = [
-            {
-                "label": "ROUGE Score",
-                "icon": "📝",
-                "value": f"{agg_metrics.get('avg_rouge_score', 0):.4f}",
-                "range": f"Range: {agg_metrics.get('min_rouge', 0):.3f} - {agg_metrics.get('max_rouge', 0):.3f}",
-                "description": "Overlap similarity"
-            },
-            {
-                "label": "Jaccard Index",
-                "icon": "🔍",
-                "value": f"{agg_metrics.get('avg_jaccard_index', 0):.4f}",
-                "range": f"Range: {agg_metrics.get('min_jaccard', 0):.3f} - {agg_metrics.get('max_jaccard', 0):.3f}",
-                "description": "Token intersection"
-            },
-            {
-                "label": "Levenshtein Distance",
-                "icon": "📏",
-                "value": f"{agg_metrics.get('avg_levenshtein_distance', 0):.1f}",
-                "range": "",
-                "description": "Character edits"
-            },
-            {
-                "label": "Normalized Edit",
-                "icon": "⚖️",
-                "value": f"{agg_metrics.get('avg_normalized_levenshtein', 0):.4f}",
-                "range": "",
-                "description": "Relative distance"
-            }
-        ]
-
-        render_metric_cards(metrics_data)
-        
         # Display detailed results grouped by Q/A pair
         st.markdown("#### 📝 Detailed Results by Q/A Pair")
 
