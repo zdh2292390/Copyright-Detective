@@ -163,8 +163,8 @@ _DIRECT_RECALL_DIFF_STYLE = """
 <style>
     :root {
         --dr-match: linear-gradient(135deg, #22c55e, #16a34a);
-        --dr-miss: linear-gradient(135deg, #f87171, #ef4444);
-        --dr-extra: linear-gradient(135deg, #f59e0b, #d97706);
+        --dr-miss: linear-gradient(135deg, #f59e0b, #d97706);
+        --dr-extra: linear-gradient(135deg, #f87171, #ef4444);
     }
     .dr-diff-wrapper {
         margin: 0.9rem 0 0.6rem;
@@ -243,13 +243,12 @@ _DIRECT_RECALL_DIFF_STYLE = """
         color: #14532d;
     }
     .dr-token--miss {
-        background: rgba(248, 113, 113, 0.28);
-        color: #7f1d1d;
-        border-bottom: 1px dashed rgba(185, 28, 28, 0.65);
-    }
-    .dr-token--extra {
         background: rgba(250, 204, 21, 0.26);
         color: #78350f;
+    }
+    .dr-token--extra {
+        background: rgba(248, 113, 113, 0.28);
+        color: #7f1d1d;
     }
     .dr-token br {
         display: inline;
