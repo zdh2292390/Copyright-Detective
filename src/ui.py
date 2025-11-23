@@ -2297,7 +2297,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
     st.markdown('<p class="analysis-step-label">Step 2 · Provide source content</p>', unsafe_allow_html=True)
     
     # Create labeled options to distinguish custom input from example datasets
-    custom_options = ["Input Text", "Upload Document"]
+    custom_options = ["Input Text", "Upload Document", "Predefined Examples"]
     source_options = custom_options
     
     qa_source_mode_display = st.radio(
@@ -2335,6 +2335,153 @@ def render_qa_based_detection(api_key, model_choice, provider):
             help="Select a PDF or UTF-8 TXT document to extract knowledge from",
             key="knowledge_qa_pdf_upload"
         )
+    elif qa_source_mode == "Predefined Examples":
+        st.markdown("**📚 Select predefined literature examples**")
+        literature_options = [
+            "Pride and Prejudice - Chapter 1",
+            "1984 - Opening Scene",
+            "The Great Gatsby - Chapter 1",
+            "To Kill a Mockingbird - Opening",
+            "Harry Potter - Philosopher's Stone Opening"
+        ]
+
+        selected_literature = st.selectbox(
+            "Choose a literature example",
+            literature_options,
+            help="Select a famous literary work excerpt to test for memorization.",
+            key="qa_literature_selection",
+        )
+
+        # Predefined QA pairs for each literature example
+        literature_qa_data = {
+            "Pride and Prejudice - Chapter 1": [
+                {
+                    "question": "What is the first sentence of Pride and Prejudice?",
+                    "answer": "It is a truth universally acknowledged, that a single man in possession of a good fortune, must be in want of a wife."
+                },
+                {
+                    "question": "What does Mrs. Bennet say about Netherfield being let?",
+                    "answer": "Mrs. Bennet replied that she had not, and begged him to tell her all about it."
+                },
+                {
+                    "question": "Who is described as 'a young man of large fortune'?",
+                    "answer": "Mr. Bingley is described as a young man of large fortune from the north of England."
+                },
+                {
+                    "question": "What is the relationship between the Bennet sisters?",
+                    "answer": "Jane is the eldest, then Elizabeth, Mary, Kitty, and Lydia are the younger sisters."
+                },
+                {
+                    "question": "What does Mr. Bennet say about his estate and daughters?",
+                    "answer": "Mr. Bennet mentions that his estate is entailed away from his daughters to a distant cousin."
+                }
+            ],
+            "1984 - Opening Scene": [
+                {
+                    "question": "What is the first line of 1984?",
+                    "answer": "It was a bright cold day in April, and the clocks were striking thirteen."
+                },
+                {
+                    "question": "What is the name of the building where Winston Smith lives?",
+                    "answer": "Winston Smith lives in Victory Mansions."
+                },
+                {
+                    "question": "What is written on the posters everywhere in the city?",
+                    "answer": "The posters show the face of Big Brother with the caption 'BIG BROTHER IS WATCHING YOU'."
+                },
+                {
+                    "question": "What is the Two Minutes Hate?",
+                    "answer": "The Two Minutes Hate is a daily ritual where people gather to express hatred toward Emmanuel Goldstein."
+                },
+                {
+                    "question": "What does Winston do in his diary?",
+                    "answer": "Winston writes 'DOWN WITH BIG BROTHER' in his diary, knowing it is a thoughtcrime."
+                }
+            ],
+            "The Great Gatsby - Chapter 1": [
+                {
+                    "question": "How does Nick Carraway describe himself at the beginning?",
+                    "answer": "Nick Carraway describes himself as someone who reserves judgment about others."
+                },
+                {
+                    "question": "What is the Valley of Ashes?",
+                    "answer": "The Valley of Ashes is a desolate area between West Egg and New York City, symbolizing moral decay."
+                },
+                {
+                    "question": "What does Tom Buchanan say about a book he is reading?",
+                    "answer": "Tom Buchanan says that the book he is reading proves that the white race is under attack."
+                },
+                {
+                    "question": "How does Daisy Buchanan speak?",
+                    "answer": "Daisy Buchanan speaks in a voice that sounds like money - low and thrilling."
+                },
+                {
+                    "question": "What is Gatsby doing when Nick first sees him?",
+                    "answer": "Gatsby is standing at the end of his dock, stretching out his arms toward a green light across the bay."
+                }
+            ],
+            "To Kill a Mockingbird - Opening": [
+                {
+                    "question": "What is the name of the town where Scout lives?",
+                    "answer": "Scout lives in the fictional town of Maycomb, Alabama."
+                },
+                {
+                    "question": "Who is Dill Harris?",
+                    "answer": "Dill Harris is a boy who visits Maycomb every summer and becomes friends with Scout and Jem."
+                },
+                {
+                    "question": "What happened to Jem's arm?",
+                    "answer": "Jem's arm is broken during an attack by Bob Ewell on Halloween night."
+                },
+                {
+                    "question": "Who is Atticus Finch?",
+                    "answer": "Atticus Finch is Scout's father, a lawyer who defends Tom Robinson."
+                },
+                {
+                    "question": "What does Scout learn about Boo Radley?",
+                    "answer": "Scout learns that Boo Radley is not the monster the children imagined, but a kind person who saved them."
+                }
+            ],
+            "Harry Potter - Philosopher's Stone Opening": [
+                {
+                    "question": "Where do the Dursleys live?",
+                    "answer": "The Dursleys live at number four, Privet Drive, Little Whinging, Surrey."
+                },
+                {
+                    "question": "What is unusual about the cat that Mr. Dursley sees?",
+                    "answer": "The cat is reading a map and checking its watch, which is very unusual for a cat."
+                },
+                {
+                    "question": "Who is Professor McGonagall?",
+                    "answer": "Professor McGonagall is a witch who can transform into a cat."
+                },
+                {
+                    "question": "What does Albus Dumbledore do with his wand?",
+                    "answer": "Dumbledore turns off all the streetlights in Privet Drive with his wand."
+                },
+                {
+                    "question": "What is the secret about Harry Potter?",
+                    "answer": "Harry Potter is a wizard who survived the Killing Curse as a baby."
+                }
+            ]
+        }
+
+        # Display selected literature info
+        st.caption(f"📖 Selected: {selected_literature}")
+        qa_pairs = literature_qa_data[selected_literature]
+
+        # Load button for predefined examples
+        load_literature = st.button(
+            "📖 Load Literature Q/A Pairs",
+            key="qa_load_literature_button",
+            use_container_width=True,
+        )
+
+        if load_literature:
+            st.session_state['qa_generated_qa_pairs'] = qa_pairs
+            st.session_state['qa_document_text_content'] = f"Predefined literature example: {selected_literature}"
+            st.session_state['qa_evaluation_results'] = None
+            st.success(f"✅ Loaded {len(qa_pairs)} Q/A pairs from {selected_literature}.")
     else:
         # Dataset mode
         if not source_text:
@@ -2355,188 +2502,205 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 temperature=qa_gen_temperature,
                 top_p=qa_gen_top_p,
             )
-    st.markdown('<p class="analysis-step-label">Step 3 · Configure first LLM to generate Q/A pairs</p>', unsafe_allow_html=True)
-    st.markdown(
-        '<p class="analysis-step-caption">Select the model provider and configure generation parameters for creating questions/answers.</p>',
-        unsafe_allow_html=True,
-    )
-    
-    # Provider, model selection, and API key in one row
-    col_provider, col_model, col_api = st.columns(3)
-
-    with col_provider:
-        # Provider selection for first LLM (preserve selection across tabs)
-        provider_options = ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"]
-        qa_gen_provider = st.selectbox(
-            "Select Provider",
-            provider_options,
-            index=st.session_state['qa_gen_provider_index'],
-            help="Choose your AI provider",
-            key="qa_gen_provider"
+    # Step 3: Configure first LLM to generate Q/A pairs (only for Input Text/Upload Document)
+    if qa_source_mode != "Predefined Examples":
+        st.markdown('<p class="analysis-step-label">Step 3 · Configure Q/A pairs generation</p>', unsafe_allow_html=True)
+        st.markdown(
+            '<p class="analysis-step-caption">Select the model provider and configure generation parameters for creating questions/answers.</p>',
+            unsafe_allow_html=True,
         )
-        # Update stored index when selection changes
-        st.session_state['qa_gen_provider_index'] = provider_options.index(qa_gen_provider)
-
-    with col_model:
-        # Model selection based on provider
-        if qa_gen_provider == "OpenAI":
-            qa_gen_model = st.selectbox(
-                "Choose a model",
-                [
-                    "gpt-3.5-turbo",
-                    "gpt-3.5-turbo-instruct",
-                    "gpt-4o",
-                    "gpt-4o-mini",
-                ],
-                help="Select an OpenAI model. Perplexity probes work best with instruct-style or mini models that support logprobs.",
-                key="qa_gen_model"
-            )
-        elif qa_gen_provider == "OpenRouter":
-            qa_gen_model = st.selectbox(
-                "Choose a model",
-                [
-                    "moonshotai/kimi-k2:free",
-                    "meta-llama/llama-3.1-405b-instruct:free",
-                    "qwen/qwen3-235b-a22b:free",
-                    "meta-llama/llama-3.3-70b-instruct:free",
-                    "mistralai/mistral-small-24b-instruct-2501:free",
-                    "qwen/qwen-2.5-72b-instruct:free",
-                    "nvidia/nemotron-nano-9b-v2:free",
-                    "microsoft/wizardlm-2-8x22b:free",
-                    "google/gemma-7b-it:free",
-                    "meta-llama/llama-3.2-3b-instruct:free",
-                ],
-                key="qa_gen_model"
-            )
-        elif qa_gen_provider == "Anthropic":
-            qa_gen_model = st.selectbox(
-                "Choose a model",
-                               [
-                    "claude-3-haiku-20240307",
-                    "claude-3-sonnet-20240229",
-                    "claude-3-opus-20240229",
-                ],
-                key="qa_gen_model"
-            )
-        elif qa_gen_provider == "Google Gemini":
-            qa_gen_model = st.selectbox(
-                "Choose a model",
-                ["gemini-1.5-flash", "gemini-1.5-pro"],
-                key="qa_gen_model"
-            )
-
-    with col_api:
-        qa_gen_api_key = st.text_input(
-            "API Key",
-            type="password",
-            help="Enter API key for the first LLM. Leave blank to use the same key from sidebar.",
-            key="qa_gen_api_key"
-        )
-    
-    # Use sidebar API key if not provided
-    if not qa_gen_api_key:
-        qa_gen_api_key = api_key
-    
-    col3, col4, col5 = st.columns(3)
-    with col3:
-        st.number_input(
-            "Number of Q/A Pairs to Generate",
-            min_value=1,
-            max_value=20,
-            value=st.session_state['qa_num_qa_pairs'],
-            step=1,
-            help="How many question-answer pairs to generate from the uploaded document",
-            key="num_qa_pairs"
-        )
-    
-    with col4:
-        st.slider(
-            "Temperature",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.7,
-            step=0.05,
-            help="Controls randomness in Q/A generation. Higher = more diverse questions.",
-            key="qa_gen_temperature"
-        )
-
-    with col5:
-        st.slider(
-            "Top-P",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.9,
-            step=0.05,
-            help="Nucleus sampling parameter for controlling diversity during Q/A generation.",
-            key="qa_gen_top_p"
-        )
-    
-
-    # Button to generate Q/A pairs
-    generate_qa = st.button(
-        "🚀 Run: Generate Q/A Pairs",
-        key="generate_qa_button",
-        type="primary",
-        use_container_width=True
-    )
-    
-    # Generate Q/A pairs
-    if generate_qa:
-        # Get values from session state
-        num_qa_pairs = st.session_state.get('num_qa_pairs', 5)
-        qa_gen_temperature = st.session_state.get('qa_gen_temperature', 0.7)
-        qa_gen_top_p = st.session_state.get('qa_gen_top_p', 0.9)
         
+        # Provider, model selection, and API key in one row
+        col_provider, col_model, col_api = st.columns(3)
+
+        with col_provider:
+            # Provider selection for first LLM (preserve selection across tabs)
+            provider_options = ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"]
+            qa_gen_provider = st.selectbox(
+                "Select Provider",
+                provider_options,
+                index=st.session_state['qa_gen_provider_index'],
+                help="Choose your AI provider",
+                key="qa_gen_provider"
+            )
+            # Update stored index when selection changes
+            st.session_state['qa_gen_provider_index'] = provider_options.index(qa_gen_provider)
+
+        with col_model:
+            # Model selection based on provider
+            if qa_gen_provider == "OpenAI":
+                qa_gen_model = st.selectbox(
+                    "Choose a model",
+                    [
+                        "gpt-3.5-turbo",
+                        "gpt-3.5-turbo-instruct",
+                        "gpt-4o",
+                        "gpt-4o-mini",
+                    ],
+                    help="Select an OpenAI model. Perplexity probes work best with instruct-style or mini models that support logprobs.",
+                    key="qa_gen_model"
+                )
+            elif qa_gen_provider == "OpenRouter":
+                qa_gen_model = st.selectbox(
+                    "Choose a model",
+                    [
+                        "moonshotai/kimi-k2:free",
+                        "meta-llama/llama-3.1-405b-instruct:free",
+                        "qwen/qwen3-235b-a22b:free",
+                        "meta-llama/llama-3.3-70b-instruct:free",
+                        "mistralai/mistral-small-24b-instruct-2501:free",
+                        "qwen/qwen-2.5-72b-instruct:free",
+                        "nvidia/nemotron-nano-9b-v2:free",
+                        "microsoft/wizardlm-2-8x22b:free",
+                        "google/gemma-7b-it:free",
+                        "meta-llama/llama-3.2-3b-instruct:free",
+                    ],
+                    key="qa_gen_model"
+                )
+            elif qa_gen_provider == "Anthropic":
+                qa_gen_model = st.selectbox(
+                    "Choose a model",
+                               [
+                        "claude-3-haiku-20240307",
+                        "claude-3-sonnet-20240229",
+                        "claude-3-opus-20240229",
+                    ],
+                    key="qa_gen_model"
+                )
+            elif qa_gen_provider == "Google Gemini":
+                qa_gen_model = st.selectbox(
+                    "Choose a model",
+                    ["gemini-1.5-flash", "gemini-1.5-pro"],
+                    key="qa_gen_model"
+                )
+
+        with col_api:
+            qa_gen_api_key = st.text_input(
+                "API Key",
+                type="password",
+                help="Enter API key for the first LLM. Leave blank to use the same key from sidebar.",
+                key="qa_gen_api_key"
+            )
+        
+        # Use sidebar API key if not provided
         if not qa_gen_api_key:
-            st.error("⚠️ Please provide an API key for Q/A generation.")
-        else:
-            from src.direct_recall.knowledge_qa import generate_qa_pairs_from_document, generate_qa_pairs_from_text
+            qa_gen_api_key = api_key
+        
+        col3, col4, col5 = st.columns(3)
+        with col3:
+            st.number_input(
+                "Number of Q/A Pairs to Generate",
+                min_value=1,
+                max_value=20,
+                value=st.session_state['qa_num_qa_pairs'],
+                step=1,
+                help="How many question-answer pairs to generate from the uploaded document",
+                key="num_qa_pairs"
+            )
+        
+        with col4:
+            st.slider(
+                "Temperature",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.7,
+                step=0.05,
+                help="Controls randomness in Q/A generation. Higher = more diverse questions.",
+                key="qa_gen_temperature"
+            )
+
+        with col5:
+            st.slider(
+                "Top-P",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.9,
+                step=0.05,
+                help="Nucleus sampling parameter for controlling diversity during Q/A generation.",
+                key="qa_gen_top_p"
+            )
+        
+
+        # Button to generate Q/A pairs
+        generate_qa = st.button(
+            "🚀 Run: Generate Q/A Pairs",
+            key="generate_qa_button",
+            type="primary",
+            use_container_width=True
+        )
+        
+        # Generate Q/A pairs
+        if generate_qa:
+            # Get values from session state
+            num_qa_pairs = st.session_state.get('num_qa_pairs', 5)
+            qa_gen_temperature = st.session_state.get('qa_gen_temperature', 0.7)
+            qa_gen_top_p = st.session_state.get('qa_gen_top_p', 0.9)
             
-            with st.spinner(f"🔄 Generating {num_qa_pairs} Q/A pairs with {qa_gen_model}..."):
-                qa_pairs = []
-                document_text = ""
+            if not qa_gen_api_key:
+                st.error("⚠️ Please provide an API key for Q/A generation.")
+            else:
+                from src.direct_recall.knowledge_qa import generate_qa_pairs_from_document, generate_qa_pairs_from_text
                 
-                if qa_source_mode == "Input Text":
-                    input_text = st.session_state.get("qa_input_text", "").strip()
-                    if not input_text:
-                        st.warning("⚠️ Please enter some text first.")
+                with st.spinner(f"🔄 Generating {num_qa_pairs} Q/A pairs with {qa_gen_model}..."):
+                    qa_pairs = []
+                    document_text = ""
+                    
+                    if qa_source_mode == "Input Text":
+                        input_text = st.session_state.get("qa_input_text", "").strip()
+                        if not input_text:
+                            st.warning("⚠️ Please enter some text first.")
+                        else:
+                            document_text = input_text
+                            qa_pairs = generate_qa_pairs_from_text(
+                                document_text,
+                                qa_gen_api_key,
+                                qa_gen_model,
+                                qa_gen_provider,
+                                num_pairs=num_qa_pairs,
+                                temperature=qa_gen_temperature,
+                                top_p=qa_gen_top_p,
+                            )
+                    elif qa_source_mode == "Upload Document":
+                        if not uploaded_document:
+                            st.warning("⚠️ Please upload a document first.")
+                        else:
+                            qa_pairs, document_text = generate_qa_pairs_from_document(
+                                uploaded_document,
+                                qa_gen_api_key,
+                                qa_gen_model,
+                                qa_gen_provider,
+                                num_pairs=num_qa_pairs,
+                                temperature=qa_gen_temperature,
+                                top_p=qa_gen_top_p,
+                            )
+                    if isinstance(document_text, str) and document_text.startswith("Error"):
+                        st.error(f"❌ {document_text}")
+                    elif not qa_pairs:
+                        st.error("❌ Failed to generate Q/A pairs. The LLM may not have returned valid JSON. Please try again or use a different model.")
                     else:
-                        document_text = input_text
-                        qa_pairs = generate_qa_pairs_from_text(
-                            document_text,
-                            qa_gen_api_key,
-                            qa_gen_model,
-                            qa_gen_provider,
-                            num_pairs=num_qa_pairs,
-                            temperature=qa_gen_temperature,
-                            top_p=qa_gen_top_p,
-                        )
-                elif qa_source_mode == "Upload Document":
-                    if not uploaded_document:
-                        st.warning("⚠️ Please upload a document first.")
-                    else:
-                        qa_pairs, document_text = generate_qa_pairs_from_document(
-                            uploaded_document,
-                            qa_gen_api_key,
-                            qa_gen_model,
-                            qa_gen_provider,
-                            num_pairs=num_qa_pairs,
-                            temperature=qa_gen_temperature,
-                            top_p=qa_gen_top_p,
-                        )
-                if isinstance(document_text, str) and document_text.startswith("Error"):
-                    st.error(f"❌ {document_text}")
-                elif not qa_pairs:
-                    st.error("❌ Failed to generate Q/A pairs. The LLM may not have returned valid JSON. Please try again or use a different model.")
-                else:
-                    st.session_state['qa_generated_qa_pairs'] = qa_pairs
-                    st.session_state['qa_document_text_content'] = document_text
-                    st.success(f"✅ Successfully generated {len(qa_pairs)} Q/A pairs!")
+                        st.session_state['qa_generated_qa_pairs'] = qa_pairs
+                        st.session_state['qa_document_text_content'] = document_text
+                        st.success(f"✅ Successfully generated {len(qa_pairs)} Q/A pairs!")
+        
+        # Display generated Q/A pairs
+        if st.session_state['qa_generated_qa_pairs']:
+            st.markdown('<h4 class="section-header sm">📋 Generated Q/A Pairs</h4>', unsafe_allow_html=True)
+            st.caption(f"Generated {len(st.session_state['qa_generated_qa_pairs'])} question-answer pairs from the document.")
+
+            for idx, qa_pair in enumerate(st.session_state['qa_generated_qa_pairs'], 1):
+                with st.expander(f"Q/A Pair {idx}", expanded=False):
+                    st.markdown("**Question:**")
+                    st.write(qa_pair['question'])
+                    st.markdown("**Answer:**")
+                    st.write(qa_pair['answer'])
     
-    # Display generated Q/A pairs
+    # Display Q/A pairs (for all modes)
     if st.session_state['qa_generated_qa_pairs']:
-        st.markdown('<h4 class="section-header sm">📋 Generated Q/A Pairs</h4>', unsafe_allow_html=True)
-        st.caption(f"Generated {len(st.session_state['qa_generated_qa_pairs'])} question-answer pairs from the document.")
+        section_title = "📚 Predefined Q/A Pairs" if qa_source_mode == "Predefined Examples" else "📋 Generated Q/A Pairs"
+        caption_text = f"Loaded {len(st.session_state['qa_generated_qa_pairs'])} predefined question-answer pairs from literature." if qa_source_mode == "Predefined Examples" else f"Generated {len(st.session_state['qa_generated_qa_pairs'])} question-answer pairs from the document."
+        
+        st.markdown(f'<h4 class="section-header sm">{section_title}</h4>', unsafe_allow_html=True)
+        st.caption(caption_text)
 
         for idx, qa_pair in enumerate(st.session_state['qa_generated_qa_pairs'], 1):
             with st.expander(f"Q/A Pair {idx}", expanded=False):
@@ -2545,8 +2709,9 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 st.markdown("**Answer:**")
                 st.write(qa_pair['answer'])
     
-    # Step 3: Evaluate with Second LLM
-    st.markdown('<p class="analysis-step-label">Step 4 · Configure Second LLM To Answer</p>', unsafe_allow_html=True)
+    # Step 4: Evaluate with Second LLM (dynamic step numbering)
+    step_number = "3" if qa_source_mode == "Predefined Examples" else "4"
+    st.markdown(f'<p class="analysis-step-label">Step {step_number} · Evaluate target model</p>', unsafe_allow_html=True)
  
     col5, col6, col7 = st.columns(3)
     with col5:
