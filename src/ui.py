@@ -2797,6 +2797,9 @@ def render_sc_detection(api_key, model_choice, provider):
         if key not in st.session_state:
             st.session_state[key] = value
 
+    # Import pandas at the top of the function
+    import pandas as pd
+
     st.markdown(
         """
         <div class="analysis-callout">
@@ -2856,51 +2859,55 @@ def render_sc_detection(api_key, model_choice, provider):
     elif source_mode == "Predefined Examples":
         st.markdown("**📚 Select predefined evaluation dataset**")
         dataset_options = ["arXivTection", "BookTection"]
-        selected_dataset = st.selectbox(
-            "Choose evaluation dataset",
-            dataset_options,
-            help="Select a predefined dataset containing single-choice questions for copyright detection evaluation.",
-            key="sc_dataset_selection",
-        )
         
-        # Show dataset info
-        dataset_info = {
-            "arXivTection": "Academic paper excerpts (label=1: appeared in training, label=0: not seen)",
-            "BookTection": "Book excerpts (label=1: appeared in training, label=0: not seen)"
-        }
-        st.caption(f"📖 {dataset_info[selected_dataset]}")
+        # Put dataset selection and question indices on the same row
+        col_dataset, col_indices = st.columns([1, 1])
         
-        # Try to get dataset size
-        try:
-            import pandas as pd
-            from pathlib import Path
-            csv_path = Path("src/direct_recall/decop/data") / f"{selected_dataset}.csv"
-            if csv_path.exists():
-                df_size = len(pd.read_csv(csv_path))
-                st.caption(f"📊 Dataset contains {df_size} questions (indices: 1-{df_size})")
-        except:
-            pass
+        with col_dataset:
+            selected_dataset = st.selectbox(
+                "Choose evaluation dataset",
+                dataset_options,
+                help="Select a predefined dataset containing single-choice questions for copyright detection evaluation.",
+                key="sc_dataset_selection",
+            )
         
-        # Add question index selection
-        st.markdown("**🔍 Select specific questions**")
-        col_idx, col_preview = st.columns([1, 2])
-        with col_idx:
+        with col_indices:
             question_indices = st.text_input(
                 "Question indices",
                 placeholder="e.g., 1,5,10-15,20",
                 help="Enter question indices (comma-separated, ranges with hyphens). Leave empty to load all questions.",
                 key="sc_question_indices",
             )
+        # Show selected questions count
+        if question_indices.strip():
+            try:
+                indices = parse_question_indices(question_indices.strip())
+                st.caption(f"Selected {len(indices)} questions: {indices[:10]}{'...' if len(indices) > 10 else ''}")
+            except ValueError as e:
+                st.error(f"Invalid format: {e}")
+        else:
+            pass
         
-        with col_preview:
-            if question_indices.strip():
-                try:
-                    indices = parse_question_indices(question_indices.strip())
-                    st.caption(f"Selected {len(indices)} questions: {indices[:10]}{'...' if len(indices) > 10 else ''}")
-                except ValueError as e:
-                    st.error(f"Invalid format: {e}")
-            else:
-                st.caption("Loading all questions from dataset")
+        # Add accordion to display CSV content
+        with st.expander("📊 Preview Dataset Content", expanded=False):
+            try:
+                import pandas as pd
+                from pathlib import Path
+                csv_path = Path("src/direct_recall/decop/data") / f"{selected_dataset}.csv"
+                if csv_path.exists():
+                    df = pd.read_csv(csv_path)
+                    st.caption(f"📊 Dataset contains {len(df)} questions (indices: 1-{len(df)})")
+                    dataset_info = {
+                        "arXivTection": "Academic paper excerpts (label=1: appeared in training, label=0: not seen)",
+                        "BookTection": "Book excerpts (label=1: appeared in training, label=0: not seen)"
+                    }
+                    st.caption(f"📖 {dataset_info[selected_dataset]}")
+                    st.dataframe(df, use_container_width=True)
+                    st.caption(f"Total rows: {len(df)} | Columns: {', '.join(df.columns.tolist())}")
+                else:
+                    st.error(f"CSV file not found: {csv_path}")
+            except Exception as e:
+                st.error(f"Error loading CSV: {e}")
         
         # Load button for predefined examples
         load_examples = st.button(
@@ -3267,53 +3274,6 @@ def render_sc_detection(api_key, model_choice, provider):
         results = st.session_state['sc_evaluation_results']
         metrics = summarize_single_choice_results(results)
         if metrics:
-            st.markdown('<h4 class="section-header sm">📊 Evaluation summary</h4>', unsafe_allow_html=True)
-            accuracy = metrics.get('overall_accuracy', 0)
-            avg_conf = metrics.get('avg_correct_confidence')
-            sc_metrics = [
-                {
-                    "label": "Runs",
-                    "icon": "🔁",
-                    "value": str(metrics.get('total_runs', 0)),
-                    "description": "Evaluation passes",
-                    "range": "",
-                },
-                {
-                    "label": "Attempts",
-                    "icon": "🧪",
-                    "value": str(metrics.get('total_attempts', 0)),
-                    "description": "Questions × runs",
-                    "range": "",
-                },
-                {
-                    "label": "Accuracy",
-                    "icon": "🎯",
-                    "value": f"{accuracy * 100:.1f}%",
-                    "description": "Correct option rate",
-                    "range": "",
-                },
-                {
-                    "label": "Avg confidence (correct)",
-                    "icon": "📈",
-                    "value": (
-                        f"{avg_conf * 100:.1f}%" if isinstance(avg_conf, (int, float)) else "—"
-                    ),
-                    "description": "Mean probability when right",
-                    "range": "",
-                },
-            ]
-
-            render_metric_cards(sc_metrics)
-
-            option_distribution = metrics.get('option_distribution', {})
-            if option_distribution:
-                dist_df = pd.DataFrame(
-                    {
-                        'Option': list(option_distribution.keys()),
-                        'Count': list(option_distribution.values()),
-                    }
-                ).set_index('Option')
-                st.bar_chart(dist_df)
 
             # Add analysis for predefined examples
             if source_mode == "Predefined Examples" and st.session_state.get('sc_generated_mcqs'):
@@ -5393,7 +5353,7 @@ def main():
     if page == "Recall Test":
         render_snippet_to_document_page(api_key, model_choice, provider)
     elif page == "Single Choice Detection":
-        render_single_choice_detection_page(api_key, model_choice, provider)
+        render_sc_detection(api_key, model_choice, provider)
     elif page == "Unlearning Detection Test":
         render_unlearning_detection_page(api_key, model_choice, provider)
     elif page == "Persuasive Jailbreak Test":
