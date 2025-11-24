@@ -1007,7 +1007,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 height=150,
                 placeholder="Enter the input snippet (e.g., a previous sentence, a continuation, or an excerpt). The role of this field depends on the selected prompt type.",
                 label_visibility="collapsed",
-                key="text_input_text1_widget"
+                key=f"text_input_text1_widget_{prompt_type}"
             )
             st.session_state['text_custom_input_text1'] = text1
         with col2:
@@ -1018,7 +1018,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 height=150,
                 placeholder="Enter the ground truth text or expected target to compare against (e.g., the known reference or target continuation). Leave blank if not applicable.",
                 label_visibility="collapsed",
-                key="text_input_text2_widget"
+                key=f"text_input_text2_widget_{prompt_type}"
             )
             st.session_state['text_custom_input_text2'] = text2
     else:
@@ -1031,7 +1031,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 value=example["input"],
                 height=150,
                 label_visibility="collapsed",
-                key="text_input_text1_example_widget"
+                key=f"text_input_text1_example_widget_{input_method}_{prompt_type}"
             )
         with col2:
             st.markdown("**Ground Truth**")
@@ -1040,7 +1040,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 value=example["ground_truth"],
                 height=150,
                 label_visibility="collapsed",
-                key="text_input_text2_example_widget"
+                key=f"text_input_text2_example_widget_{input_method}_{prompt_type}"
             )
 
     input_word_count = len(text1.split()) if text1 else 0
