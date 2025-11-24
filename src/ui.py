@@ -1382,7 +1382,6 @@ def render_sidebar():
             "Go to",
             [
                 "Recall Test",
-                "Single Choice Detection",
                 "Persuasive Jailbreak Test",
                 "Unlearning Detection Test",
                 "Legal Cases Display",
@@ -5481,8 +5480,6 @@ def main():
 
     if page == "Recall Test":
         render_snippet_to_document_page(api_key, model_choice, provider)
-    elif page == "Single Choice Detection":
-        render_sc_detection(api_key, model_choice, provider)
     elif page == "Unlearning Detection Test":
         render_unlearning_detection_page(api_key, model_choice, provider)
     elif page == "Persuasive Jailbreak Test":
