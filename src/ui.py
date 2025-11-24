@@ -1743,7 +1743,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         )
         st.session_state['text_top_p'] = top_p
 
-    run_analysis = st.button("🚀 Run: Text Memorization Detection", key="run_snippet_analysis_button", use_container_width=True)
+    run_analysis = st.button("🚀 Run: Text Memorization Detection", key="run_snippet_analysis_button", width='stretch')
 
     if run_analysis:
         # Clear previous results when starting a new analysis
@@ -2479,7 +2479,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
         load_literature = st.button(
             "📖 Load Literature Q/A Pairs",
             key="qa_load_literature_button",
-            use_container_width=True,
+            width='stretch',
         )
 
         if load_literature:
@@ -2631,7 +2631,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
             "🚀 Run: Generate Q/A Pairs",
             key="generate_qa_button",
             type="primary",
-            use_container_width=True
+            width='stretch'
         )
         
         # Generate Q/A pairs
@@ -2757,7 +2757,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
         "🧪 Run: Knowledge Memorization Evaluation",
         key="run_knowledge_eval_button",
         type="primary",
-        use_container_width=True
+        width='stretch'
     )
     
     if run_evaluation:
@@ -3036,7 +3036,7 @@ def render_sc_detection(api_key, model_choice, provider):
                         "BookTection": "Book excerpts (label=1: appeared in training, label=0: not seen)"
                     }
                     st.caption(f"📖 {dataset_info[selected_dataset]}")
-                    st.dataframe(df, use_container_width=True)
+                    st.dataframe(df, width='stretch')
                     st.caption(f"Total rows: {len(df)} | Columns: {', '.join(df.columns.tolist())}")
                 else:
                     st.error(f"CSV file not found: {csv_path}")
@@ -3047,7 +3047,7 @@ def render_sc_detection(api_key, model_choice, provider):
         load_examples = st.button(
             "📥 Load Selected Questions",
             key="sc_load_examples_button",
-            use_container_width=True,
+            width='stretch',
         )
         
         if load_examples:
@@ -3174,7 +3174,7 @@ def render_sc_detection(api_key, model_choice, provider):
         generate_questions = st.button(
             "🚀 Generate single-choice questions",
             key="sc_generate_mcq_button",
-            use_container_width=True,
+            width='stretch',
         )
     else:
         # For predefined examples, skip generation and go directly to evaluation
@@ -3317,7 +3317,7 @@ def render_sc_detection(api_key, model_choice, provider):
     run_single_choice_eval = st.button(
         "🧪 Run Single-Choice Evaluation",
         key="sc_run_eval_button",
-        use_container_width=True,
+        width='stretch',
     )
 
     if run_single_choice_eval:
@@ -3639,7 +3639,7 @@ def render_sleek_attack_detection(api_key, model_choice, provider):
         "🔍 Run: Step-by-step Leaking and Extraction Evaluation",
         key="run_sleek_button",
         type="primary",
-        use_container_width=True
+        width='stretch'
     )
     
     if run_sleek:
@@ -3744,7 +3744,7 @@ def render_sleek_attack_detection(api_key, model_choice, provider):
                 'Leaked Questions': leaked_questions,
                 'Leakage Rate': leakage_rates
             })
-            st.dataframe(category_df, use_container_width=True)
+            st.dataframe(category_df, width='stretch')
             
             # Interpretation by category
             st.markdown("**Category Interpretation:**")
@@ -5843,7 +5843,7 @@ def render_sleek_attack_page(api_key, model_choice, provider):
         "🚀 Run SLEEK Attack",
         key="run_sleek_button",
         type="primary",
-        use_container_width=True
+        width='stretch'
     )
     
     if run_sleek:
