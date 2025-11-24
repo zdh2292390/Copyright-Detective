@@ -660,7 +660,7 @@ def render_muse_examples_panel() -> None:
     title_column = next((column for column in active_meta_columns if "title" in column.lower()), None)
     if title_column:
         title_options = ["All"] + sorted({str(value) for value in df[title_column].dropna().unique().tolist()})
-        selected_title = st.selectbox("Filter by title", title_options, index=0)
+        selected_title = st.selectbox("Filter by title", title_options, index=0, key="muse_title_filter_selectbox")
         if selected_title != "All":
             df = df[df[title_column].astype(str) == selected_title]
 
@@ -672,8 +672,8 @@ def render_muse_examples_panel() -> None:
         return
 
     max_examples = min(10, total_rows)
-    sample_count = st.slider("Examples to preview", 1, max_examples, min(3, max_examples))
-    sample_mode = st.radio("Sampling", ("Top", "Random"), horizontal=True)
+    sample_count = st.slider("Examples to preview", 1, max_examples, min(3, max_examples), key="muse_sample_count_slider")
+    sample_mode = st.radio("Sampling", ("Top", "Random"), horizontal=True, key="muse_sample_mode_radio")
 
     sample_state_key = QA_MUSE_SAMPLE_KEY_PREFIX
     if sample_mode == "Random":
@@ -763,21 +763,22 @@ def render_sidebar():
         # API Configuration Accordion
         with st.expander("🔑 API Configuration", expanded=True):
             st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
-            openai_api_key = st.text_input("OpenAI API Key", type="password", help="Enter your OpenAI API key")
+            openai_api_key = st.text_input("OpenAI API Key", type="password", help="Enter your OpenAI API key", key="sidebar_openai_api_key")
             openrouter_api_key = st.text_input(
                 "OpenRouter API Key",
                 type="password",
                 help="Leave blank to use the built-in default key (for quick testing)",
-                placeholder="Will fallback automatically if empty"
+                placeholder="Will fallback automatically if empty",
+                key="sidebar_openrouter_api_key"
             )
-            anthropic_api_key = st.text_input("Anthropic API Key", type="password", help="Enter your Anthropic API key")
-            google_api_key = st.text_input("Google Gemini API Key", type="password", help="Enter your Google Gemini API key")
+            anthropic_api_key = st.text_input("Anthropic API Key", type="password", help="Enter your Anthropic API key", key="sidebar_anthropic_api_key")
+            google_api_key = st.text_input("Google Gemini API Key", type="password", help="Enter your Google Gemini API key", key="sidebar_google_api_key")
             st.markdown('</div>', unsafe_allow_html=True)
 
         # Model Selection Accordion
         with st.expander("👾 Model Selection", expanded=True):
             st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
-            provider = st.selectbox("Select Provider", ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"], help="Choose your AI provider")
+            provider = st.selectbox("Select Provider", ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"], help="Choose your AI provider", key="sidebar_provider_selectbox")
 
             model_choice = None
             if provider == "OpenAI":
@@ -790,6 +791,7 @@ def render_sidebar():
                         "gpt-4o-mini",
                     ],
                     help="Select an OpenAI model. Perplexity probes work best with instruct-style or mini models that support logprobs.",
+                    key="sidebar_openai_model_selectbox",
                 )
                 api_key = openai_api_key
             elif provider == "OpenRouter":
@@ -809,13 +811,14 @@ def render_sidebar():
                         "google/gemini-1.5-flash:free",
                         "meta-llama/llama-3.2-3b-instruct:free",
                     ],
+                    key="sidebar_openrouter_model_selectbox",
                 )
                 api_key = openrouter_api_key.strip() if openrouter_api_key.strip() else DEFAULT_OPENROUTER_KEY
             elif provider == "Anthropic":
-                model_choice = st.selectbox("Choose a model", ["claude-3-haiku-20240307", "claude-3-sonnet-20240229", "claude-3-opus-20240229"])
+                model_choice = st.selectbox("Choose a model", ["claude-3-haiku-20240307", "claude-3-sonnet-20240229", "claude-3-opus-20240229"], key="sidebar_anthropic_model_selectbox")
                 api_key = anthropic_api_key
             elif provider == "Google Gemini":
-                model_choice = st.selectbox("Choose a model", ["gemini-1.5-flash", "gemini-1.5-pro"])
+                model_choice = st.selectbox("Choose a model", ["gemini-1.5-flash", "gemini-1.5-pro"], key="sidebar_google_model_selectbox")
                 api_key = google_api_key
             st.markdown('</div>', unsafe_allow_html=True)
 
@@ -917,6 +920,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         prompt_type_options,
         index=min(st.session_state['text_prompt_type_index'], len(prompt_type_options) - 1),
         help="Select the recall mode to guide the Text Memorization Detection. (Choose only; typing custom values is not allowed.)",
+        key="text_prompt_type_selectbox",
     )
     st.session_state['text_prompt_type_index'] = prompt_type_options.index(prompt_type)
 
@@ -951,7 +955,8 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         "Choose an Input Type:",
         input_options,
         index=min(st.session_state['text_input_method_index'], len(input_options) - 1),
-        help="Select custom input or choose from examples."
+        help="Select custom input or choose from examples.",
+        key="text_input_method_selectbox",
     )
     st.session_state['text_input_method_index'] = input_options.index(input_method)
 
@@ -1164,6 +1169,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             value=st.session_state['text_inference_runs'],
             step=1,
             help="Specify how many times to run the inference for statistical analysis.",
+            key="text_inference_runs_input",
         )
         st.session_state['text_inference_runs'] = inference_runs
     with col2:
@@ -1174,6 +1180,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             value=st.session_state['text_temperature'],
             step=0.01,
             help="Controls randomness. Lower values make the model more deterministic.",
+            key="text_temperature_slider",
         )
         st.session_state['text_temperature'] = temperature
     with col3:
@@ -1184,6 +1191,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             value=st.session_state['text_top_p'],
             step=0.01,
             help="Controls diversity via nucleus sampling. 0.5 means half of all likelihood-weighted options are considered.",
+            key="text_top_p_slider",
         )
         st.session_state['text_top_p'] = top_p
 
@@ -3465,7 +3473,8 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
             max_value=2000,
             value=st.session_state['pdf_chunk_size'],
             step=25,
-            help='Number of words per text chunk'
+            help='Number of words per text chunk',
+            key='pdf_chunk_size_input'
         )
         st.session_state['pdf_chunk_size'] = chunk_size
         st.caption("Chunk size must be at least 50 words to run document analysis.")
@@ -5002,6 +5011,7 @@ def render_jailbreak_persuasion_probe_section(api_key, model_choice, provider):
             "Tom and Jerry Game",
         ],
         help="Select a technique to encourage the model to generate a continuation.",
+        key="persuasion_strategy_selectbox",
     )
 
     # Explanations for strategies
