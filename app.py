@@ -41,8 +41,6 @@ if page == "Recall Test":
     render_snippet_to_document_page(api_key, model_choice, provider)
 elif page == "Unlearning Detection Test":
     render_unlearning_detection_page(api_key, model_choice, provider)
-elif page == "Persuasive Jailbreak Test":
-    render_adversarial_persuasion_page(api_key, model_choice, provider)
 elif page == "Legal Cases Display":
     render_legal_case_display_page()
 

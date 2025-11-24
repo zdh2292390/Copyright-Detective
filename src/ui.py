@@ -36,7 +36,7 @@ from src.direct_recall import (
 from src.config import DEFAULT_OPENROUTER_KEY
 
 import matplotlib.pyplot as plt
-from src.persuasive_jailbreak import (
+from src.direct_recall.persuasive_jailbreak import (
     run_persuasion_probe,
     get_persuasion_template,
     get_persuasion_prompt,
@@ -1382,7 +1382,6 @@ def render_sidebar():
             "Go to",
             [
                 "Recall Test",
-                "Persuasive Jailbreak Test",
                 "Unlearning Detection Test",
                 "Legal Cases Display",
             ],
@@ -1399,10 +1398,11 @@ def render_snippet_to_document_page(api_key, model_choice, provider):
     st.markdown("### 🔎 Recall Test")
 
 
-    snippet_tab, pdf_tab, knowledge_tab = st.tabs([
+    snippet_tab, pdf_tab, knowledge_tab, jailbreak_tab = st.tabs([
         "Text Memorization Detection",
         "Document Memorization Detection",
         "Knowledge Memorization Detection",
+        "Adversarial Persuasive Prompting Detection",
     ])
 
     with snippet_tab:
@@ -1413,6 +1413,9 @@ def render_snippet_to_document_page(api_key, model_choice, provider):
 
     with knowledge_tab:
         render_knowledge_memorization_page(api_key, model_choice, provider)
+
+    with jailbreak_tab:
+        render_adversarial_persuasion_page(api_key, model_choice, provider)
 
 
 def render_text_analysis_page(api_key, model_choice, provider, *, show_page_header: bool = True):
@@ -4105,10 +4108,31 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     if 'adv_stage2_top_p' not in st.session_state:
         st.session_state['adv_stage2_top_p'] = 0.95
 
-    st.markdown("### 🔓 Persuasive Jailbreak Test")
+    # Get available strategies and baseline prompts
     strategies = list_persuasion_strategies()
     baseline_prompts = list_baseline_prompts()
-    strategy_count = len(strategies)
+
+    # Page header with clear cache button
+    header_col, button_col = st.columns([4, 1])
+    with header_col:
+        st.markdown('<h4 class="section-header">🔓 Adversarial Persuasive Prompting Detection</h4>', unsafe_allow_html=True)
+        st.markdown(
+            "An evaluation framework that uses persuasion techniques to assess copyright infringement risks in LLMs."
+        )
+    with button_col:
+        if st.button("🗑️ Clear Cache", key="clear_stage1_cache_top", help="Remove cached Step 1/2 results and reference excerpts"):
+            st.session_state.pop("generated_persuasion_mutations", None)
+            st.session_state.pop("stage1_reference_texts", None)
+            st.session_state.pop("stage1_results_prompt_selector", None)
+            st.session_state.pop("last_stage1_prompt", None)
+            st.session_state.pop("stage2_results", None)
+            rerun_fn = getattr(st, "rerun", None)
+            if callable(rerun_fn):
+                rerun_fn()
+            else:
+                experimental_rerun = getattr(st, "experimental_rerun", None)
+                if callable(experimental_rerun):
+                    experimental_rerun()
 
     def _slugify_filename(value: str) -> str:
         safe = "".join(ch.lower() if ch.isalnum() else "_" for ch in value)
@@ -4143,26 +4167,9 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         return [text for _, text in scored[:limit]]
 
     st.markdown(
-        "An evaluation framework that uses persuasion techniques to assess copyright infringement risks in LLMs."
-    )
-
-    if not strategies:
-        st.error("No persuasion strategies were found. Ensure the persuasion templates are available.")
-        return
-
-    if "last_mutated_text" not in st.session_state:
-        st.session_state["last_mutated_text"] = ""
-    if "last_core_intention" not in st.session_state:
-        st.session_state["last_core_intention"] = ""
-
-    adversarial_prompt = st.session_state.get("adversarial_prompt", "")
-    reference_text = st.session_state.get("reference_text", "")
-    reference_excerpt = reference_text.strip() if reference_text else ""
-
-    st.markdown(
         """
         <div class=\"analysis-callout\">
-            <div class=\"analysis-callout__title\">How the Persuasive Jailbreak Test works</div>
+            <div class=\"analysis-callout__title\">How the Adversarial Persuasive Prompting Detection works</div>
             <ul class=\"analysis-callout__list\">
                 <li><strong>Zero-shot mutation</strong> — Generate baseline adversarial prompt variations and score them against your reference excerpt.</li>
                 <li><strong>Few-shot refinement</strong> — Reuse the highest-scoring Step&nbsp;1 exemplars as in-context prompts to craft stronger mutations.</li>
@@ -4185,19 +4192,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     with spacer_col:
         st.write("")
     with button_col:
-        if st.button("🗑️ Clear Cache", key="clear_stage1_cache_top", help="Remove cached Step 1/2 results and reference excerpts"):
-            st.session_state.pop("generated_persuasion_mutations", None)
-            st.session_state.pop("stage1_reference_texts", None)
-            st.session_state.pop("stage1_results_prompt_selector", None)
-            st.session_state.pop("last_stage1_prompt", None)
-            st.session_state.pop("stage2_results", None)
-            rerun_fn = getattr(st, "rerun", None)
-            if callable(rerun_fn):
-                rerun_fn()
-            else:
-                experimental_rerun = getattr(st, "experimental_rerun", None)
-                if callable(experimental_rerun):
-                    experimental_rerun()
+        st.write("")  # Empty column for alignment
 
     st.markdown(
         '<p class="analysis-step-caption">Configure your baseline adversarial prompt, select zero-shot persuasion strategies, and choose the reference excerpt for scoring.</p>',
@@ -5482,8 +5477,6 @@ def main():
         render_snippet_to_document_page(api_key, model_choice, provider)
     elif page == "Unlearning Detection Test":
         render_unlearning_detection_page(api_key, model_choice, provider)
-    elif page == "Persuasive Jailbreak Test":
-        render_adversarial_persuasion_page(api_key, model_choice, provider)
 
     # Footer (currently empty, can be customized)
     render_footer()
