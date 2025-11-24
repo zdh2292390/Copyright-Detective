@@ -2139,34 +2139,20 @@ def render_qa_based_detection(api_key, model_choice, provider):
                         st.session_state['qa_document_text_content'] = document_text
                         st.success(f"✅ Successfully generated {len(qa_pairs)} Q/A pairs!")
         
-        # Display generated Q/A pairs
+        # Display Q/A pairs (for all modes)
         if st.session_state['qa_generated_qa_pairs']:
-            st.markdown('<h4 class="section-header sm">📋 Generated Q/A Pairs</h4>', unsafe_allow_html=True)
-            st.caption(f"Generated {len(st.session_state['qa_generated_qa_pairs'])} question-answer pairs from the document.")
+            section_title = "📚 Predefined Q/A Pairs" if qa_source_mode == "Predefined Examples" else "📋 Generated Q/A Pairs"
+            caption_text = f"Loaded {len(st.session_state['qa_generated_qa_pairs'])} predefined question-answer pairs from literature." if qa_source_mode == "Predefined Examples" else f"Generated {len(st.session_state['qa_generated_qa_pairs'])} question-answer pairs from the document."
+            
+            st.markdown(f'<h4 class="section-header sm">{section_title}</h4>', unsafe_allow_html=True)
+            st.caption(caption_text)
 
             for idx, qa_pair in enumerate(st.session_state['qa_generated_qa_pairs'], 1):
                 with st.expander(f"Q/A Pair {idx}", expanded=False):
                     st.markdown("**Question:**")
                     st.write(qa_pair['question'])
                     st.markdown("**Answer:**")
-                    st.write(qa_pair['answer'])
-    
-    # Display Q/A pairs (for all modes)
-    if st.session_state['qa_generated_qa_pairs']:
-        section_title = "📚 Predefined Q/A Pairs" if qa_source_mode == "Predefined Examples" else "📋 Generated Q/A Pairs"
-        caption_text = f"Loaded {len(st.session_state['qa_generated_qa_pairs'])} predefined question-answer pairs from literature." if qa_source_mode == "Predefined Examples" else f"Generated {len(st.session_state['qa_generated_qa_pairs'])} question-answer pairs from the document."
-        
-        st.markdown(f'<h4 class="section-header sm">{section_title}</h4>', unsafe_allow_html=True)
-        st.caption(caption_text)
-
-        for idx, qa_pair in enumerate(st.session_state['qa_generated_qa_pairs'], 1):
-            with st.expander(f"Q/A Pair {idx}", expanded=False):
-                st.markdown("**Question:**")
-                st.write(qa_pair['question'])
-                st.markdown("**Answer:**")
-                st.write(qa_pair['answer'])
-    
-    # Step 4: Evaluate with Second LLM (dynamic step numbering)
+                    st.write(qa_pair['answer'])    # Step 4: Evaluate with Second LLM (dynamic step numbering)
     step_number = "3" if qa_source_mode == "Predefined Examples" else "4"
     st.markdown(f'<p class="analysis-step-label">Step {step_number} · Evaluate target model</p>', unsafe_allow_html=True)
  
