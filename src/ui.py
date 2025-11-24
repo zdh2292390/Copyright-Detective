@@ -2230,6 +2230,7 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
             <ul class="analysis-callout__list">
                 <li><strong>Open-ended Question:</strong> Generate open-ended questions and evaluate how well the target model answers them.</li>
                 <li><strong>Single-choice Question:</strong> Design single-choice questions where the options include verbatim text and nearly identical but distinct alternatives. Observing the model's selection bias helps infer prior exposure to the source text.</li>
+                <li><strong>Step-by-step Leaking and Extraction:</strong> Uses systematic reasoning to probe residual knowledge through categorized questions. Generates auxiliary reasoning, extracts targeted knowledge points, and creates specific questions to assess knowledge leakage across direct, indirect, implied, and irrelevant categories.</li>
             </ul>
         </div>
         """,
@@ -2240,9 +2241,9 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
     
     detection_mode = st.radio(
         "Choose your detection method:",
-    ["Open-ended Question", "Single-choice Question"],
+    ["Open-ended Question", "Single-choice Question", "Step-by-step Leaking and Extraction"],
         index=0,
-    help="Open-ended Question mode generates open-ended questions. The Single-choice Question mode designs single-choice questions where the options are closely matched but vary in key details; observing the model's selection bias helps infer prior exposure to the source text.",
+    help="Open-ended Question mode generates open-ended questions. The Single-choice Question mode designs single-choice questions where the options are closely matched but vary in key details; observing the model's selection bias helps infer prior exposure to the source text. Step-by-step Leaking and Extraction uses step-by-step reasoning to probe residual knowledge through categorized questions.",
         horizontal=True,
         key="knowledge_detection_mode"
     )
@@ -2250,8 +2251,10 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
     
     if detection_mode == "Open-ended Question":
         render_qa_based_detection(api_key, model_choice, provider)
-    else:
+    elif detection_mode == "Single-choice Question":
         render_sc_detection(api_key, model_choice, provider)
+    elif detection_mode == "Step-by-step Leaking and Extraction":
+        render_sleek_attack_detection(api_key, model_choice, provider)
 
 
 def render_qa_based_detection(api_key, model_choice, provider):
@@ -3525,6 +3528,281 @@ def render_sc_detection(api_key, model_choice, provider):
                 if st.session_state['sc_document_text']:
                     with st.expander("📄 Source excerpt", expanded=False):
                         st.write(st.session_state['sc_document_text'][:5000])
+
+
+def render_sleek_attack_detection(api_key, model_choice, provider):
+    """Render Step-by-step Leaking and Extraction knowledge memorization detection."""
+    
+    # Initialize session state for Step-by-step Leaking and Extraction
+    if 'sleek_source_mode' not in st.session_state:
+        st.session_state['sleek_source_mode'] = 'Input Text'
+    if 'sleek_document_text' not in st.session_state:
+        st.session_state['sleek_document_text'] = ''
+    if 'sleek_input_text' not in st.session_state:
+        st.session_state['sleek_input_text'] = ''
+    if 'sleek_evaluation_results' not in st.session_state:
+        st.session_state['sleek_evaluation_results'] = None
+    if 'sleek_temperature' not in st.session_state:
+        st.session_state['sleek_temperature'] = 0.7
+    if 'sleek_top_p' not in st.session_state:
+        st.session_state['sleek_top_p'] = 0.9
+    
+    st.markdown(
+        """
+        <div class="analysis-callout">
+            <div class="analysis-callout__title">Step-by-step Leaking and Extraction Detection</div>
+            <ul class="analysis-callout__list">
+                <li>Provide source text through direct input or document upload.</li>
+                <li>Generate auxiliary reasoning and extract targeted knowledge points.</li>
+                <li>Create specific questions to probe residual knowledge in the target model.</li>
+                <li>Execute the attack and assess knowledge leakage through systematic evaluation.</li>
+            </ul>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    
+    # Step 1: Provide source content
+    st.markdown('<p class="analysis-step-label">Step 1 · Provide source content</p>', unsafe_allow_html=True)
+    
+    source_mode = st.radio(
+        "Where should the knowledge come from?",
+        ["Input Text", "Upload Document"],
+        horizontal=True,
+        key="sleek_source_mode",
+        help="Choose 'Input Text' for custom input or 'Upload Document' for PDF/TXT files.",
+    )
+    
+    document_text = ""
+    
+    if source_mode == "Input Text":
+        st.markdown("**📝 Input your text**")
+        st.text_area(
+            "Enter your text",
+            height=200,
+            placeholder="Paste or type the text you want to test for knowledge leakage...",
+            help="Provide the text content you'd like to probe for residual knowledge.",
+            key="sleek_input_text",
+        )
+        if st.session_state.get("sleek_input_text", "").strip():
+            document_text = st.session_state["sleek_input_text"].strip()
+            st.caption(f"Text length: {len(document_text)} characters · {len(document_text.split())} words")
+    else:  # Upload Document
+        st.markdown("**📎 Upload your document**")
+        uploaded_file = st.file_uploader(
+            "Choose a PDF or TXT file:",
+            type=["pdf", "txt"],
+            help="Select a PDF or UTF-8 TXT document to extract knowledge from",
+            key="sleek_document_upload"
+        )
+        if uploaded_file:
+            try:
+                from src.direct_recall.pdf_utils import extract_text_from_document
+                document_text = extract_text_from_document(uploaded_file)
+                if isinstance(document_text, str) and document_text.startswith("Error"):
+                    st.error(f"❌ {document_text}")
+                    document_text = ""
+                else:
+                    st.caption(f"Document length: {len(document_text)} characters · {len(document_text.split())} words")
+            except Exception as e:
+                st.error(f"❌ Failed to extract text from document: {e}")
+                document_text = ""
+    
+    # Step 2: Configure evaluation parameters
+    st.markdown('<p class="analysis-step-label">Step 2 · Configure evaluation parameters</p>', unsafe_allow_html=True)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.slider(
+            "Temperature",
+            min_value=0.0,
+            max_value=1.0,
+            value=st.session_state['sleek_temperature'],
+            step=0.05,
+            help="Controls randomness in LLM responses. Lower values = more deterministic.",
+            key="sleek_temperature_slider"
+        )
+    
+    with col2:
+        st.slider(
+            "Top-P",
+            min_value=0.0,
+            max_value=1.0,
+            value=st.session_state['sleek_top_p'],
+            step=0.05,
+            help="Nucleus sampling parameter for controlling diversity.",
+            key="sleek_top_p_slider"
+        )
+    
+    # Run evaluation button
+    run_sleek = st.button(
+        "🔍 Run: Step-by-step Leaking and Extraction Evaluation",
+        key="run_sleek_button",
+        type="primary",
+        use_container_width=True
+    )
+    
+    if run_sleek:
+        temperature = st.session_state.get('sleek_temperature_slider', 0.7)
+        top_p = st.session_state.get('sleek_top_p_slider', 0.9)
+        
+        if not document_text:
+            st.warning("⚠️ Please provide source text first.")
+        elif not api_key or not api_key.strip():
+            st.error(f"⚠️ Please configure the API key for **{provider}** in the sidebar before running evaluation.")
+        elif not model_choice:
+            st.error("⚠️ Please select a model in the sidebar before running evaluation.")
+        else:
+            try:
+                from src.direct_recall.sleek_attack import run_sleek_evaluation
+                
+                with st.spinner("🔄 Running Step-by-step Leaking and Extraction evaluation... This may take several minutes."):
+                    results = run_sleek_evaluation(
+                        document_text=document_text,
+                        api_key=api_key,
+                        model_name=model_choice,
+                        provider=provider,
+                        temperature=temperature,
+                        top_p=top_p
+                    )
+                
+                st.session_state['sleek_evaluation_results'] = results
+                st.success("✅ Step-by-step Leaking and Extraction evaluation completed!")
+                
+            except Exception as e:
+                st.error(f"❌ Step-by-step Leaking and Extraction evaluation failed: {str(e)}")
+                st.session_state['sleek_evaluation_results'] = None
+    
+    # Display results
+    if st.session_state.get('sleek_evaluation_results'):
+        results = st.session_state['sleek_evaluation_results']
+        
+        # Summary metrics
+        st.markdown("#### 📊 Evaluation Summary")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Questions", results.get('total_questions', 0))
+        with col2:
+            st.metric("Questions with Leakage", results.get('questions_with_leakage', 0))
+        with col3:
+            leakage_rate = results.get('leakage_rate', 0)
+            st.metric("Leakage Rate", f"{leakage_rate:.1%}")
+        
+        # Summary info
+        summary = results.get('summary', {})
+        st.caption(f"Model: {summary.get('model', 'N/A')} | Provider: {summary.get('provider', 'N/A')} | Document Length: {summary.get('document_length', 0)} chars")
+        
+        # Detailed results by question
+        st.markdown("#### 📝 Detailed Results by Question")
+        
+        questions = results.get('questions', [])
+        if questions:
+            for i, question_data in enumerate(questions, 1):
+                with st.expander(f"Question {i}: {question_data.get('question', 'N/A')[:80]}...", expanded=(i == 1)):
+                    st.markdown(f"**Category:** {question_data.get('category', 'N/A')}")
+                    st.markdown(f"**Knowledge Point:** {question_data.get('knowledge_point', 'N/A')}")
+                    
+                    response = question_data.get('response', '')
+                    if response:
+                        st.markdown("**Model Response:**")
+                        st.write(response)
+                    
+                    leakage_score = question_data.get('leakage_score', 0)
+                    has_leakage = question_data.get('has_leakage', False)
+                    
+                    if has_leakage:
+                        st.error(f"⚠️ **Leakage Detected** (Score: {leakage_score:.2f})")
+                    else:
+                        st.success(f"✅ **No Leakage** (Score: {leakage_score:.2f})")
+        else:
+            st.info("No questions were generated during the evaluation.")
+        
+        # Category breakdown analysis
+        category_breakdown = results.get('category_breakdown', {})
+        if category_breakdown:
+            st.markdown("#### 📊 Category Analysis")
+            st.caption("Breakdown of leakage detection by question category")
+            
+            categories = []
+            total_questions = []
+            leaked_questions = []
+            leakage_rates = []
+            
+            for cat, stats in category_breakdown.items():
+                categories.append(cat)
+                total_questions.append(stats.get('total', 0))
+                leaked_questions.append(stats.get('leaked', 0))
+                rate = stats.get('leaked', 0) / stats.get('total', 1) * 100
+                leakage_rates.append(f"{rate:.1f}%")
+            
+            # Create a summary table
+            import pandas as pd
+            category_df = pd.DataFrame({
+                'Category': categories,
+                'Total Questions': total_questions,
+                'Leaked Questions': leaked_questions,
+                'Leakage Rate': leakage_rates
+            })
+            st.dataframe(category_df, use_container_width=True)
+            
+            # Interpretation by category
+            st.markdown("**Category Interpretation:**")
+            for cat in categories:
+                stats = category_breakdown[cat]
+                total = stats.get('total', 0)
+                leaked = stats.get('leaked', 0)
+                rate = leaked / total if total > 0 else 0
+                
+                if cat == "Direct":
+                    if rate > 0.5:
+                        st.error(f"• **Direct Questions**: High leakage ({rate:.1%}) - Model directly reveals forgotten knowledge")
+                    elif rate > 0.2:
+                        st.warning(f"• **Direct Questions**: Moderate leakage ({rate:.1%}) - Some direct knowledge exposure")
+                    else:
+                        st.success(f"• **Direct Questions**: Low leakage ({rate:.1%}) - Effective forgetting of direct facts")
+                        
+                elif cat == "Indirect":
+                    if rate > 0.4:
+                        st.error(f"• **Indirect Questions**: High leakage ({rate:.1%}) - Model shows associative knowledge retention")
+                    elif rate > 0.2:
+                        st.warning(f"• **Indirect Questions**: Moderate leakage ({rate:.1%}) - Some associative connections remain")
+                    else:
+                        st.success(f"• **Indirect Questions**: Low leakage ({rate:.1%}) - Limited associative knowledge")
+                        
+                elif cat == "Implied":
+                    if rate > 0.6:
+                        st.error(f"• **Implied Questions**: High leakage ({rate:.1%}) - Model can infer forgotten knowledge")
+                    elif rate > 0.3:
+                        st.warning(f"• **Implied Questions**: Moderate leakage ({rate:.1%}) - Some logical inference capability")
+                    else:
+                        st.success(f"• **Implied Questions**: Low leakage ({rate:.1%}) - Limited inference from remaining knowledge")
+                        
+                elif cat == "Irrelevant":
+                    if rate > 0.1:
+                        st.warning(f"• **Irrelevant Questions**: Unexpected leakage ({rate:.1%}) - Control questions show false positives")
+                    else:
+                        st.success(f"• **Irrelevant Questions**: Clean control ({rate:.1%}) - No false positive detections")
+        
+        # Interpretation
+        st.markdown("#### 🔍 Overall Interpretation")
+        leakage_rate = results.get('leakage_rate', 0)
+        
+        if leakage_rate > 0.5:
+            st.error(
+                "⚠️ **High Knowledge Leakage Detected**: The model shows significant residual knowledge "
+                "about the source content, suggesting incomplete unlearning or memorization."
+            )
+        elif leakage_rate > 0.2:
+            st.warning(
+                "⚠️ **Moderate Knowledge Leakage**: The model shows some residual knowledge "
+                "that may indicate partial memorization of the content."
+            )
+        else:
+            st.success(
+                "✅ **Low Knowledge Leakage**: The model appears to have limited or no residual knowledge "
+                "about the specific content provided."
+            )
 
 
 def render_legal_case_display_page():
@@ -5463,6 +5741,189 @@ def render_jailbreak_persuasion_probe_section(api_key, model_choice, provider):
                         metrics=metrics_map,
                     )
 
+def render_sleek_attack_page(api_key, model_choice, provider):
+    """Render the SLEEK Attack detection page."""
+    
+    # Initialize session state
+    if 'sleek_document_text' not in st.session_state:
+        st.session_state['sleek_document_text'] = ""
+    if 'sleek_evaluation_results' not in st.session_state:
+        st.session_state['sleek_evaluation_results'] = None
+    
+    st.markdown("### 🔍 SLEEK Attack")
+    st.markdown(
+        "Step-by-step Leaking and Extraction of 'Erased' Knowledge - A black-box attack framework for detecting residual knowledge in unlearned LLMs."
+    )
+    
+    st.markdown(
+        """
+        <div class="analysis-callout">
+            <div class="analysis-callout__title">How SLEEK Attack works</div>
+            <ul class="analysis-callout__list">
+                <li><strong>Step 1:</strong> Generate auxiliary LLM responses for step-by-step reasoning</li>
+                <li><strong>Step 2:</strong> Extract knowledge points and generate targeted questions</li>
+                <li><strong>Step 3:</strong> Categorize questions by knowledge type</li>
+                <li><strong>Step 4:</strong> Execute attack and evaluate leakage</li>
+            </ul>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    
+    # Step 1: Provide source content
+    st.markdown('<p class="analysis-step-label">Step 1 · Provide source content</p>', unsafe_allow_html=True)
+    
+    # Source mode selection
+    source_mode = st.radio(
+        "Where should the knowledge come from?",
+        ["Input Text", "Upload Document"],
+        horizontal=True,
+        key="sleek_source_mode",
+        help="Choose 'Input Text' for custom input or 'Upload Document' for PDF/TXT files.",
+    )
+    
+    document_text = ""
+    
+    if source_mode == "Input Text":
+        st.markdown("**📝 Input your text**")
+        st.text_area(
+            "Enter your text",
+            height=200,
+            placeholder="Paste or type the text content you want to test for knowledge leakage...",
+            help="Provide the text content that may have been 'unlearned' from the target model.",
+            key="sleek_input_text",
+        )
+        if st.session_state.get("sleek_input_text", "").strip():
+            document_text = st.session_state["sleek_input_text"].strip()
+            st.caption(f"Text length: {len(document_text)} characters · {len(document_text.split())} words")
+    else:
+        st.markdown("**📎 Upload your document**")
+        uploaded_document = st.file_uploader(
+            "Choose a PDF or TXT file:",
+            type=["pdf", "txt"],
+            help="Select a PDF or UTF-8 TXT document to extract knowledge from",
+            key="sleek_document_upload"
+        )
+        if uploaded_document:
+            try:
+                from src.direct_recall.pdf_utils import extract_text_from_document
+                document_text = extract_text_from_document(uploaded_document)
+                st.caption(f"Extracted text length: {len(document_text)} characters · {len(document_text.split())} words")
+            except Exception as e:
+                st.error(f"Error extracting text from document: {e}")
+    
+    # Step 2: Configure evaluation
+    st.markdown('<p class="analysis-step-label">Step 2 · Configure evaluation</p>', unsafe_allow_html=True)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.slider(
+            "Temperature",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.7,
+            step=0.05,
+            help="Controls randomness in LLM responses during the attack.",
+            key="sleek_temperature"
+        )
+    
+    with col2:
+        st.slider(
+            "Top-P",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.9,
+            step=0.05,
+            help="Nucleus sampling parameter for controlling diversity.",
+            key="sleek_top_p"
+        )
+    
+    # Run SLEEK Attack button
+    run_sleek = st.button(
+        "🚀 Run SLEEK Attack",
+        key="run_sleek_button",
+        type="primary",
+        use_container_width=True
+    )
+    
+    if run_sleek:
+        if not document_text:
+            st.warning("⚠️ Please provide source content first.")
+        elif not api_key or not api_key.strip():
+            st.error(f"⚠️ Please configure the API key for **{provider}** in the sidebar.")
+        elif not model_choice:
+            st.error("⚠️ Please select a model in the sidebar.")
+        else:
+            temperature = st.session_state.get('sleek_temperature', 0.7)
+            top_p = st.session_state.get('sleek_top_p', 0.9)
+            
+            with st.spinner("🔍 Running SLEEK Attack evaluation..."):
+                try:
+                    results = run_sleek_evaluation(
+                        document_text=document_text,
+                        api_key=api_key,
+                        model_name=model_choice,
+                        provider=provider,
+                        temperature=temperature,
+                        top_p=top_p
+                    )
+                    
+                    st.session_state['sleek_evaluation_results'] = results
+                    st.success("✅ SLEEK Attack evaluation completed!")
+                    
+                except Exception as e:
+                    st.error(f"❌ SLEEK Attack failed: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
+    
+    # Display results
+    if st.session_state.get('sleek_evaluation_results'):
+        results = st.session_state['sleek_evaluation_results']
+        
+        st.markdown("#### 📊 SLEEK Attack Results")
+        
+        # Overall metrics
+        st.markdown("**Overall Leakage Assessment:**")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Questions Generated", results.get('total_questions', 0))
+        with col2:
+            st.metric("Questions with Leakage", results.get('questions_with_leakage', 0))
+        with col3:
+            leakage_rate = results.get('leakage_rate', 0.0)
+            st.metric("Leakage Rate", f"{leakage_rate:.2%}")
+        
+        # Leakage interpretation
+        if leakage_rate > 0.5:
+            st.error("⚠️ **High Knowledge Leakage Detected**: The model shows significant residual knowledge of the content.")
+        elif leakage_rate > 0.2:
+            st.warning("⚠️ **Moderate Knowledge Leakage**: The model shows some residual knowledge that may indicate incomplete unlearning.")
+        else:
+            st.success("✅ **Low Knowledge Leakage**: The model appears to have effectively unlearned the content.")
+        
+        # Detailed results by question
+        st.markdown("**Detailed Results by Question:**")
+        
+        questions = results.get('questions', [])
+        for i, question_data in enumerate(questions, 1):
+            question = question_data.get('question', '')
+            category = question_data.get('category', 'Unknown')
+            leakage_score = question_data.get('leakage_score', 0.0)
+            has_leakage = question_data.get('has_leakage', False)
+            
+            with st.expander(f"Question {i}: {question[:60]}...", expanded=False):
+                st.markdown(f"**Category:** {category}")
+                st.markdown(f"**Leakage Score:** {leakage_score:.3f}")
+                st.markdown(f"**Leakage Detected:** {'Yes' if has_leakage else 'No'}")
+                
+                if 'response' in question_data:
+                    st.markdown("**Model Response:**")
+                    st.write(question_data['response'])
+                
+                if 'support_response' in question_data:
+                    st.markdown("**Auxiliary Reasoning:**")
+                    st.write(question_data['support_response'])
+
 def render_footer():
     """Renders a footer section."""
     # This is a placeholder for any footer content you might want to add later.
@@ -5477,6 +5938,8 @@ def main():
         render_snippet_to_document_page(api_key, model_choice, provider)
     elif page == "Unlearning Detection Test":
         render_unlearning_detection_page(api_key, model_choice, provider)
+    elif page == "Legal Cases Display":
+        render_legal_case_display_page()
 
     # Footer (currently empty, can be customized)
     render_footer()
