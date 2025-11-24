@@ -760,78 +760,78 @@ def render_header():
 def render_sidebar():
     """Render the sidebar with API configuration, model selection, and navigation."""
     with st.sidebar:
-        # API Key Management
-        st.markdown("### 🔑 API Configuration")
-        st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
-        openai_api_key = st.text_input("OpenAI API Key", type="password", help="Enter your OpenAI API key")
-        openrouter_api_key = st.text_input(
-            "OpenRouter API Key",
-            type="password",
-            help="Leave blank to use the built-in default key (for quick testing)",
-            placeholder="Will fallback automatically if empty"
-        )
-        anthropic_api_key = st.text_input("Anthropic API Key", type="password", help="Enter your Anthropic API key")
-        google_api_key = st.text_input("Google Gemini API Key", type="password", help="Enter your Google Gemini API key")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        # Model Selection
-        st.markdown("### 🤖 Model Selection")
-        st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
-        provider = st.selectbox("Select Provider", ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"], help="Choose your AI provider")
-
-        model_choice = None
-        if provider == "OpenAI":
-            model_choice = st.selectbox(
-                "Choose a model",
-                [
-                    "gpt-3.5-turbo",
-                    "gpt-3.5-turbo-instruct",
-                    "gpt-4o",
-                    "gpt-4o-mini",
-                ],
-                help="Select an OpenAI model. Perplexity probes work best with instruct-style or mini models that support logprobs.",
+        # API Configuration Accordion
+        with st.expander("🔑 API Configuration", expanded=True):
+            st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
+            openai_api_key = st.text_input("OpenAI API Key", type="password", help="Enter your OpenAI API key")
+            openrouter_api_key = st.text_input(
+                "OpenRouter API Key",
+                type="password",
+                help="Leave blank to use the built-in default key (for quick testing)",
+                placeholder="Will fallback automatically if empty"
             )
-            api_key = openai_api_key
-        elif provider == "OpenRouter":
-            model_choice = st.selectbox(
-                "Choose a model",
-                [
-                    "moonshotai/kimi-k2:free",
-                    "meta-llama/llama-3.1-405b-instruct:free",
-                    "qwen/qwen3-235b-a22b:free",
-                    "meta-llama/llama-3.3-70b-instruct:free",
-                    "mistralai/mistral-small-24b-instruct-2501:free",
-                    "qwen/qwen-2.5-72b-instruct:free",
-                    "nvidia/nemotron-nano-9b-v2:free",
-                    "microsoft/wizardlm-2-8x22b:free",
-                    "google/gemma-7b-it:free",
-                    "google/gemini-flash-1.5-8b:free",
-                    "google/gemini-1.5-flash:free",
-                    "meta-llama/llama-3.2-3b-instruct:free",
-                ],
-            )
-            api_key = openrouter_api_key.strip() if openrouter_api_key.strip() else DEFAULT_OPENROUTER_KEY
-        elif provider == "Anthropic":
-            model_choice = st.selectbox("Choose a model", ["claude-3-haiku-20240307", "claude-3-sonnet-20240229", "claude-3-opus-20240229"])
-            api_key = anthropic_api_key
-        elif provider == "Google Gemini":
-            model_choice = st.selectbox("Choose a model", ["gemini-1.5-flash", "gemini-1.5-pro"])
-            api_key = google_api_key
-        st.markdown('</div>', unsafe_allow_html=True)
+            anthropic_api_key = st.text_input("Anthropic API Key", type="password", help="Enter your Anthropic API key")
+            google_api_key = st.text_input("Google Gemini API Key", type="password", help="Enter your Google Gemini API key")
+            st.markdown('</div>', unsafe_allow_html=True)
 
-        # Detection Mode
-        st.markdown("### 🧭 Detection Mode")
-        st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
-        page = st.radio(
-            "Go to",
-            [
-                "Recall Test",
-                "Unlearning Detection Test",
-                "Legal Cases Display",
-            ],
-            label_visibility="collapsed",
-        )
-        st.markdown('</div>', unsafe_allow_html=True)
+        # Model Selection Accordion
+        with st.expander("👾 Model Selection", expanded=True):
+            st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
+            provider = st.selectbox("Select Provider", ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"], help="Choose your AI provider")
+
+            model_choice = None
+            if provider == "OpenAI":
+                model_choice = st.selectbox(
+                    "Choose a model",
+                    [
+                        "gpt-3.5-turbo",
+                        "gpt-3.5-turbo-instruct",
+                        "gpt-4o",
+                        "gpt-4o-mini",
+                    ],
+                    help="Select an OpenAI model. Perplexity probes work best with instruct-style or mini models that support logprobs.",
+                )
+                api_key = openai_api_key
+            elif provider == "OpenRouter":
+                model_choice = st.selectbox(
+                    "Choose a model",
+                    [
+                        "moonshotai/kimi-k2:free",
+                        "meta-llama/llama-3.1-405b-instruct:free",
+                        "qwen/qwen3-235b-a22b:free",
+                        "meta-llama/llama-3.3-70b-instruct:free",
+                        "mistralai/mistral-small-24b-instruct-2501:free",
+                        "qwen/qwen-2.5-72b-instruct:free",
+                        "nvidia/nemotron-nano-9b-v2:free",
+                        "microsoft/wizardlm-2-8x22b:free",
+                        "google/gemma-7b-it:free",
+                        "google/gemini-flash-1.5-8b:free",
+                        "google/gemini-1.5-flash:free",
+                        "meta-llama/llama-3.2-3b-instruct:free",
+                    ],
+                )
+                api_key = openrouter_api_key.strip() if openrouter_api_key.strip() else DEFAULT_OPENROUTER_KEY
+            elif provider == "Anthropic":
+                model_choice = st.selectbox("Choose a model", ["claude-3-haiku-20240307", "claude-3-sonnet-20240229", "claude-3-opus-20240229"])
+                api_key = anthropic_api_key
+            elif provider == "Google Gemini":
+                model_choice = st.selectbox("Choose a model", ["gemini-1.5-flash", "gemini-1.5-pro"])
+                api_key = google_api_key
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # Detection Mode Accordion
+        with st.expander("🧭 Detection Mode", expanded=True):
+            st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
+            page = st.radio(
+                "Go to",
+                [
+                    "Recall Test",
+                    "Unlearning Detection Test",
+                    "Legal Cases Display",
+                ],
+                label_visibility="collapsed",
+            )
+            st.markdown('</div>', unsafe_allow_html=True)
 
     return api_key, model_choice, provider, page
 
