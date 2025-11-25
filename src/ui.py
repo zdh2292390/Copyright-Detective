@@ -57,9 +57,6 @@ from src.direct_recall.persuasive_jailbreak import (
     MutationWithJudge,
     MutationEvaluation,
     SimilarityMetrics,
-    run_adversarial_persuasion,
-    parse_mutation_output,
-    evaluate_similarity,
 )
 from src.unlearning_detection import (
     list_representational_features,
@@ -4076,44 +4073,37 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                 except Exception as e:
                     st.warning(f"⚠️ Could not load few-shot examples: {e}")
             
-            # Create a status placeholder for generation progress
-            generation_status = st.empty()
+            evaluations = mutate_strategies(
+                api_key,
+                model_choice,
+                provider,
+                selected_strategies,
+                original_prompt,
+                reference_text=None,  # Don't calculate ROUGE during generation
+                few_shot_examples=few_shot_examples,  # Pass examples if Few-Shot
+                attempts_per_strategy=attempts,
+                temperature=1.0,  # Higher temperature for diverse mutation generation
+                top_p=1.0,
+                dry_run=False,
+            )
             
-            evaluations = []
-            total_mutations = len(selected_strategies) * attempts
-            mutation_count = 0
-            
-            for attempt in range(1, attempts + 1):
-                for strategy in selected_strategies:
-                    generation_status.text(f"Generating mutation {mutation_count + 1}/{total_mutations}...")
-                    
-                    result = run_adversarial_persuasion(
-                        api_key,
-                        model_choice,
-                        provider,
-                        strategy,
-                        original_prompt,
-                        few_shot_examples=few_shot_examples,
-                        temperature=1.0,  # Higher temperature for diverse mutation generation
-                        top_p=1.0,
-                        dry_run=False,
+            # Add mode information to evaluations
+            for i, evaluation in enumerate(evaluations):
+                if evaluation and evaluation.mutation:
+                    evaluations[i] = MutationEvaluation(
+                        mutation=evaluation.mutation,
+                        parsed=evaluation.parsed,
+                        metrics=evaluation.metrics,
+                        attempt=evaluation.attempt,
+                        mode=generation_mode,
                     )
-                    parsed = parse_mutation_output(result.response)
-                    metrics = None  # Don't calculate ROUGE during generation
-                    evaluations.append(
-                        MutationEvaluation(
-                            mutation=result,
-                            parsed=parsed,
-                            metrics=metrics,
-                            attempt=attempt,
-                        )
-                    )
-                    mutation_count += 1
-                    generation_progress.progress(mutation_count / total_mutations)
             
-            generation_status.text(f"✅ Generation completed: {total_mutations}/{total_mutations} mutations generated")
+            all_evaluations.extend(evaluations)
+            generation_progress.progress(1.0)
+            
+            generation_progress.progress(1.0)
             generation_progress.empty()
-
+            
             if not all_evaluations:
                 st.error("❌ No mutations produced. Check your API key and model settings.")
             else:
