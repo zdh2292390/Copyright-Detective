@@ -916,7 +916,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         "Title Prediction",
     ]
     prompt_type = st.selectbox(
-        "🎛️ Choose the Recall Type:",
+        "Choose the recall type",
         prompt_type_options,
         index=min(st.session_state['text_prompt_type_index'], len(prompt_type_options) - 1),
         help="Select the recall mode to guide the Text Memorization Detection. (Choose only; typing custom values is not allowed.)",
@@ -952,7 +952,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     input_options = ["Custom Input", *base_text_examples]
 
     input_method = st.selectbox(
-        "Choose an Input Type:",
+        "Choose an input type",
         input_options,
         index=min(st.session_state['text_input_method_index'], len(input_options) - 1),
         help="Select custom input or choose from examples.",
@@ -1059,14 +1059,14 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         col1, col2 = st.columns(2)
         with col1:
             continuation_method = st.selectbox(
-                "Choose a Prompting Method:",
+                "Choose a prompting method",
                 CONTINUATION_STRATEGIES,
                 help="Select 'Normal Continuation' for a direct prompt or a persuasion strategy to frame the request differently.",
                 key="continuation_method_selector",
             )
         with col2:
             prompt_mode = st.selectbox(
-                "Choose Zero-Shot/Few-Shot:",
+                "Choose zero-shot/few-shot",
                 ["Zero-Shot", "Few-Shot"],
                 help="Select 'Zero-Shot' for no examples or 'Few-Shot' for including example demonstrations in the prompt.",
                 key="prompt_mode_selector",
@@ -1108,7 +1108,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         
     elif prompt_type == "Prior-Context Reconstruction":
         preceding_method = st.selectbox(
-            "Choose a prompting method:",
+            "Choose a prompting method",
             CONTINUATION_STRATEGIES,
             help="Select a reconstruction framing. Each strategy nudges the model toward recreating the missing preceding context.",
             key="preceding_method_selector",
@@ -1692,7 +1692,7 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
     st.markdown('<p class="analysis-step-label">Step 1 · Select detection mode</p>', unsafe_allow_html=True)
     
     detection_mode = st.radio(
-        "Choose your detection method:",
+        "Choose your detection method",
     ["Open-ended Question", "Single-choice Question", "Step-by-step Leaking and Extraction"],
         index=0,
     help="Open-ended Question mode generates open-ended questions. The Single-choice Question mode designs single-choice questions where the options are closely matched but vary in key details; observing the model's selection bias helps infer prior exposure to the source text. Step-by-step Leaking and Extraction uses step-by-step reasoning to probe residual knowledge through categorized questions.",
@@ -1787,7 +1787,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
     elif qa_source_mode == "Upload Document":
         st.markdown("**📎 Custom Input: Upload your document**")
         uploaded_document = st.file_uploader(
-            "Choose a PDF or TXT file:",
+            "Choose a pdf or txt file",
             type=["pdf", "txt"],
             help="Select a PDF or UTF-8 TXT document to extract knowledge from",
             key="knowledge_qa_pdf_upload"
@@ -2977,7 +2977,7 @@ def render_sleek_attack_detection(api_key, model_choice, provider):
     else:  # Upload Document
         st.markdown("**📎 Upload your document**")
         uploaded_file = st.file_uploader(
-            "Choose a PDF or TXT file:",
+            "Choose a pdf or txt file",
             type=["pdf", "txt"],
             help="Select a PDF or UTF-8 TXT document to extract knowledge from",
             key="sleek_document_upload"
@@ -3385,7 +3385,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                 )
 
     uploaded_file = st.file_uploader(
-        "📎 Choose a PDF or TXT file:",
+        "Choose a pdf or txt file",
         type=["pdf", "txt"],
         help="Select a PDF or UTF-8 TXT document to analyze"
     )
@@ -3415,7 +3415,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         st.caption("Chunk size must be at least 50 words to run document analysis.")
     with config_col2:
         continuation_method = st.selectbox(
-            'Choose a Prompting Method:',
+            'Choose a prompting method',
             CONTINUATION_STRATEGIES,
             index=min(st.session_state['pdf_continuation_method_index'], len(CONTINUATION_STRATEGIES) - 1),
             help='Pick how the model should be nudged when generating chunk continuations. "Normal Continuation" keeps the default behaviour.',
@@ -3716,28 +3716,13 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     # ========== STEP 1: Zero-Shot Mutation & Evaluation ==========
     header_col, spacer_col, button_col = st.columns([4, 1, 1])
     with header_col:
-        st.markdown('<p class="analysis-step-label">Step 1 · Configure zero-shot mutation</p>', unsafe_allow_html=True)
-        st.markdown("#### 🧪 Zero-Shot Mutation & Evaluation")
+        st.markdown('<p class="analysis-step-label">Step 1 · Zero-Shot Mutation & Evaluation</p>', unsafe_allow_html=True)
     with spacer_col:
         st.write("")
     with button_col:
         st.write("")  # Empty column for alignment
 
-    st.markdown(
-        '<p class="analysis-step-caption">Configure your baseline adversarial prompt, select zero-shot persuasion strategies, and choose the reference excerpt for scoring.</p>',
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("#### 📝 Baseline prompt setup")
-    st.caption("Add or load the adversarial prompt to mutate in Step 1.")
-    stage1_input_prompt = st.text_area(
-        "Original adversarial prompt",
-        value=st.session_state.get('adv_stage1_input_prompt', ""),
-        height=150,
-        placeholder="e.g., Reproduce verbatim the first 100 words of Harry Potter and the Sorcerer's Stone.",
-        key="stage1_input_prompt",
-        help="Enter the baseline prompt to mutate. This will be transformed using persuasion strategies.",
-    )
+    st.markdown("**📝 Baseline prompt setup**")
 
     if baseline_prompts:
         no_preset_option = "Custom Input"
@@ -3750,24 +3735,34 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                 st.session_state["stage1_input_prompt"] = ""
 
         st.selectbox(
-            "Load a sample adversarial prompt",
+            "Choose an adversarial prompt type",
             [no_preset_option, *baseline_prompts],
             key="stage1_baseline_selector",
             on_change=_apply_stage1_preset,
             help="These presets mirror the baseline requests from the paper's extraction study.",
         )
 
-    st.markdown("#### ⚙️ Sampling & evaluation parameters")
-    st.caption("Choose persuasion strategies, attempt counts, and the reference excerpt for scoring.")
-    zero_shot_strategies = st.multiselect(
-        "Persuasion strategies",
-        strategies,
-        default=strategies[:3] if len(strategies) >= 3 else strategies,
-        key="stage1_strategies",
-        help="Select one or more persuasion strategies to apply in zero-shot mode.",
+    stage1_input_prompt = st.text_area(
+        "Original adversarial prompt",
+        value=st.session_state.get('adv_stage1_input_prompt', ""),
+        height=150,
+        placeholder="e.g., Reproduce verbatim the first 100 words of Harry Potter and the Sorcerer's Stone.",
+        key="stage1_input_prompt",
+        help="Enter the baseline prompt to mutate. This will be transformed using persuasion strategies.",
     )
 
-    col_attempts, _ = st.columns([1, 2])
+    st.markdown("**⚙️ Sampling & evaluation parameters**")
+    
+    col_strategies, col_attempts = st.columns([2, 1])
+    with col_strategies:
+        zero_shot_strategies = st.multiselect(
+            "Persuasion strategies",
+            strategies,
+            default=strategies[:3] if len(strategies) >= 3 else strategies,
+            key="stage1_strategies",
+            help="Select one or more persuasion strategies to apply in zero-shot mode.",
+        )
+    
     with col_attempts:
         st.number_input(
             "Attempts per strategy",
@@ -3832,7 +3827,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                 stage1_reference_map[original_prompt] = prompt_reference_text
             
             # Display processing header
-            st.markdown("---")
             st.markdown(f"**Processing:** {textwrap.shorten(original_prompt, width=120, placeholder='…')}")
             st.caption(f"📊 {len(zero_shot_strategies)} strategy(ies) × {zero_shot_attempts} attempt(s) = {len(zero_shot_strategies) * zero_shot_attempts} mutations")
             
@@ -3865,7 +3859,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             if not evaluations:
                 st.error("❌ No mutations produced. Check your API key and model settings.")
             else:
-                st.success(f"✅ Generated {len(evaluations)} mutations")
                 
                 # ===== STEP 2: Evaluate Mutations =====
                 st.markdown("**🔄 Step 2/4: Evaluating mutations against reference text**")
@@ -3978,7 +3971,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                             successful_count += 1
                     
                     # ===== STEP 4: Intention Preservation Judging =====
-                    st.markdown("---")
                     st.markdown("**🔄 Step 4/4: Intention Preservation Judging**")
                     st.caption("Assessing whether mutated prompts preserve the original harmful intention...")
                     
@@ -4041,11 +4033,10 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         judging_progress.progress((judge_idx + 1) / len(evaluated_mutations))
                     
                     judging_progress.empty()
-                    st.success(f"✅ Completed intention judging for {len(evaluated_mutations)} mutations")
                     
                     st.session_state["last_stage1_prompt"] = original_prompt
                     st.session_state["stage1_results_prompt_selector"] = original_prompt
-                    st.markdown("---")
+                    
                     st.success(f"✅ **Step 1 Complete:** Evaluated {successful_count} mutations (ranked by ROUGE-L)")
     
     st.divider()
@@ -4058,21 +4049,12 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     ]
 
     if stage1_prompts:
-        st.markdown('<p class="analysis-step-label">Step 1 · Results explorer</p>', unsafe_allow_html=True)
-        st.markdown("#### 📚 Step 1 Results Library")
-        st.caption("Step 1 results are cached in session state so you can revisit them while configuring Step 2.")
+        st.markdown('<p class="analysis-step-label">Step 1 · Results</p>', unsafe_allow_html=True)
+        st.markdown("**📚 Step 1 Results**")
+        st.caption("Results from the most recent Step 1 evaluation.")
 
-        default_prompt = st.session_state.get("stage1_results_prompt_selector")
-        if default_prompt not in stage1_prompts:
-            default_prompt = stage1_prompts[0]
-
-        selected_prompt = st.selectbox(
-            "Select a Step 1 prompt to inspect",
-            options=stage1_prompts,
-            format_func=lambda x: textwrap.shorten(x, width=100, placeholder="…"),
-            index=stage1_prompts.index(default_prompt) if default_prompt in stage1_prompts else 0,
-            key="stage1_results_prompt_selector",
-        )
+        # Use the most recent prompt (last in the list)
+        selected_prompt = stage1_prompts[-1]
 
         stage1_records = [
             entry for entry in mutation_store.get(selected_prompt, [])
@@ -4096,9 +4078,9 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                 metrics = evaluation.metrics
 
                 mutated_text = parsed.mutated_text.strip() if parsed and parsed.mutated_text else ""
-                rouge_l = float(metrics.get("rouge_l", 0.0) or 0.0)
-                jaccard = float(metrics.get("jaccard_index", 0.0) or 0.0)
-                levenshtein = metrics.get("levenshtein", None)
+                rouge_l = float(metrics.rouge_l or 0.0)
+                jaccard = float(metrics.jaccard or 0.0)
+                levenshtein = metrics.levenshtein
 
                 judge_passed = deserialised.judge_passed if judged_flag else None
                 if not judged_flag:
@@ -4177,7 +4159,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     },
                 )
 
-                st.markdown("##### 🎯 Intention Preservation Judging Results")
+                st.markdown("**🎯 Intention Preservation Judging Results**")
                 st.caption("Click to expand each mutation result and view detailed intention preservation analysis.")
 
                 for idx, panel_payload in enumerate(stored_panels, start=1):
@@ -4936,7 +4918,7 @@ def render_jailbreak_persuasion_probe_section(api_key, model_choice, provider):
         )
 
     persuasion_strategy = st.selectbox(
-        "**Choose a persuasion strategy:**",
+        "**Choose a persuasion strategy**",
         [
             "Role-Playing: The Author",
             "Hypothetical Scenario: A Lost Manuscript",
@@ -5051,7 +5033,7 @@ def render_sleek_attack_page(api_key, model_choice, provider):
     else:
         st.markdown("**📎 Upload your document**")
         uploaded_document = st.file_uploader(
-            "Choose a PDF or TXT file:",
+            "Choose a pdf or txt file",
             type=["pdf", "txt"],
             help="Select a PDF or UTF-8 TXT document to extract knowledge from",
             key="sleek_document_upload"
