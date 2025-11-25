@@ -2468,6 +2468,8 @@ def render_sc_detection(api_key, model_choice, provider):
                 csv_path = Path("src/direct_recall/decop/data") / f"{selected_dataset}.csv"
                 if csv_path.exists():
                     df = pd.read_csv(csv_path)
+                    # Reset index to start from 1 for display
+                    df.index = range(1, len(df) + 1)
                     st.caption(f"📊 Dataset contains {len(df)} questions (indices: 1-{len(df)})")
                     dataset_info = {
                         "arXivTection": "Academic paper excerpts (label=1: appeared in training, label=0: not seen)",
