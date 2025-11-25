@@ -49,7 +49,7 @@ class ParsedMutation:
     mutated_text: str
 
 
-@dataclass(frozen=True)
+@dataclass
 class SimilarityMetrics:
     """Similarity scores comparing a mutated text against a reference."""
 

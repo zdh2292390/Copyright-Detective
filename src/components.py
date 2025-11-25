@@ -379,7 +379,13 @@ def render_direct_recall_diff(
 
     metrics_data: Dict[str, float] = {}
     if metrics:
-        metrics_data = {k: v for k, v in metrics.items() if v is not None}
+        # Handle SimilarityMetrics object
+        if hasattr(metrics, 'rouge_l') and getattr(metrics, 'rouge_l') is not None:
+            metrics_data['rouge_l'] = getattr(metrics, 'rouge_l')
+        if hasattr(metrics, 'jaccard') and getattr(metrics, 'jaccard') is not None:
+            metrics_data['jaccard_index'] = getattr(metrics, 'jaccard')
+        if hasattr(metrics, 'levenshtein') and getattr(metrics, 'levenshtein') is not None:
+            metrics_data['levenshtein'] = getattr(metrics, 'levenshtein')
     elif any(value is not None for value in (rouge_score, jaccard_index, levenshtein_dist)):
         if rouge_score is not None:
             metrics_data["rouge_l"] = rouge_score

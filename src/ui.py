@@ -3793,7 +3793,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         selected_strategies = st.multiselect(
             "Persuasion strategies",
             strategies,
-            default=strategies[:3] if len(strategies) >= 3 else strategies,
+            default=[],
             key="strategies",
             help="Select one or more persuasion strategies to apply.",
         )
@@ -4074,10 +4074,13 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     st.warning(f"⚠️ Could not load few-shot examples: {e}")
             
             # Generate mutations for each strategy individually to show progress
+            progress_placeholder = st.empty()
+            total_mutations = len(selected_strategies) * attempts
+            cumulative = 0
             for strategy_idx, strategy in enumerate(selected_strategies, 1):
                 # Update progress display
-                progress_text = f"**🔄 Generating mutations ({strategy_idx}/{len(selected_strategies)}): {strategy}**"
-                st.markdown(progress_text)
+                progress_text = f"**🔄 Generating mutations ({cumulative + 1}-{cumulative + attempts}/{total_mutations}): {strategy}**"
+                progress_placeholder.markdown(progress_text)
                 generation_progress.progress(strategy_idx / len(selected_strategies))
                 
                 evaluations = mutate_strategies(
@@ -4106,9 +4109,11 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         )
                 
                 all_evaluations.extend(evaluations)
+                cumulative += attempts
             
             generation_progress.progress(1.0)
             generation_progress.empty()
+            progress_placeholder.empty()
             
             if not all_evaluations:
                 st.error("❌ No mutations produced. Check your API key and model settings.")
@@ -4441,6 +4446,18 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         f"Attempt: {evaluation.attempt}",
                     ]
                     sections.append(("📄 Mutation Summary", "\n".join(summary_lines), None))
+                    
+                    # Ground truth comparison
+                    if llm_response:
+                        reference_text = stage1_reference_map.get(selected_prompt, '')
+                        if reference_text:
+                            st.markdown("**🧠 Ground Truth Comparison**")
+                            render_direct_recall_diff(
+                                reference_text,
+                                llm_response,
+                                title="Generated Text vs. Reference Text",
+                                metrics=metrics,
+                            )
                     
                     # Mutated prompt
                     sections.append(("📝 Mutated Prompt", mutated_text, "generated"))
