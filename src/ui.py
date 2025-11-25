@@ -4073,33 +4073,39 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                 except Exception as e:
                     st.warning(f"⚠️ Could not load few-shot examples: {e}")
             
-            evaluations = mutate_strategies(
-                api_key,
-                model_choice,
-                provider,
-                selected_strategies,
-                original_prompt,
-                reference_text=None,  # Don't calculate ROUGE during generation
-                few_shot_examples=few_shot_examples,  # Pass examples if Few-Shot
-                attempts_per_strategy=attempts,
-                temperature=1.0,  # Higher temperature for diverse mutation generation
-                top_p=1.0,
-                dry_run=False,
-            )
-            
-            # Add mode information to evaluations
-            for i, evaluation in enumerate(evaluations):
-                if evaluation and evaluation.mutation:
-                    evaluations[i] = MutationEvaluation(
-                        mutation=evaluation.mutation,
-                        parsed=evaluation.parsed,
-                        metrics=evaluation.metrics,
-                        attempt=evaluation.attempt,
-                        mode=generation_mode,
-                    )
-            
-            all_evaluations.extend(evaluations)
-            generation_progress.progress(1.0)
+            # Generate mutations for each strategy individually to show progress
+            for strategy_idx, strategy in enumerate(selected_strategies, 1):
+                # Update progress display
+                progress_text = f"**🔄 Generating mutations ({strategy_idx}/{len(selected_strategies)}): {strategy}**"
+                st.markdown(progress_text)
+                generation_progress.progress(strategy_idx / len(selected_strategies))
+                
+                evaluations = mutate_strategies(
+                    api_key,
+                    model_choice,
+                    provider,
+                    [strategy],  # Process one strategy at a time
+                    original_prompt,
+                    reference_text=None,  # Don't calculate ROUGE during generation
+                    few_shot_examples=few_shot_examples,  # Pass examples if Few-Shot
+                    attempts_per_strategy=attempts,
+                    temperature=1.0,  # Higher temperature for diverse mutation generation
+                    top_p=1.0,
+                    dry_run=False,
+                )
+                
+                # Add mode information to evaluations
+                for i, evaluation in enumerate(evaluations):
+                    if evaluation and evaluation.mutation:
+                        evaluations[i] = MutationEvaluation(
+                            mutation=evaluation.mutation,
+                            parsed=evaluation.parsed,
+                            metrics=evaluation.metrics,
+                            attempt=evaluation.attempt,
+                            mode=generation_mode,
+                        )
+                
+                all_evaluations.extend(evaluations)
             
             generation_progress.progress(1.0)
             generation_progress.empty()
