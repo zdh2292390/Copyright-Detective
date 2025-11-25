@@ -33,6 +33,7 @@ from src.direct_recall import (
     parse_question_indices,
     get_predefined_examples_index,
 )
+from src.direct_recall.sleek_attack import run_sleek_evaluation
 from src.config import DEFAULT_OPENROUTER_KEY
 
 import matplotlib.pyplot as plt
@@ -49,11 +50,16 @@ from src.direct_recall.persuasive_jailbreak import (
     list_baseline_prompts,
     ExperimentMode,
     DEFAULT_HP_REFERENCE_EXCERPT,
+    DEFAULT_HB_REFERENCE_EXCERPT,
+    DEFAULT_GA_REFERENCE_EXCERPT,
     serialise_mutation_with_judge,
     deserialise_mutation_with_judge,
     MutationWithJudge,
     MutationEvaluation,
     SimilarityMetrics,
+    run_adversarial_persuasion,
+    parse_mutation_output,
+    evaluate_similarity,
 )
 from src.unlearning_detection import (
     list_representational_features,
@@ -3700,9 +3706,9 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         <div class=\"analysis-callout\">
             <div class=\"analysis-callout__title\">How the Adversarial Persuasive Prompting Detection works</div>
             <ul class=\"analysis-callout__list\">
-                <li><strong>Zero-shot mutation</strong> — Generate baseline adversarial prompt variations and score them against your reference excerpt.</li>
-                <li><strong>Few-shot refinement</strong> — Reuse the highest-scoring Step&nbsp;1 exemplars as in-context prompts to craft stronger mutations.</li>
-                <li><strong>Review intention judging</strong> — Inspect stored results, confirm intent preservation, and iterate on the strongest findings.</li>
+                <li><strong>One-shot mutation</strong> — Generate baseline adversarial prompt variations without examples.</li>
+                <li><strong>Few-shot refinement</strong> — Use predefined examples from few-shot.json to guide stronger mutations.</li>
+                <li><strong>Review intention judging</strong> — Inspect stored results, confirm intent preservation, and iterate on findings.</li>
             </ul>
         </div>
         """,
@@ -3713,64 +3719,96 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     mutation_store = st.session_state.setdefault("generated_persuasion_mutations", {})
     stage1_reference_map = st.session_state.setdefault("stage1_reference_texts", {})
     
-    # ========== STEP 1: Zero-Shot Mutation & Evaluation ==========
+    # ========== Unified Generation ==========
     header_col, spacer_col, button_col = st.columns([4, 1, 1])
     with header_col:
-        st.markdown('<p class="analysis-step-label">Step 1 · Zero-Shot Mutation & Evaluation</p>', unsafe_allow_html=True)
+        st.markdown('<p class="analysis-step-label">Adversarial Prompt Generation</p>', unsafe_allow_html=True)
     with spacer_col:
         st.write("")
     with button_col:
         st.write("")  # Empty column for alignment
 
-    st.markdown("**📝 Baseline prompt setup**")
+    st.markdown("**📝 Prompt setup**")
 
     if baseline_prompts:
         no_preset_option = "Custom Input"
 
-        def _apply_stage1_preset() -> None:
-            selected = st.session_state.get("stage1_baseline_selector")
-            if selected and selected != no_preset_option:
-                st.session_state["stage1_input_prompt"] = selected
+        # Create display options with "Example:" prefix and mapping to clean prompts
+        display_options = [no_preset_option]
+        prompt_mapping = {}
+        
+        for prompt in baseline_prompts:
+            if prompt.startswith("Example: "):
+                display_text = prompt  # Keep "Example:" for display
+                clean_prompt = prompt[9:].strip()  # Remove "Example: " prefix
             else:
-                st.session_state["stage1_input_prompt"] = ""
+                display_text = f"Example: {prompt}"  # Add prefix if not present
+                clean_prompt = prompt
+            display_options.append(display_text)
+            prompt_mapping[display_text] = clean_prompt
+
+        def _apply_preset() -> None:
+            selected = st.session_state.get("baseline_selector")
+            if selected and selected != no_preset_option:
+                clean_prompt = prompt_mapping.get(selected, selected)
+                st.session_state["input_prompt"] = clean_prompt
+                # Set reference text based on the selected prompt
+                if "Hobbit" in selected:
+                    st.session_state["reference"] = DEFAULT_HB_REFERENCE_EXCERPT
+                elif "Thrones" in selected:
+                    st.session_state["reference"] = DEFAULT_GA_REFERENCE_EXCERPT
+                else:
+                    st.session_state["reference"] = DEFAULT_HP_REFERENCE_EXCERPT
+            else:
+                st.session_state["input_prompt"] = ""
 
         st.selectbox(
             "Choose an adversarial prompt type",
-            [no_preset_option, *baseline_prompts],
-            key="stage1_baseline_selector",
-            on_change=_apply_stage1_preset,
+            display_options,
+            key="baseline_selector",
+            on_change=_apply_preset,
             help="These presets mirror the baseline requests from the paper's extraction study.",
         )
 
-    stage1_input_prompt = st.text_area(
+    input_prompt = st.text_area(
         "Original adversarial prompt",
-        value=st.session_state.get('adv_stage1_input_prompt', ""),
+        value=st.session_state.get('adv_input_prompt', ""),
         height=150,
         placeholder="e.g., Reproduce verbatim the first 100 words of Harry Potter and the Sorcerer's Stone.",
-        key="stage1_input_prompt",
+        key="input_prompt",
         help="Enter the baseline prompt to mutate. This will be transformed using persuasion strategies.",
     )
 
     st.markdown("**⚙️ Sampling & evaluation parameters**")
     
-    col_strategies, col_attempts = st.columns([2, 1])
+    col_mode, col_strategies, col_attempts = st.columns([1, 2, 1])
+    with col_mode:
+        generation_mode = st.selectbox(
+            "Choose zero-shot/few-shot",
+            ["One-Shot", "Few-Shot"],
+            index=0,
+            key="generation_mode",
+            help="Select generation mode: One-Shot (zero-shot) or Few-Shot.",
+        )
+        generation_modes = [generation_mode]  # Convert to list for compatibility
+    
     with col_strategies:
-        zero_shot_strategies = st.multiselect(
+        selected_strategies = st.multiselect(
             "Persuasion strategies",
             strategies,
             default=strategies[:3] if len(strategies) >= 3 else strategies,
-            key="stage1_strategies",
-            help="Select one or more persuasion strategies to apply in zero-shot mode.",
+            key="strategies",
+            help="Select one or more persuasion strategies to apply.",
         )
     
     with col_attempts:
-        st.number_input(
+        attempts = st.number_input(
             "Attempts per strategy",
             min_value=1,
             max_value=20,
-            value=st.session_state['adv_stage1_attempts'],
+            value=st.session_state.get('adv_attempts', 3),
             step=1,
-            key="stage1_attempts",
+            key="attempts",
             help="Number of mutation attempts for each strategy (more attempts = broader exploration).",
         )
 
@@ -3778,18 +3816,180 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         "Reference text",
         value=st.session_state.get('adv_reference_excerpt', DEFAULT_HP_REFERENCE_EXCERPT),
         height=150,
-        key="stage1_reference",
+        key="reference",
         help="Ground-truth copyrighted text. ROUGE-L measures how well mutations induce the LLM to reproduce this content.",
     )
 
+    # Prompt Preview Accordion
     with render_streamlit_accordion(
-        "📋 Step 1 checklist",
-        key="pj_step1_checklist",
+        "👀 Prompt Preview",
+        key="prompt_preview",
+        expanded=False,
+    ):
+        input_prompt = st.session_state.get('input_prompt', '')
+        generation_mode = st.session_state.get('generation_mode', 'One-Shot')
+        generation_modes = [generation_mode]  # Convert to list for compatibility
+        selected_strategies = st.session_state.get('strategies', [])
+        attempts = st.session_state.get('attempts', 3)
+        reference_text = st.session_state.get('reference', '')
+        
+        st.markdown("**📋 Generation Configuration Summary:**")
+        st.markdown(f"- **Mode:** {generation_mode}")
+        st.markdown(f"- **Strategies:** {', '.join(selected_strategies) if selected_strategies else 'None selected'}")
+        st.markdown(f"- **Attempts per strategy:** {attempts}")
+        st.markdown(f"- **Total mutations:** {len(selected_strategies) * attempts if selected_strategies else 0}")
+        
+        st.markdown("**📝 Original Prompt:**")
+        if input_prompt.strip():
+            st.text_area(
+                "Original adversarial prompt",
+                value=input_prompt,
+                height=100,
+                disabled=True,
+                key="preview_input_prompt",
+            )
+        else:
+            st.info("⚠️ No prompt entered yet.")
+        
+        # Show preview for each selected strategy and mode
+        if selected_strategies and input_prompt.strip() and generation_modes:
+            st.markdown("**🎯 Strategy-Specific Prompts Preview:**")
+            
+            # Load few-shot data once for all previews
+            few_shot_data = {}
+            try:
+                import json
+                from pathlib import Path
+                few_shot_path = Path(__file__).parent / "direct_recall" / "persuasive_jailbreak" / "few-shot.json"
+                with open(few_shot_path) as f:
+                    few_shot_data = json.load(f)
+            except Exception as e:
+                st.warning(f"⚠️ Could not load few-shot data: {e}")
+            
+            for strategy in selected_strategies:
+                for mode in generation_modes:
+                    with st.expander(f"🔧 {strategy} ({mode})", expanded=False):
+                        try:
+                            # Import the persuasion strategies
+                            from src.direct_recall.persuasive_jailbreak.adversarial_prompting import PERSUASIVE_MUTATION_TEMPLATES
+                            
+                            if mode == "One-Shot":
+                                # Show one-shot prompt preview
+                                if strategy in few_shot_data:
+                                    template = few_shot_data[strategy]
+                                    
+                                    # Extract the prefix before examples for one-shot
+                                    prefix = template.split("\n\nNow, I will provide")[0]
+                                    one_shot_prompt = prefix + "\n\nOriginal Adversarial Prompt - " + input_prompt.strip()
+                                    
+                                    st.markdown("**One-Shot Prompt Preview:**")
+                                    st.text_area(
+                                        f"One-shot prompt for {strategy}",
+                                        value=one_shot_prompt,
+                                        height=300,
+                                        disabled=True,
+                                        key=f"preview_{strategy}_{mode.lower().replace('-', '_')}",
+                                    )
+                                else:
+                                    st.warning(f"⚠️ Template not found for strategy: {strategy}")
+                            
+                            elif mode == "Few-Shot":
+                                # Show complete few-shot prompt preview
+                                try:
+                                    if strategy in few_shot_data:
+                                        template = few_shot_data[strategy]
+                                        
+                                        # Extract original examples from the #Example section for few-shot formatting
+                                        examples = []
+                                        start = template.find("#Example\n")
+                                        if start != -1:
+                                            start += len("#Example\n")
+                                            end = template.find("\n\nNow, I will provide", start)
+                                            if end == -1:
+                                                end = len(template)
+                                            example_block = template[start:end].strip()
+                                            
+                                            # Extract original and mutated prompts from the example
+                                            original_start = example_block.find("Original Adversarial Prompt: ")
+                                            original = ""
+                                            if original_start != -1:
+                                                original_start += len("Original Adversarial Prompt: ")
+                                                original_end = example_block.find("\nThe Core", original_start)
+                                                if original_end == -1:
+                                                    original_end = example_block.find("\nMutated", original_start)
+                                                if original_end == -1:
+                                                    original_end = len(example_block)
+                                                original = example_block[original_start:original_end].strip()
+                                            
+                                            mutated_start = example_block.find("Mutated Adversarial Prompt (with the same harmful intention):")
+                                            mutated = ""
+                                            if mutated_start != -1:
+                                                mutated_start += len("Mutated Adversarial Prompt (with the same harmful intention):")
+                                                mutated = example_block[mutated_start:].strip()
+                                            
+                                            if original and mutated:
+                                                examples = [original, mutated] * 5
+                                        
+                                        # Format the complete few-shot prompt using the original example
+                                        if examples:
+                                            complete_fewshot_prompt = template % tuple(examples + [original])
+                                        else:
+                                            # Fallback if extraction failed
+                                            prompt_stripped = input_prompt.strip()
+                                            complete_fewshot_prompt = template % (
+                                                prompt_stripped, prompt_stripped,
+                                                prompt_stripped, prompt_stripped,
+                                                prompt_stripped, prompt_stripped,
+                                                prompt_stripped, prompt_stripped,
+                                                prompt_stripped, prompt_stripped,
+                                                prompt_stripped,
+                                            )
+                                        
+                                        st.markdown("**Few-Shot Complete Prompt Preview:**")
+                                        st.text_area(
+                                            f"Complete few-shot prompt for {strategy}",
+                                            value=complete_fewshot_prompt,
+                                            height=400,
+                                            disabled=True,
+                                            key=f"preview_{strategy}_{mode.lower().replace('-', '_')}_complete",
+                                        )
+                                        
+                                    else:
+                                        st.warning(f"⚠️ Few-shot data not found for strategy: {strategy}")
+                                
+                                except Exception as e:
+                                    st.warning(f"⚠️ Could not load few-shot preview for {strategy}: {e}")
+                        
+                        except Exception as e:
+                            st.error(f"❌ Error loading preview for {strategy}: {e}")
+        elif not selected_strategies:
+            st.info("⚠️ No strategies selected yet.")
+        elif not generation_modes:
+            st.info("⚠️ No generation modes selected yet.")
+        elif not input_prompt.strip():
+            st.info("⚠️ Enter a prompt above to see strategy previews.")
+        
+        st.markdown("**📄 Reference Text (truncated):**")
+        if reference_text.strip():
+            truncated_ref = textwrap.shorten(reference_text, width=200, placeholder="...")
+            st.text_area(
+                "Reference excerpt",
+                value=truncated_ref,
+                height=80,
+                disabled=True,
+                key="preview_reference",
+            )
+        else:
+            st.info("⚠️ No reference text entered yet.")
+
+    with render_streamlit_accordion(
+        "📋 Generation checklist",
+        key="generation_checklist",
         expanded=False,
     ):
         st.markdown(
             """
-            1. <strong>Generate</strong> – Apply persuasion strategies to create mutated prompts (zero-shot, no examples).
+            1. <strong>Generate</strong> – Apply persuasion strategies to create mutated prompts.
             2. <strong>Evaluate</strong> – Send each mutation to the LLM and collect its response.
             3. <strong>Rank</strong> – Score responses against the reference excerpt (ROUGE-L, Jaccard, Levenshtein).
             4. <strong>Judge</strong> – Assess whether each mutation preserves the original intention.
@@ -3797,77 +3997,135 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             unsafe_allow_html=True,
         )
 
-    run_stage1 = st.button(
-        "🚀 Run Step 1 · Generate & Evaluate",
-        key="run_stage1",
+    run_generation = st.button(
+        "🚀 Generate & Evaluate",
+        key="run_generation",
         type="primary",
         width='stretch'
     )
     
-    if run_stage1:
+    if run_generation:
+        # Clear previous results to only store current run data
+        mutation_store.clear()
+        
         # Get values from session state
-        stage1_input_prompt = st.session_state.get('stage1_input_prompt', '')
-        zero_shot_reference = st.session_state.get('stage1_reference', '')
-        zero_shot_attempts = st.session_state.get('stage1_attempts', 3)
+        original_prompt = st.session_state.get('input_prompt', '')
+        reference_text = st.session_state.get('reference', '')
+        generation_mode = st.session_state.get('generation_mode', 'One-Shot')
+        generation_modes = [generation_mode]  # Convert to list for compatibility
         
         # Validation
-        if not stage1_input_prompt.strip():
+        if not original_prompt.strip():
             st.warning("⚠️ Please enter an adversarial prompt.")
-        elif not zero_shot_strategies:
+        elif not selected_strategies:
             st.warning("⚠️ Select at least one persuasion strategy.")
-        elif not zero_shot_reference.strip():
+        elif not generation_mode:
+            st.warning("⚠️ Select a generation mode.")
+        elif not reference_text.strip():
             st.warning("⚠️ Please provide reference text for evaluation.")
         elif not api_key or not model_choice:
             st.error("⚠️ Enter your API key and choose a model in the sidebar.")
         else:
-            original_prompt = stage1_input_prompt.strip()
-            prompt_reference_text = zero_shot_reference.strip()
+            original_prompt = original_prompt.strip()
+            reference_text = reference_text.strip()
 
-            if prompt_reference_text:
-                stage1_reference_map[original_prompt] = prompt_reference_text
+            if reference_text:
+                stage1_reference_map[original_prompt] = reference_text
             
             # Display processing header
             st.markdown(f"**Processing:** {textwrap.shorten(original_prompt, width=120, placeholder='…')}")
-            st.caption(f"📊 {len(zero_shot_strategies)} strategy(ies) × {zero_shot_attempts} attempt(s) = {len(zero_shot_strategies) * zero_shot_attempts} mutations")
+            st.caption(f"📊 {generation_mode} × {len(selected_strategies)} strategy(ies) × {attempts} attempt(s) = {len(selected_strategies) * attempts} mutations")
             
             successful_count = 0
             
-            # ===== STEP 1: Generate Mutations =====
-            st.markdown("**🔄 Step 1/4: Generating zero-shot mutations**")
-            st.caption(f"Generating {len(zero_shot_strategies)} strategy(ies) × {zero_shot_attempts} attempt(s) = {len(zero_shot_strategies) * zero_shot_attempts} total mutations")
+            # ===== Generate Mutations =====
+            st.markdown("**🔄 Generating mutations**")
+            st.caption(f"Generating {generation_mode} × {len(selected_strategies)} strategy(ies) × {attempts} attempt(s) = {len(selected_strategies) * attempts} total mutations")
             
             generation_progress = st.progress(0.0)
-            total_to_generate = len(zero_shot_strategies) * zero_shot_attempts
             
-            evaluations = mutate_strategies(
-                api_key,
-                model_choice,
-                provider,
-                zero_shot_strategies,
-                original_prompt,
-                reference_text=None,  # Don't calculate ROUGE during generation
-                few_shot_examples=None,  # Zero-shot: no examples
-                attempts_per_strategy=zero_shot_attempts,
-                temperature=1.0,  # Higher temperature for diverse mutation generation
-                top_p=1.0,
-                dry_run=False,
-            )
+            all_evaluations = []
             
-            generation_progress.progress(1.0)
+            # Process the single generation mode
+            mode_idx = 0
+            generation_mode = generation_modes[0]  # Always one element
+            
+            # Load few-shot examples if needed
+            few_shot_examples = None
+            if generation_mode == "Few-Shot":
+                import json
+                from pathlib import Path
+                few_shot_path = Path(__file__).parent / "direct_recall" / "persuasive_jailbreak" / "few-shot.json"
+                try:
+                    with open(few_shot_path) as f:
+                        few_shot_data = json.load(f)
+                    
+                    few_shot_examples = []
+                    for strategy in selected_strategies:
+                        if strategy in few_shot_data:
+                            template = few_shot_data[strategy]
+                            start = template.find("Mutated Adversarial Prompt (with the same harmful intention):")
+                            if start != -1:
+                                start += len("Mutated Adversarial Prompt (with the same harmful intention):")
+                                end = template.find("\n\nNow, I will provide", start)
+                                if end == -1:
+                                    end = len(template)
+                                example = template[start:end].strip()
+                                if example:
+                                    few_shot_examples.append(example)
+                except Exception as e:
+                    st.warning(f"⚠️ Could not load few-shot examples: {e}")
+            
+            # Create a status placeholder for generation progress
+            generation_status = st.empty()
+            
+            evaluations = []
+            total_mutations = len(selected_strategies) * attempts
+            mutation_count = 0
+            
+            for attempt in range(1, attempts + 1):
+                for strategy in selected_strategies:
+                    generation_status.text(f"Generating mutation {mutation_count + 1}/{total_mutations}...")
+                    
+                    result = run_adversarial_persuasion(
+                        api_key,
+                        model_choice,
+                        provider,
+                        strategy,
+                        original_prompt,
+                        few_shot_examples=few_shot_examples,
+                        temperature=1.0,  # Higher temperature for diverse mutation generation
+                        top_p=1.0,
+                        dry_run=False,
+                    )
+                    parsed = parse_mutation_output(result.response)
+                    metrics = None  # Don't calculate ROUGE during generation
+                    evaluations.append(
+                        MutationEvaluation(
+                            mutation=result,
+                            parsed=parsed,
+                            metrics=metrics,
+                            attempt=attempt,
+                        )
+                    )
+                    mutation_count += 1
+                    generation_progress.progress(mutation_count / total_mutations)
+            
+            generation_status.text(f"✅ Generation completed: {total_mutations}/{total_mutations} mutations generated")
             generation_progress.empty()
-            
-            if not evaluations:
+
+            if not all_evaluations:
                 st.error("❌ No mutations produced. Check your API key and model settings.")
             else:
                 
-                # ===== STEP 2: Evaluate Mutations =====
-                st.markdown("**🔄 Step 2/4: Evaluating mutations against reference text**")
+                # ===== Evaluate Mutations =====
+                st.markdown("**🔄 Evaluating mutations against reference text**")
                 st.caption("Sending each mutation to the LLM and calculating ROUGE-L with reference output...")
                 
                 evaluated_mutations = []
                 progress_bar = st.progress(0.0)
                 
-                for eval_idx, evaluation in enumerate(evaluations):
+                for eval_idx, evaluation in enumerate(all_evaluations):
                     if evaluation is None or evaluation.mutation.error:
                         continue
                     
@@ -3889,9 +4147,9 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         )
                         
                         # Calculate similarity metrics
-                        rouge_score = calculate_rouge_score(llm_response, zero_shot_reference.strip())
-                        jaccard = calculate_jaccard_index(llm_response, zero_shot_reference.strip())
-                        levenshtein = distance(llm_response, zero_shot_reference.strip())
+                        rouge_score = calculate_rouge_score(llm_response, reference_text.strip())
+                        jaccard = calculate_jaccard_index(llm_response, reference_text.strip())
+                        levenshtein = distance(llm_response, reference_text.strip())
                         
                         eval_metrics = SimilarityMetrics(
                             rouge_l=rouge_score,
@@ -3904,6 +4162,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                             parsed=evaluation.parsed,
                             metrics=eval_metrics,
                             attempt=evaluation.attempt,
+                            mode=evaluation.mode,
                         )
                         
                         evaluated_mutations.append({
@@ -3915,15 +4174,15 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         st.warning(f"⚠️ Failed to evaluate mutation {eval_idx + 1}: {e}")
                         continue
                     
-                    progress_bar.progress((eval_idx + 1) / len(evaluations))
+                    progress_bar.progress((eval_idx + 1) / len(all_evaluations))
                 
                 progress_bar.empty()
                 
                 if not evaluated_mutations:
                     st.error("❌ No mutations were successfully evaluated.")
                 else:
-                    # ===== STEP 3: Rank & Store Results =====
-                    st.markdown("**🔄 Step 3/4: Ranking mutations by ROUGE-L score**")
+                    # ===== Rank & Store Results =====
+                    st.markdown("**🔄 Ranking mutations by ROUGE-L score**")
                     
                     # Sort by ROUGE-L score (descending)
                     evaluated_mutations.sort(
@@ -3935,6 +4194,9 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     for eval_item in evaluated_mutations:
                         evaluation = eval_item["evaluation"]
                         llm_response = eval_item["llm_response"]
+                        
+                        # Determine config_type from the evaluation's mode
+                        config_type = "one" if evaluation.mode == "One-Shot" else "few"
                         
                         record_entries = mutation_store.setdefault(original_prompt, [])
                         
@@ -3950,28 +4212,26 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         entry_exists = False
                         for stored in record_entries:
                             stored_config = stored.get("config") or []
-                            if stored_config and stored_config[0] != "zero":
-                                continue
-                            
-                            stored_data = stored.get("data") or {}
-                            stored_eval = stored_data.get("evaluation") or {}
-                            stored_parsed = stored_eval.get("parsed") or {}
-                            stored_mutated_text = stored_parsed.get("mutated_text", "").strip()
-                            
-                            if stored_mutated_text == mutated_text:
-                                entry_exists = True
-                                break
+                            if stored_config and stored_config[0] == config_type:
+                                stored_data = stored.get("data") or {}
+                                stored_eval = stored_data.get("evaluation") or {}
+                                stored_parsed = stored_eval.get("parsed") or {}
+                                stored_mutated_text = stored_parsed.get("mutated_text", "").strip()
+                                
+                                if stored_mutated_text == mutated_text:
+                                    entry_exists = True
+                                    break
                         
                         if not entry_exists:
                             record_entries.append({
-                                "config": ["zero", False],
+                                "config": [config_type, False],
                                 "data": serialised_entry,
                                 "llm_response": llm_response,
                             })
                             successful_count += 1
                     
-                    # ===== STEP 4: Intention Preservation Judging =====
-                    st.markdown("**🔄 Step 4/4: Intention Preservation Judging**")
+                    # ===== Intention Preservation Judging =====
+                    st.markdown("**🔄 Intention Preservation Judging**")
                     st.caption("Assessing whether mutated prompts preserve the original harmful intention...")
                     
                     judging_progress = st.progress(0.0)
@@ -3996,32 +4256,32 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 
                                 # Update mutation store with judging results
                                 record_entries = mutation_store.get(original_prompt, [])
+                                # Determine config_type from the evaluation's mode
+                                config_type = "one" if evaluation.mode == "One-Shot" else "few"
                                 for stored in record_entries:
                                     stored_config = stored.get("config") or []
-                                    if stored_config and stored_config[0] != "zero":
-                                        continue
-                                    
-                                    stored_data = stored.get("data") or {}
-                                    stored_eval = stored_data.get("evaluation") or {}
-                                    stored_parsed = stored_eval.get("parsed") or {}
-                                    stored_mutated_text = stored_parsed.get("mutated_text", "").strip()
-                                    
-                                    if stored_mutated_text == mutated_text:
-                                        # Update with judging results
-                                        judged_entry = MutationWithJudge(
-                                            evaluation=evaluation,
-                                            judge=assessment.secondary,
-                                            judge_passed=assessment.judge_passed,
-                                        )
-                                        stored["data"] = serialise_mutation_with_judge(judged_entry)
-                                        stored["config"] = ["zero", True]  # Mark as judged
-                                        stored["judge_meta"] = {
-                                            "core_intention": assessment.core_intention,
-                                            "restated_mutated_text": assessment.restated_mutated_text,
-                                            "primary_error": assessment.primary.error,
-                                            "secondary_error": assessment.secondary.error,
-                                        }
-                                        break
+                                    if stored_config and stored_config[0] == config_type:
+                                        stored_data = stored.get("data") or {}
+                                        stored_eval = stored_data.get("evaluation") or {}
+                                        stored_parsed = stored_eval.get("parsed") or {}
+                                        stored_mutated_text = stored_parsed.get("mutated_text", "").strip()
+                                        
+                                        if stored_mutated_text == mutated_text:
+                                            # Update with judging results
+                                            judged_entry = MutationWithJudge(
+                                                evaluation=evaluation,
+                                                judge=assessment.secondary,
+                                                judge_passed=assessment.judge_passed,
+                                            )
+                                            stored["data"] = serialise_mutation_with_judge(judged_entry)
+                                            stored["config"] = [config_type, True]  # Mark as judged
+                                            stored["judge_meta"] = {
+                                                "core_intention": assessment.core_intention,
+                                                "restated_mutated_text": assessment.restated_mutated_text,
+                                                "primary_error": assessment.primary.error,
+                                                "secondary_error": assessment.secondary.error,
+                                            }
+                                            break
                                 
                                 # Store assessment for display
                                 eval_item["assessment"] = assessment
@@ -4034,38 +4294,38 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     
                     judging_progress.empty()
                     
-                    st.session_state["last_stage1_prompt"] = original_prompt
-                    st.session_state["stage1_results_prompt_selector"] = original_prompt
+                    st.session_state["last_prompt"] = original_prompt
+                    st.session_state["results_prompt_selector"] = original_prompt
                     
-                    st.success(f"✅ **Step 1 Complete:** Evaluated {successful_count} mutations (ranked by ROUGE-L)")
+                    st.success(f"✅ **Generation Complete:** Evaluated {successful_count} mutations (ranked by ROUGE-L)")
     
     st.divider()
 
-    # ===== Persistent Step 1 Results =====
-    stage1_prompts = [
+    # ===== Results Explorer =====
+    prompts = [
         prompt_text
         for prompt_text, records in mutation_store.items()
-        if any((entry.get("config") or [None])[0] == "zero" for entry in records)
+        if any((entry.get("config") or [None])[0] in ["one", "few"] for entry in records)
     ]
 
-    if stage1_prompts:
-        st.markdown('<p class="analysis-step-label">Step 1 · Results</p>', unsafe_allow_html=True)
-        st.markdown("**📚 Step 1 Results**")
-        st.caption("Results from the most recent Step 1 evaluation.")
+    if prompts:
+        st.markdown('<p class="analysis-step-label">Results explorer</p>', unsafe_allow_html=True)
+        st.markdown("**📚 Generation Results Library**")
+        st.caption("Results are cached in session state so you can revisit them.")
 
-        # Use the most recent prompt (last in the list)
-        selected_prompt = stage1_prompts[-1]
+        # Get the first (and only) prompt from current run
+        selected_prompt = prompts[0]
 
-        stage1_records = [
+        records = [
             entry for entry in mutation_store.get(selected_prompt, [])
-            if (entry.get("config") or [None])[0] == "zero"
+            if (entry.get("config") or [None])[0] in ["one", "few"]
         ]
 
-        if stage1_records:
+        if records:
             ranked_rows: List[Dict[str, Any]] = []
             stored_panels: List[Dict[str, Any]] = []
 
-            for entry in stage1_records:
+            for entry in records:
                 serialised = entry.get("data") or {}
                 llm_response = entry.get("llm_response", "")
                 judge_meta = entry.get("judge_meta") or {}
@@ -4141,9 +4401,9 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         "judge_status": row["judge_status"],
                     })
 
-                df_stage1 = pd.DataFrame(df_data)
+                df = pd.DataFrame(df_data)
                 st.dataframe(
-                    df_stage1,
+                    df,
                     width='stretch',
                     hide_index=True,
                     column_config={
@@ -4183,7 +4443,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     summary_lines = [
                         f"Strategy: {evaluation.mutation.strategy}",
                         f"Attempt: {evaluation.attempt}",
-                        f"Judge Status: {status_icon} {status_text}",
                     ]
                     sections.append(("📄 Mutation Summary", "\n".join(summary_lines), None))
                     
@@ -4254,257 +4513,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         meta=meta_text,
                         expanded=False,
                     )
-
-    st.divider()
-
-    # ========== STEP 2: Few-Shot Generation ==========
-    st.markdown('<p class="analysis-step-label">Step 2 · Refine with few-shot examples</p>', unsafe_allow_html=True)
-    st.markdown("#### 🎯 Few-Shot Generation")
-    st.markdown(
-        '<p class="analysis-step-caption">Reuse the strongest Step 1 mutations as exemplars to guide new adversarial variants. Complete Step 1 before proceeding.</p>',
-        unsafe_allow_html=True,
-    )
-
-    with render_streamlit_accordion(
-        "📋 Step 2 checklist",
-        key="pj_step2_checklist",
-        expanded=False,
-    ):
-        st.markdown(
-            """
-            1. <strong>Select prompts</strong> – Choose which Step 1 prompts you want to refine.
-            2. <strong>Pick strategies</strong> – Decide which persuasion strategies to reuse in few-shot mode.
-            3. <strong>Review exemplars</strong> – Inspect the top-ranked Step 1 outputs that will seed the few-shot prompt.
-            4. <strong>Generate</strong> – Run Step 2 to produce refined mutations with in-context examples.
-            """,
-            unsafe_allow_html=True,
-        )
-    
-    # Check if Step 1 has been run
-    if not mutation_store:
-        st.warning("⚠️ No Step 1 results found. Please run Step 1: Zero-shot mutation first.")
-    else:
-        # Show available prompts from Step 1
-        available_prompts = list(mutation_store.keys())
-        st.markdown(f"**Available prompts from Step 1:** {len(available_prompts)}")
-        
-        selected_stage2_prompts = st.multiselect(
-            "Select prompts for Stage 2",
-            available_prompts,
-            default=available_prompts[:3] if len(available_prompts) >= 3 else available_prompts,
-            format_func=lambda x: textwrap.shorten(x, width=80, placeholder="…"),
-            key="stage2_prompt_selection",
-            help="Choose which Stage 1 prompts to use for few-shot generation.",
-        )
-        
-        few_shot_strategies = st.multiselect(
-            "Persuasion strategies",
-            strategies,
-            default=strategies[:2] if len(strategies) >= 2 else strategies,
-            key="stage2_strategies",
-            help="Select strategies for few-shot mode.",
-        )
-
-        few_shot_attempts = st.number_input(
-            "Attempts per strategy",
-            min_value=1,
-            max_value=20,
-            value=5,
-            step=1,
-            key="stage2_attempts",
-            help="Number of few-shot mutation attempts per strategy.",
-        )
-        
-        run_stage2 = st.button(
-            "🎯 Run Step 2 · Few-Shot Generation",
-            key="run_stage2",
-            type="primary",
-            width='stretch'
-        )
-        
-        if run_stage2:
-            if not selected_stage2_prompts:
-                st.warning("⚠️ Select at least one prompt for Step 2.")
-            elif not few_shot_strategies:
-                st.warning("⚠️ Select at least one strategy.")
-            elif not api_key or not model_choice:
-                st.error("⚠️ Enter your API key and choose a model in the sidebar.")
-            else:
-                st.markdown(f"**Processing {len(selected_stage2_prompts)} prompt(s) with {len(few_shot_strategies)} strategy(ies)...**")
-                
-                total_few_shot = 0
-                stage2_results = []
-                
-                for prompt_idx, original_prompt in enumerate(selected_stage2_prompts, 1):
-                    st.markdown(f"##### Prompt {prompt_idx}/{len(selected_stage2_prompts)}")
-                    st.caption(f"📝 {textwrap.shorten(original_prompt, width=100, placeholder='…')}")
-                    
-                    # Extract top 5 examples from Stage 1
-                    few_shot_examples = _extract_top_few_shot_examples(original_prompt, mutation_store, limit=5)
-                    
-                    if not few_shot_examples:
-                        st.warning(f"⚠️ No Stage 1 results for this prompt. Skipping.")
-                        continue
-                    
-                    st.caption(f"📚 Using {len(few_shot_examples)} top-ranked Stage 1 examples as demonstrations")
-                    prompt_reference_text = stage1_reference_map.get(original_prompt)
-                    if prompt_reference_text:
-                        reference_sections = [
-                            (
-                                "Reference Excerpt",
-                                prompt_reference_text,
-                                "generated",
-                            )
-                        ]
-                        reference_meta = f"Length {len(prompt_reference_text)} chars"
-                        render_prompt_style_panel(
-                            title="📄 Stage 1 Reference Text",
-                            sections=reference_sections,
-                            meta=reference_meta,
-                            expanded=False,
-                        )
-                    else:
-                        st.caption("⚠️ No Stage 1 reference text found—falling back to the current reference input field.")
-
-                    example_sections = []
-                    for ex_idx, example in enumerate(few_shot_examples, 1):
-                        example_sections.append(
-                            (
-                                f"Example #{ex_idx}",
-                                example,
-                                "generated",
-                            )
-                        )
-
-                    render_prompt_style_panel(
-                        title="🧾 Stage 1 Top Examples",
-                        sections=example_sections,
-                        meta=f"{len(few_shot_examples)} exemplars",
-                        expanded=False,
-                    )
-                    
-                    st.markdown(f"**Generating {len(few_shot_strategies)} strategy(ies) × {few_shot_attempts} attempt(s)...**")
-                    stage2_progress = st.progress(0.0)
-
-                    if prompt_reference_text:
-                        st.caption("📏 Stage 2 ROUGE reference inherited from Stage 1 run")
-                    else:
-                        prompt_reference_text = zero_shot_reference.strip() or None
-                        if prompt_reference_text:
-                            st.caption("📏 Stage 2 fallback reference: current Stage 1 reference field")
-                    
-                    evaluations = mutate_strategies(
-                        api_key,
-                        model_choice,
-                        provider,
-                        few_shot_strategies,
-                        original_prompt,
-                        reference_text=prompt_reference_text,
-                        few_shot_examples=few_shot_examples,  # Pass top 5 examples
-                        attempts_per_strategy=few_shot_attempts,
-                        temperature=1.0,  # Higher temperature for diverse mutation generation
-                        top_p=1.0,
-                        dry_run=False,
-                    )
-                    
-                    stage2_progress.progress(1.0)
-                    stage2_progress.empty()
-                    
-                    if not evaluations:
-                        st.error(f"❌ No few-shot mutations for prompt {prompt_idx}.")
-                        continue
-                    
-                    # Store few-shot results
-                    successful_count = 0
-                    for evaluation in evaluations:
-                        if evaluation is None or evaluation.mutation.error:
-                            continue
-                        
-                        parsed = evaluation.parsed
-                        if not parsed or not parsed.mutated_text:
-                            continue
-                        
-                        mutated_text = parsed.mutated_text.strip()
-                        reference_for_metrics = (prompt_reference_text or "").strip()
-
-                        llm_response: Optional[str] = None
-                        eval_metrics: Optional[SimilarityMetrics] = None
-
-                        if reference_for_metrics:
-                            try:
-                                llm_response = get_llm_completion(
-                                    mutated_text,
-                                    api_key,
-                                    model_choice,
-                                    provider=provider,
-                                    temperature=0.0,
-                                    top_p=0.8,
-                                )
-
-                                rouge_score = calculate_rouge_score(llm_response, reference_for_metrics)
-                                jaccard = calculate_jaccard_index(llm_response, reference_for_metrics)
-                                levenshtein = distance(llm_response, reference_for_metrics)
-
-                                eval_metrics = SimilarityMetrics(
-                                    rouge_l=rouge_score,
-                                    jaccard=jaccard,
-                                    levenshtein=levenshtein,
-                                )
-                            except Exception as exc:
-                                st.warning(
-                                    f"⚠️ Failed to score few-shot mutation (strategy: {evaluation.mutation.strategy}): {exc}"
-                                )
-                                eval_metrics = evaluation.metrics
-                        else:
-                            eval_metrics = evaluation.metrics
-
-                        evaluation_to_store = MutationEvaluation(
-                            mutation=evaluation.mutation,
-                            parsed=evaluation.parsed,
-                            metrics=eval_metrics,
-                            attempt=evaluation.attempt,
-                        )
-
-                        record_entries = mutation_store.setdefault(original_prompt, [])
-                        
-                        few_mutation_entry = MutationWithJudge(
-                            evaluation=evaluation_to_store,
-                            judge=None,
-                            judge_passed=None,
-                        )
-                        serialised_few = serialise_mutation_with_judge(few_mutation_entry)
-                        
-                        record_entries.append({
-                            "config": ["few", False],
-                            "data": serialised_few,
-                            "llm_response": llm_response,
-                        })
-                        
-                        successful_count += 1
-                        stage2_results.append({
-                            "prompt": original_prompt,
-                            "strategy": evaluation.mutation.strategy,
-                            "mutated_text": mutated_text,
-                            "llm_response": llm_response or "",
-                            "rouge_l": eval_metrics.rouge_l if eval_metrics else None,
-                            "jaccard": eval_metrics.jaccard if eval_metrics else None,
-                            "levenshtein": eval_metrics.levenshtein if eval_metrics else None,
-                        })
-                    
-                    total_few_shot += successful_count
-                    st.success(f"✅ Prompt {prompt_idx}: Generated {successful_count} few-shot mutations")
-                
-                st.success(f"🎉 **Stage 2 Complete!** Total few-shot mutations: {total_few_shot}")
-                
-                # Store results in session state for persistence
-                st.session_state["stage2_results"] = stage2_results
-
-    # Display summary table if results exist
-    stage2_results = st.session_state.get("stage2_results", [])
-    if stage2_results:
-        df_stage2 = pd.DataFrame(stage2_results)
-        st.markdown("**Stage 2 Summary**")
-        st.dataframe(df_stage2, width='stretch')
 
 def render_unlearning_detection_page(api_key, model_choice, provider):
     """Render the representational analysis experience."""

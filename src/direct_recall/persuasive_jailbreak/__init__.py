@@ -15,11 +15,16 @@ from .adversarial_prompting import (
     list_baseline_prompts,
     ExperimentMode,
     DEFAULT_HP_REFERENCE_EXCERPT,
+    DEFAULT_HB_REFERENCE_EXCERPT,
+    DEFAULT_GA_REFERENCE_EXCERPT,
     serialise_mutation_with_judge,
     deserialise_mutation_with_judge,
     MutationWithJudge,
     MutationEvaluation,
     SimilarityMetrics,
+    run_adversarial_persuasion,
+    parse_mutation_output,
+    evaluate_similarity,
 )
 
 __all__ = [
@@ -37,9 +42,14 @@ __all__ = [
     "list_baseline_prompts",
     "ExperimentMode",
     "DEFAULT_HP_REFERENCE_EXCERPT",
+    "DEFAULT_HB_REFERENCE_EXCERPT",
+    "DEFAULT_GA_REFERENCE_EXCERPT",
     "serialise_mutation_with_judge",
     "deserialise_mutation_with_judge",
     "MutationWithJudge",
     "MutationEvaluation",
     "SimilarityMetrics",
+    "run_adversarial_persuasion",
+    "parse_mutation_output",
+    "evaluate_similarity",
 ]
