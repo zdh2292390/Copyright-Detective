@@ -882,7 +882,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     if 'text_temperature' not in st.session_state:
         st.session_state['text_temperature'] = 0.7
     if 'text_top_p' not in st.session_state:
-        st.session_state['text_top_p'] = 1.0
+        st.session_state['text_top_p'] = 0.9
     if 'text_analysis_results' not in st.session_state:
         st.session_state['text_analysis_results'] = None
 
@@ -1176,7 +1176,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         temperature = st.slider(
             "Temperature",
             min_value=0.0,
-            max_value=2.0,
+            max_value=1.2,
             value=st.session_state['text_temperature'],
             step=0.01,
             help="Controls randomness. Lower values make the model more deterministic.",
@@ -1732,7 +1732,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
     if 'qa_eval_temperature' not in st.session_state:
         st.session_state['qa_eval_temperature'] = 0.0
     if 'qa_eval_top_p' not in st.session_state:
-        st.session_state['qa_eval_top_p'] = 1.0
+        st.session_state['qa_eval_top_p'] = 0.9
     if 'qa_evaluation_results' not in st.session_state:
         st.session_state['qa_evaluation_results'] = None
     
@@ -2059,7 +2059,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
             st.slider(
                 "Temperature",
                 min_value=0.0,
-                max_value=1.0,
+                max_value=1.2,
                 value=0.7,
                 step=0.05,
                 help="Controls randomness in Q/A generation. Higher = more diverse questions.",
@@ -2172,7 +2172,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
         st.slider(
             "Temperature",
             min_value=0.0,
-            max_value=1.0,
+            max_value=1.2,
             value=st.session_state['qa_eval_temperature'],
             step=0.05,
             help="Controls randomness in answering. 0 = deterministic.",
@@ -2202,7 +2202,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
         # Get values from session state
         num_eval_runs = st.session_state.get('num_eval_runs', 1)
         eval_temperature = st.session_state.get('eval_temperature', 0.0)
-        eval_top_p = st.session_state.get('eval_top_p', 1.0)
+        eval_top_p = st.session_state.get('eval_top_p', 0.9)
         
         if not st.session_state['qa_generated_qa_pairs']:
             st.warning("⚠️ Please generate Q/A pairs first before running evaluation.")
@@ -2363,7 +2363,7 @@ def render_sc_detection(api_key, model_choice, provider):
         'sc_evaluation_results': None,
         'sc_eval_runs': 1,
         'sc_eval_temperature': 0.0,
-        'sc_eval_top_p': 1.0,
+        'sc_eval_top_p': 0.9,
     }
     for key, value in default_state.items():
         if key not in st.session_state:
@@ -2598,7 +2598,7 @@ def render_sc_detection(api_key, model_choice, provider):
             st.slider(
                 "Generation temperature",
                 min_value=0.0,
-                max_value=1.0,
+                max_value=1.2,
                 step=0.05,
                 key="sc_gen_temperature",
             )
@@ -2741,7 +2741,7 @@ def render_sc_detection(api_key, model_choice, provider):
         st.slider(
             "Evaluation temperature",
             min_value=0.0,
-            max_value=1.0,
+            max_value=1.2,
             step=0.05,
             key="sc_eval_temperature",
         )
@@ -2851,60 +2851,7 @@ def render_sc_detection(api_key, model_choice, provider):
 
             # Add analysis for predefined examples
             if source_mode == "Predefined Examples" and st.session_state.get('sc_generated_mcqs'):
-                st.markdown("#### 📈 Memorization Analysis by Data Source")
-                selected_dataset = st.session_state.get("sc_dataset_selection", "arXivTection")
-
-                # Calculate accuracy by label
-                training_correct = 0
-                training_total = 0
-                non_training_correct = 0
-                non_training_total = 0
-
-                for question_idx, mcq in enumerate(st.session_state['sc_generated_mcqs']):
-                    label = mcq.get('label', 0)
-                    for run_results in results:
-                        if question_idx < len(run_results):
-                            eval_result = run_results[question_idx]
-                            is_correct = eval_result.get('is_correct', False)
-                            if label == 1:  # Training data
-                                training_total += 1
-                                if is_correct:
-                                    training_correct += 1
-                            else:  # Non-training data
-                                non_training_total += 1
-                                if is_correct:
-                                    non_training_correct += 1
-
-                training_accuracy = training_correct / training_total if training_total > 0 else 0
-                non_training_accuracy = non_training_correct / non_training_total if non_training_total > 0 else 0
-
-                memorization_metrics = [
-                    {
-                        "label": "Training Data Accuracy",
-                        "icon": "📚",
-                        "value": f"{training_accuracy * 100:.1f}%",
-                        "description": f"Questions from training data (label=1)",
-                        "range": f"{training_correct}/{training_total}",
-                    },
-                    {
-                        "label": "Non-training Data Accuracy",
-                        "icon": "🆕",
-                        "value": f"{non_training_accuracy * 100:.1f}%",
-                        "description": f"Questions from non-training data (label=0)",
-                        "range": f"{non_training_correct}/{non_training_total}",
-                    },
-                    {
-                        "label": "Memorization Gap",
-                        "icon": "📊",
-                        "value": f"{(training_accuracy - non_training_accuracy) * 100:.1f}%",
-                        "description": "Difference between training and non-training accuracy",
-                        "range": "",
-                    },
-                ]
-
-                render_metric_cards(memorization_metrics)
-
-                st.caption(f"Dataset: {selected_dataset}. Higher accuracy on training data (label=1) indicates potential memorization of training content.")
+                pass
 
             if accuracy >= 0.75:
                 st.error(
@@ -3056,7 +3003,7 @@ def render_sleek_attack_detection(api_key, model_choice, provider):
         st.slider(
             "Temperature",
             min_value=0.0,
-            max_value=1.0,
+            max_value=1.2,
             value=st.session_state['sleek_temperature'],
             step=0.05,
             help="Controls randomness in LLM responses. Lower values = more deterministic.",
@@ -3264,7 +3211,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
     if 'pdf_temperature' not in st.session_state:
         st.session_state['pdf_temperature'] = 0.7
     if 'pdf_top_p' not in st.session_state:
-        st.session_state['pdf_top_p'] = 1.0
+        st.session_state['pdf_top_p'] = 0.9
     if 'pdf_analysis_results' not in st.session_state:
         st.session_state['pdf_analysis_results'] = None
     if 'pdf_analysis_score_type' not in st.session_state:
@@ -3290,7 +3237,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                 st.session_state['pdf_chunk_size'] = 200
                 st.session_state['pdf_continuation_method_index'] = 0
                 st.session_state['pdf_temperature'] = 0.7
-                st.session_state['pdf_top_p'] = 1.0
+                st.session_state['pdf_top_p'] = 0.9
                 st.session_state['pdf_custom_prompt_text'] = ""
                 rerun_fn = getattr(st, "rerun", None)
                 if callable(rerun_fn):
@@ -3519,7 +3466,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         st.slider(
             'Temperature',
             min_value=0.0,
-            max_value=2.0,
+            max_value=1.2,
             value=st.session_state['pdf_temperature'],
             step=0.01,
             help='Controls randomness. Lower values make the model more deterministic.',
@@ -3555,7 +3502,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
     if analyze_document:
         # Get values from session state
         temperature = st.session_state.get('pdf_temperature_slider', 0.7)
-        top_p = st.session_state.get('pdf_top_p_slider', 1.0)
+        top_p = st.session_state.get('pdf_top_p_slider', 0.9)
         
         # Set default values for ranking parameters
         if score_type is None:
@@ -3657,7 +3604,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         cached_top_k = st.session_state.get("pdf_analysis_top_k", 5)
         cached_continuation_method = st.session_state.get("pdf_analysis_continuation_method", "Normal Continuation")
         cached_temperature = st.session_state.get("pdf_analysis_temperature", 0.7)
-        cached_top_p = st.session_state.get("pdf_analysis_top_p", 1.0)
+        cached_top_p = st.session_state.get("pdf_analysis_top_p", 0.9)
 
         render_pdf_results_section(
             cached_results,

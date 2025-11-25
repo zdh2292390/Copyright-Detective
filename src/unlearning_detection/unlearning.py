@@ -397,7 +397,7 @@ def run_unlearning_detection(
     target_description: str,
     strategy_ids: Iterable[str],
     temperature: float = 0.7,
-    top_p: float = 1.0,
+    top_p: float = 0.9,
     custom_prompt: Optional[str] = None,
 ) -> UnlearningDetectionSummary:
     """Execute detection probes and return aggregated results."""
