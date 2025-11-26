@@ -1,4 +1,4 @@
-"""Recall Test Module - Text and document memorization detection."""
+"""Content Recall Test Module - Text and document memorization detection."""
 
 from .comparison import (
     compare_texts,
@@ -28,7 +28,7 @@ from .single_choice import (
 )
 from .decop_analysis import get_available_datasets
 # Import persuasion functions from the independent adversarial_persuasion_detection module
-# These are still used in recall test for persuasion strategies
+# These are still used in content recall test for persuasion strategies
 from src.adversarial_persuasion_detection import (
     run_persuasion_probe,
     get_persuasion_template,
