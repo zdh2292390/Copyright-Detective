@@ -27,24 +27,12 @@ from .single_choice import (
     get_predefined_examples_index,
 )
 from .decop_analysis import get_available_datasets
-from .persuasive_jailbreak import (
+# Import persuasion functions from the independent adversarial_persuasion_detection module
+# These are still used in recall test for persuasion strategies
+from src.adversarial_persuasion_detection import (
     run_persuasion_probe,
     get_persuasion_template,
     get_persuasion_prompt,
-    list_persuasion_strategies,
-    get_mutation_instruction,
-    run_inference_scaling,
-    assess_intention_preservation,
-    mutate_strategies,
-    rank_by_rouge,
-    list_baseline_prompts,
-    ExperimentMode,
-    DEFAULT_HP_REFERENCE_EXCERPT,
-    serialise_mutation_with_judge,
-    deserialise_mutation_with_judge,
-    MutationWithJudge,
-    MutationEvaluation,
-    SimilarityMetrics,
 )
 
 __all__ = [
@@ -75,22 +63,8 @@ __all__ = [
     "get_predefined_examples_index",
     # dataset management
     "get_available_datasets",
-    # persuasive_jailbreak
+    # persuasion functions (imported from adversarial_persuasion_detection for backward compatibility)
     "run_persuasion_probe",
     "get_persuasion_template",
     "get_persuasion_prompt",
-    "list_persuasion_strategies",
-    "get_mutation_instruction",
-    "run_inference_scaling",
-    "assess_intention_preservation",
-    "mutate_strategies",
-    "rank_by_rouge",
-    "list_baseline_prompts",
-    "ExperimentMode",
-    "DEFAULT_HP_REFERENCE_EXCERPT",
-    "serialise_mutation_with_judge",
-    "deserialise_mutation_with_judge",
-    "MutationWithJudge",
-    "MutationEvaluation",
-    "SimilarityMetrics",
 ]

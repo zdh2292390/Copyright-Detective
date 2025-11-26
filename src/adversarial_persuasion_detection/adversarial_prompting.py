@@ -21,7 +21,7 @@ from src.direct_recall.comparison import (
 )
 
 # Load framework.json for zero-shot templates
-framework_path = Path(__file__).resolve().parents[2] / "direct_recall" / "persuasive_jailbreak" / "framework.json"
+framework_path = Path(__file__).resolve().parent / "framework.json"
 try:
     with framework_path.open("r", encoding="utf-8") as f:
         framework_templates = json.load(f)
@@ -725,9 +725,7 @@ _DEFAULT_TEMPLATE_LIBRARY: Dict[str, str] = {
 def _load_few_shot_template(strategy: str) -> Optional[str]:
     """Load the few-shot persuasion template for a given strategy."""
     few_shot_path = (
-        Path(__file__).resolve().parents[2]
-        / "direct_recall"
-        / "persuasive_jailbreak"
+        Path(__file__).resolve().parent
         / "few-shot.json"
     )
 

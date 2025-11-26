@@ -37,7 +37,7 @@ from src.direct_recall.sleek_attack import run_sleek_evaluation
 from src.config import DEFAULT_OPENROUTER_KEY
 
 import matplotlib.pyplot as plt
-from src.direct_recall.persuasive_jailbreak import (
+from src.adversarial_persuasion_detection import (
     run_persuasion_probe,
     get_persuasion_template,
     get_persuasion_prompt,
@@ -832,6 +832,7 @@ def render_sidebar():
                 "Go to",
                 [
                     "Recall Test",
+                    "Persuasive Jailbreak Detection",
                     "Unlearning Detection Test",
                     "Legal Cases Display",
                 ],
@@ -848,11 +849,10 @@ def render_snippet_to_document_page(api_key, model_choice, provider):
     st.markdown("### 🔎 Recall Test")
 
 
-    snippet_tab, pdf_tab, knowledge_tab, jailbreak_tab = st.tabs([
+    snippet_tab, pdf_tab, knowledge_tab = st.tabs([
         "Text Memorization Detection",
         "Document Memorization Detection",
         "Knowledge Memorization Detection",
-        "Adversarial Persuasive Prompting Detection",
     ])
 
     with snippet_tab:
@@ -863,9 +863,6 @@ def render_snippet_to_document_page(api_key, model_choice, provider):
 
     with knowledge_tab:
         render_knowledge_memorization_page(api_key, model_choice, provider)
-
-    with jailbreak_tab:
-        render_adversarial_persuasion_page(api_key, model_choice, provider)
 
 
 def render_text_analysis_page(api_key, model_choice, provider, *, show_page_header: bool = True):
@@ -3620,7 +3617,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
 
 
 def render_adversarial_persuasion_page(api_key, model_choice, provider):
-    """Render the adversarial persuasive prompting workspace."""
+    """Render the persuasive jailbreak detection workspace."""
     
     # Initialize session state for Adversarial Persuasion
     if 'adv_stage1_input_prompt' not in st.session_state:
@@ -3647,7 +3644,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     # Page header with clear cache button
     header_col, button_col = st.columns([4, 1])
     with header_col:
-        st.markdown('<h4 class="section-header">🔓 Adversarial Persuasive Prompting Detection</h4>', unsafe_allow_html=True)
+        st.markdown('<h4 class="section-header">🔓 Persuasive Jailbreak Detection</h4>', unsafe_allow_html=True)
         st.markdown(
             "An evaluation framework that uses persuasion techniques to assess copyright infringement risks in LLMs."
         )
@@ -3701,7 +3698,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     st.markdown(
         """
         <div class=\"analysis-callout\">
-            <div class=\"analysis-callout__title\">How the Adversarial Persuasive Prompting Detection works</div>
+            <div class=\"analysis-callout__title\">How the Persuasive Jailbreak Detection works</div>
             <ul class=\"analysis-callout__list\">
                 <li><strong>One-shot mutation</strong> — Generate baseline adversarial prompt variations without examples.</li>
                 <li><strong>Few-shot refinement</strong> — Use predefined examples from few-shot.json to guide stronger mutations.</li>
@@ -3857,7 +3854,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             try:
                 import json
                 from pathlib import Path
-                few_shot_path = Path(__file__).parent / "direct_recall" / "persuasive_jailbreak" / "few-shot.json"
+                few_shot_path = Path(__file__).parent / "adversarial_persuasion_detection" / "few-shot.json"
                 with open(few_shot_path) as f:
                     few_shot_data = json.load(f)
             except Exception as e:
@@ -3868,7 +3865,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     with st.expander(f"🔧 {strategy} ({mode})", expanded=False):
                         try:
                             # Import the persuasion strategies
-                            from src.direct_recall.persuasive_jailbreak.adversarial_prompting import PERSUASIVE_MUTATION_TEMPLATES
+                            from src.adversarial_persuasion_detection.adversarial_prompting import PERSUASIVE_MUTATION_TEMPLATES
                             
                             if mode == "One-Shot":
                                 # Show one-shot prompt preview
@@ -4052,7 +4049,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             if generation_mode == "Few-Shot":
                 import json
                 from pathlib import Path
-                few_shot_path = Path(__file__).parent / "direct_recall" / "persuasive_jailbreak" / "few-shot.json"
+                few_shot_path = Path(__file__).parent / "adversarial_persuasion_detection" / "few-shot.json"
                 try:
                     with open(few_shot_path) as f:
                         few_shot_data = json.load(f)
@@ -4438,75 +4435,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     judge_result = panel_payload.get("judge")
                     llm_response = panel_payload.get("llm_response") or ""
 
-                    sections: List[Tuple[str,str,Optional[str]]] = []
-                    
-                    # Summary section
-                    summary_lines = [
-                        f"Strategy: {evaluation.mutation.strategy}",
-                        f"Attempt: {evaluation.attempt}",
-                    ]
-                    sections.append(("📄 Mutation Summary", "\n".join(summary_lines), None))
-                    
-                    # Ground truth comparison
-                    if llm_response:
-                        reference_text = stage1_reference_map.get(selected_prompt, '')
-                        if reference_text:
-                            st.markdown("**🧠 Ground Truth Comparison**")
-                            render_direct_recall_diff(
-                                reference_text,
-                                llm_response,
-                                title="Generated Text vs. Reference Text",
-                                metrics=metrics,
-                            )
-                    
-                    # Mutated prompt
-                    sections.append(("📝 Mutated Prompt", mutated_text, "generated"))
-                    
-                    # Metrics
-                    if metrics:
-                        metrics_lines = [
-                            f"ROUGE-L: {rouge_score:.4f}",
-                            f"Jaccard: {jaccard_value:.4f}",
-                            f"Levenshtein: {levenshtein_value}",
-                        ]
-                        sections.append(("📊 Similarity Metrics", "\n".join(metrics_lines), None))
-                    
-                    # LLM Response
-                    if llm_response:
-                        sections.append(("🧪 Evaluation Model Response", llm_response, "generated"))
-                    
-                    # Intention judging results
-                    if judged_flag:
-                        primary_error = judge_meta.get("primary_error")
-                        if primary_error:
-                            primary_content = f"Error: {primary_error}"
-                        else:
-                            core_intention = judge_meta.get("core_intention")
-                            restated_mutated_text = judge_meta.get("restated_mutated_text")
-                            bits = []
-                            if core_intention:
-                                bits.append(f"Core Intention Extracted:\n{core_intention}")
-                            if restated_mutated_text:
-                                bits.append(f"Restated Mutated Text:\n{restated_mutated_text}")
-                            primary_content = "\n\n".join(bits) if bits else "No assessment data available"
-                        sections.append(("🧠 Primary Intention Assessment", primary_content, "generated"))
-                        
-                        secondary_error = judge_meta.get("secondary_error")
-                        if secondary_error:
-                            secondary_content = f"Error: {secondary_error}"
-                        else:
-                            secondary_content = f"{status_icon} {status_text}"
-                        sections.append(("⚖️ Secondary Validation", secondary_content, None))
-                        
-                        judge_response = judge_result.response if judge_result else ""
-                        
-                        judge_response = judge_result.response if judge_result else ""
-                        if judge_response:
-                            sections.append(("🗳️ Judge Raw Response", judge_response, "generated"))
-                    else:
-                        sections.append(("🧠 Primary Intention Assessment", "⏳ Pending — judge not run yet.", None))
-                        sections.append(("⚖️ Secondary Validation", "⏳ Pending — judge not run yet.", None))
-
                     # Build meta string with metrics
                     meta_parts = [f"{status_icon.strip()} {status_text.strip()}"]
                     if metrics:
@@ -4520,12 +4448,67 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         meta_parts.append(f"Levenshtein {levenshtein_display}")
                     meta_text = " | ".join(meta_parts)
 
-                    render_prompt_style_panel(
-                        title=f"Mutation #{idx} — {evaluation.mutation.strategy}",
-                        sections=sections,
-                        meta=meta_text,
-                        expanded=False,
-                    )
+                    # Use Streamlit's native accordion (expander) for each mutation
+                    with st.expander(f"Mutation #{idx} — {evaluation.mutation.strategy} | {meta_text}", expanded=False):
+                        # Summary and Metrics in compact format
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.caption(f"**Strategy:** {evaluation.mutation.strategy} | **Attempt:** {evaluation.attempt}")
+                        with col2:
+                            if metrics:
+                                st.caption(f"**ROUGE-L:** {rouge_score:.4f} | **Jaccard:** {jaccard_value:.4f} | **Levenshtein:** {levenshtein_value}")
+                        
+                        # Mutated prompt
+                        st.markdown("**📝 Mutated Prompt**")
+                        st.text(mutated_text)
+                        
+                        # Ground truth comparison - moved inside accordion
+                        if llm_response:
+                            reference_text = stage1_reference_map.get(selected_prompt, '')
+                            if reference_text:
+                                st.markdown("**🧠 Ground Truth Comparison**")
+                                render_direct_recall_diff(
+                                    reference_text,
+                                    llm_response,
+                                    title="Generated Text vs. Reference Text",
+                                    metrics=metrics,
+                                )
+                        
+                        # Intention judging results
+                        if judged_flag:
+                            col3, col4 = st.columns(2)
+                            with col3:
+                                st.markdown("**🧠 Primary Intention Assessment**")
+                                primary_error = judge_meta.get("primary_error")
+                                if primary_error:
+                                    st.caption(f"Error: {primary_error}")
+                                else:
+                                    core_intention = judge_meta.get("core_intention")
+                                    restated_mutated_text = judge_meta.get("restated_mutated_text")
+                                    bits = []
+                                    if core_intention:
+                                        bits.append(f"**Core Intention:** {core_intention}")
+                                    if restated_mutated_text:
+                                        bits.append(f"**Restated:** {restated_mutated_text}")
+                                    if bits:
+                                        st.markdown("\n\n".join(bits))
+                                    else:
+                                        st.caption("No assessment data available")
+                            
+                            with col4:
+                                st.markdown("**⚖️ Secondary Validation**")
+                                secondary_error = judge_meta.get("secondary_error")
+                                if secondary_error:
+                                    st.caption(f"Error: {secondary_error}")
+                                else:
+                                    st.markdown(f"{status_icon} {status_text}")
+                            
+                            judge_response = judge_result.response if judge_result else ""
+                            if judge_response:
+                                st.markdown("**🗳️ Judge Raw Response**")
+                                st.text(judge_response)
+                        else:
+                            st.caption("⏳ **Primary Intention Assessment & Secondary Validation:** Pending — judge not run yet.")
 
 def render_unlearning_detection_page(api_key, model_choice, provider):
     """Render the representational analysis experience."""
