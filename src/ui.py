@@ -4476,24 +4476,31 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         
                         # Intention judging results
                         if judged_flag:
+                            st.markdown("**🧠 Primary Intention Assessment**")
+                            primary_error = judge_meta.get("primary_error")
+                            if primary_error:
+                                st.caption(f"Error: {primary_error}")
+                            else:
+                                core_intention = judge_meta.get("core_intention")
+                                restated_mutated_text = judge_meta.get("restated_mutated_text")
+                                bits = []
+                                if core_intention:
+                                    bits.append(f"**Core Intention:** {core_intention}")
+                                if restated_mutated_text:
+                                    bits.append(f"**Restated:** {restated_mutated_text}")
+                                if bits:
+                                    st.markdown("\n\n".join(bits))
+                                else:
+                                    st.caption("No assessment data available")
+                            
                             col3, col4 = st.columns(2)
                             with col3:
-                                st.markdown("**🧠 Primary Intention Assessment**")
-                                primary_error = judge_meta.get("primary_error")
-                                if primary_error:
-                                    st.caption(f"Error: {primary_error}")
+                                st.markdown("**🗳️ Judge Raw Response**")
+                                judge_response = judge_result.response if judge_result else ""
+                                if judge_response:
+                                    st.text(judge_response)
                                 else:
-                                    core_intention = judge_meta.get("core_intention")
-                                    restated_mutated_text = judge_meta.get("restated_mutated_text")
-                                    bits = []
-                                    if core_intention:
-                                        bits.append(f"**Core Intention:** {core_intention}")
-                                    if restated_mutated_text:
-                                        bits.append(f"**Restated:** {restated_mutated_text}")
-                                    if bits:
-                                        st.markdown("\n\n".join(bits))
-                                    else:
-                                        st.caption("No assessment data available")
+                                    st.caption("No response available")
                             
                             with col4:
                                 st.markdown("**⚖️ Secondary Validation**")
@@ -4502,11 +4509,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                     st.caption(f"Error: {secondary_error}")
                                 else:
                                     st.markdown(f"{status_icon} {status_text}")
-                            
-                            judge_response = judge_result.response if judge_result else ""
-                            if judge_response:
-                                st.markdown("**🗳️ Judge Raw Response**")
-                                st.text(judge_response)
                         else:
                             st.caption("⏳ **Primary Intention Assessment & Secondary Validation:** Pending — judge not run yet.")
 
