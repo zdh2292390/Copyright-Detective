@@ -1,4 +1,4 @@
-"""Persuasive Jailbreak Detection Module - Adversarial prompting and jailbreak detection."""
+"""Persuasive Jailbreak Detection Test Module - Adversarial prompting and jailbreak detection."""
 
 from .jailbreak_probe import (
     run_persuasion_probe,

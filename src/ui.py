@@ -832,7 +832,7 @@ def render_sidebar():
                 "Go to",
                 [
                     "Recall Test",
-                    "Persuasive Jailbreak Detection",
+                    "Persuasive Jailbreak Detection Test",
                     "Unlearning Detection Test",
                     "Legal Cases Display",
                 ],
@@ -2491,6 +2491,10 @@ def render_sc_detection(api_key, model_choice, provider):
         )
         
         if load_examples:
+            if not question_indices.strip():
+                st.warning("⚠️ Please enter question indices before loading.")
+                return
+            
             try:
                 from src.direct_recall.single_choice import load_predefined_examples
                 indices_to_load = None
@@ -3617,7 +3621,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
 
 
 def render_adversarial_persuasion_page(api_key, model_choice, provider):
-    """Render the persuasive jailbreak detection workspace."""
+    """Render the persuasive jailbreak detection test workspace."""
     
     # Initialize session state for Adversarial Persuasion
     if 'adv_stage1_input_prompt' not in st.session_state:
@@ -3644,7 +3648,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     # Page header with clear cache button
     header_col, button_col = st.columns([4, 1])
     with header_col:
-        st.markdown('<h4 class="section-header">🔓 Persuasive Jailbreak Detection</h4>', unsafe_allow_html=True)
+        st.markdown('<h4 class="section-header">🔓 Persuasive Jailbreak Detection Test</h4>', unsafe_allow_html=True)
         st.markdown(
             "An evaluation framework that uses persuasion techniques to assess copyright infringement risks in LLMs."
         )
@@ -3698,7 +3702,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     st.markdown(
         """
         <div class=\"analysis-callout\">
-            <div class=\"analysis-callout__title\">How the Persuasive Jailbreak Detection works</div>
+            <div class=\"analysis-callout__title\">How the Persuasive Jailbreak Detection Test works</div>
             <ul class=\"analysis-callout__list\">
                 <li><strong>One-shot mutation</strong> — Generate baseline adversarial prompt variations without examples.</li>
                 <li><strong>Few-shot refinement</strong> — Use predefined examples from few-shot.json to guide stronger mutations.</li>
