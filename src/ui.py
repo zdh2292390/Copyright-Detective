@@ -1730,9 +1730,13 @@ def render_qa_based_detection(api_key, model_choice, provider):
     if 'qa_num_eval_runs' not in st.session_state:
         st.session_state['qa_num_eval_runs'] = 1
     if 'qa_eval_temperature' not in st.session_state:
-        st.session_state['qa_eval_temperature'] = 0.0
+        st.session_state['qa_eval_temperature'] = 0.7
     if 'qa_eval_top_p' not in st.session_state:
         st.session_state['qa_eval_top_p'] = 0.9
+    if 'qa_gen_temperature' not in st.session_state:
+        st.session_state['qa_gen_temperature'] = 0.7
+    if 'qa_gen_top_p' not in st.session_state:
+        st.session_state['qa_gen_top_p'] = 0.9
     if 'qa_evaluation_results' not in st.session_state:
         st.session_state['qa_evaluation_results'] = None
     
@@ -1927,18 +1931,11 @@ def render_qa_based_detection(api_key, model_choice, provider):
         st.caption(f"📖 Selected: {selected_literature}")
         qa_pairs = literature_qa_data[selected_literature]
 
-        # Load button for predefined examples
-        load_literature = st.button(
-            "📖 Load Literature Q/A Pairs",
-            key="qa_load_literature_button",
-            width='stretch',
-        )
-
-        if load_literature:
-            st.session_state['qa_generated_qa_pairs'] = qa_pairs
-            st.session_state['qa_document_text_content'] = f"Predefined literature example: {selected_literature}"
-            st.session_state['qa_evaluation_results'] = None
-            st.success(f"✅ Loaded {len(qa_pairs)} Q/A pairs from {selected_literature}.")
+        # 直接用手风琴展示所有Q/A对
+        st.markdown("<p class='analysis-step-label'>Predefined Q/A Pairs</p>", unsafe_allow_html=True)
+        for idx, qa in enumerate(qa_pairs):
+            with st.expander(f"Q{idx+1}: {qa['question']}"):
+                st.markdown(f"**Answer:** {qa['answer']}")
     else:
         # Dataset mode
         if not source_text:
