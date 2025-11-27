@@ -1930,8 +1930,10 @@ def render_qa_based_detection(api_key, model_choice, provider):
         # Display selected literature info
         st.caption(f"📖 Selected: {selected_literature}")
         qa_pairs = literature_qa_data[selected_literature]
-
-        # 直接用手风琴展示所有Q/A对
+        st.session_state['qa_generated_qa_pairs'] = qa_pairs
+        st.session_state['qa_document_text_content'] = f"Predefined literature example: {selected_literature}"
+        st.success(f"✅ Loaded {len(qa_pairs)} Q/A pairs from {selected_literature}.")
+        # 展示Q/A对
         st.markdown("<p class='analysis-step-label'>Predefined Q/A Pairs</p>", unsafe_allow_html=True)
         for idx, qa in enumerate(qa_pairs):
             with st.expander(f"Q{idx+1}: {qa['question']}"):
