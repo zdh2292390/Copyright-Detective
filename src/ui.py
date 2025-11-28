@@ -1527,6 +1527,40 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
 
                 st.pyplot(fig)
 
+                # Add boxplot for distribution analysis
+                st.markdown('<h4 class="section-header sm">📦 Distribution Analysis (Boxplots)</h4>', unsafe_allow_html=True)
+                
+                fig_box, ax_box = plt.subplots(1, 3, figsize=(15, 6))
+                
+                # ROUGE-L boxplot
+                ax_box[0].boxplot([rouge_scores], labels=['ROUGE-L'], patch_artist=True)
+                ax_box[0].set_title('ROUGE-L Distribution')
+                ax_box[0].set_ylabel('Score')
+                ax_box[0].grid(True, alpha=0.3)
+                
+                # Jaccard boxplot
+                ax_box[1].boxplot([jaccard_scores], labels=['Jaccard Index'], patch_artist=True)
+                ax_box[1].set_title('Jaccard Index Distribution')
+                ax_box[1].set_ylabel('Score')
+                ax_box[1].grid(True, alpha=0.3)
+                
+                # Levenshtein boxplot
+                ax_box[2].boxplot([levenshtein_scores], labels=['Levenshtein'], patch_artist=True)
+                ax_box[2].set_title('Levenshtein Distance Distribution')
+                ax_box[2].set_ylabel('Distance')
+                ax_box[2].grid(True, alpha=0.3)
+                
+                # Customize box colors
+                colors = ['lightblue', 'lightgreen', 'lightcoral']
+                for i, ax in enumerate(ax_box):
+                    for box in ax.patches:
+                        box.set_facecolor(colors[i])
+                        box.set_edgecolor('black')
+                        box.set_linewidth(1.5)
+                
+                plt.tight_layout()
+                st.pyplot(fig_box)
+
                 additional_cols = [
                     column
                     for column in ["semantic_similarity", "minhash_similarity", "acs_word", "lcs_word_ratio"]
@@ -4458,6 +4492,55 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         "judge_status": st.column_config.TextColumn("Judge Status", width="medium"),
                     },
                 )
+
+                # Add boxplot analysis by strategy
+                st.markdown("**📦 Distribution Analysis by Strategy**")
+                st.caption("Boxplots showing the distribution of ROUGE-L scores across different persuasion strategies.")
+                
+                # Prepare data for boxplots
+                strategy_groups = {}
+                for row in ranked_rows:
+                    strategy = row["strategy"]
+                    try:
+                        rouge_score = float(row["rouge_l"])
+                        if strategy not in strategy_groups:
+                            strategy_groups[strategy] = []
+                        strategy_groups[strategy].append(rouge_score)
+                    except (ValueError, TypeError):
+                        continue
+                
+                if strategy_groups:
+                    fig_box, ax_box = plt.subplots(figsize=(12, 6))
+                    
+                    # Prepare data for boxplot
+                    strategies = list(strategy_groups.keys())
+                    data = [strategy_groups[strategy] for strategy in strategies]
+                    
+                    # Create boxplot
+                    box = ax_box.boxplot(data, labels=strategies, patch_artist=True)
+                    
+                    # Customize box colors
+                    colors = ['lightblue', 'lightgreen', 'lightcoral', 'lightyellow', 'lightpink', 'lightcyan']
+                    for i, patch in enumerate(box['boxes']):
+                        color = colors[i % len(colors)]
+                        patch.set_facecolor(color)
+                        patch.set_edgecolor('black')
+                        patch.set_linewidth(1.5)
+                    
+                    # Customize median lines
+                    for median in box['medians']:
+                        median.set(color='red', linewidth=2)
+                    
+                    ax_box.set_title('ROUGE-L Score Distribution by Persuasion Strategy', fontsize=14, fontweight='bold')
+                    ax_box.set_ylabel('ROUGE-L Score', fontsize=12)
+                    ax_box.set_xlabel('Strategy', fontsize=12)
+                    ax_box.grid(True, alpha=0.3)
+                    plt.xticks(rotation=45, ha='right')
+                    
+                    plt.tight_layout()
+                    st.pyplot(fig_box)
+                else:
+                    st.info("No valid ROUGE-L scores available for boxplot analysis.")
 
                 st.markdown("**🎯 Intention Preservation Judging Results**")
                 st.caption("Click to expand each mutation result and view detailed intention preservation analysis.")
