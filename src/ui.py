@@ -3773,7 +3773,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
 
     st.markdown("**⚙️ Sampling & evaluation parameters**")
     
-    col_mode, col_strategies, col_attempts = st.columns([1, 2, 1])
+    col_mode, col_strategies, col_attempts_strategy, col_attempts_prompt = st.columns([1, 2, 1, 1])
     with col_mode:
         generation_mode = st.selectbox(
             "Choose zero-shot/few-shot",
@@ -3793,7 +3793,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             help="Select one or more persuasion strategies to apply.",
         )
     
-    with col_attempts:
+    with col_attempts_strategy:
         attempts = st.number_input(
             "Attempts per strategy",
             min_value=1,
@@ -3802,6 +3802,17 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             step=1,
             key="attempts",
             help="Number of mutation attempts for each strategy (more attempts = broader exploration).",
+        )
+    
+    with col_attempts_prompt:
+        attempts_per_prompt = st.number_input(
+            "Attempts per mutated prompt",
+            min_value=1,
+            max_value=10,
+            value=st.session_state.get('adv_attempts_per_prompt', 1),
+            step=1,
+            key="attempts_per_prompt",
+            help="Number of generation attempts for each mutated prompt.",
         )
 
     st.text_area(
@@ -3823,13 +3834,16 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         generation_modes = [generation_mode]  # Convert to list for compatibility
         selected_strategies = st.session_state.get('strategies', [])
         attempts = st.session_state.get('attempts', 3)
+        attempts_per_prompt = st.session_state.get('attempts_per_prompt', 1)
         reference_text = st.session_state.get('reference', '')
         
         st.markdown("**📋 Generation Configuration Summary:**")
         st.markdown(f"- **Mode:** {generation_mode}")
         st.markdown(f"- **Strategies:** {', '.join(selected_strategies) if selected_strategies else 'None selected'}")
         st.markdown(f"- **Attempts per strategy:** {attempts}")
+        st.markdown(f"- **Attempts per mutated prompt:** {attempts_per_prompt}")
         st.markdown(f"- **Total mutations:** {len(selected_strategies) * attempts if selected_strategies else 0}")
+        st.markdown(f"- **Total generations:** {len(selected_strategies) * attempts * attempts_per_prompt if selected_strategies else 0}")
         
         st.markdown("**📝 Original Prompt:**")
         if input_prompt.strip():
@@ -4004,6 +4018,9 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         original_prompt = st.session_state.get('input_prompt', '')
         reference_text = st.session_state.get('reference', '')
         generation_mode = st.session_state.get('generation_mode', 'One-Shot')
+        selected_strategies = st.session_state.get('strategies', [])
+        attempts = st.session_state.get('attempts', 3)
+        attempts_per_prompt = st.session_state.get('attempts_per_prompt', 1)
         generation_modes = [generation_mode]  # Convert to list for compatibility
         
         # Validation
@@ -4087,6 +4104,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     reference_text=None,  # Don't calculate ROUGE during generation
                     few_shot_examples=few_shot_examples,  # Pass examples if Few-Shot
                     attempts_per_strategy=attempts,
+                    attempts_per_prompt=attempts_per_prompt,
                     temperature=1.0,  # Higher temperature for diverse mutation generation
                     top_p=1.0,
                     dry_run=False,
@@ -4122,8 +4140,10 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                 progress_bar = st.progress(0.0)
                 progress_text = st.empty()
                 
+                total_evaluations = len(all_evaluations) * attempts_per_prompt
+                eval_count = 0
+                
                 for eval_idx, evaluation in enumerate(all_evaluations):
-                    progress_text.text(f"Evaluating mutation {eval_idx + 1}/{len(all_evaluations)}")
                     if evaluation is None or evaluation.mutation.error:
                         continue
                     
@@ -4133,46 +4153,54 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     
                     mutated_text = parsed.mutated_text.strip()
                     
-                    # Send mutated prompt to LLM to get its response
-                    try:
-                        llm_response = get_llm_completion(
-                            mutated_text,
-                            api_key,
-                            model_choice,
-                            provider=provider,
-                            temperature=0.0,  # Deterministic for evaluation
-                            top_p=0.8,
-                        )
+                    # Send mutated prompt to LLM multiple times to get responses
+                    for prompt_attempt in range(1, attempts_per_prompt + 1):
+                        progress_text.text(f"Evaluating mutation {eval_count + 1}/{total_evaluations}")
+                        progress_bar.progress((eval_count + 1) / total_evaluations)
                         
-                        # Calculate similarity metrics
-                        rouge_score = calculate_rouge_score(llm_response, reference_text.strip())
-                        jaccard = calculate_jaccard_index(llm_response, reference_text.strip())
-                        levenshtein = distance(llm_response, reference_text.strip())
+                        try:
+                            llm_response = get_llm_completion(
+                                mutated_text,
+                                api_key,
+                                model_choice,
+                                provider=provider,
+                                temperature=0.0,  # Deterministic for evaluation
+                                top_p=0.8,
+                            )
+                            
+                            # Calculate similarity metrics
+                            rouge_score = calculate_rouge_score(llm_response, reference_text.strip())
+                            jaccard = calculate_jaccard_index(llm_response, reference_text.strip())
+                            levenshtein = distance(llm_response, reference_text.strip())
+                            
+                            eval_metrics = SimilarityMetrics(
+                                rouge_l=rouge_score,
+                                jaccard=jaccard,
+                                levenshtein=levenshtein,
+                            )
+                            
+                            updated_evaluation = MutationEvaluation(
+                                mutation=evaluation.mutation,
+                                parsed=evaluation.parsed,
+                                metrics=eval_metrics,
+                                attempt=evaluation.attempt,
+                                mode=evaluation.mode,
+                            )
+                            
+                            evaluated_mutations.append({
+                                'evaluation': updated_evaluation,
+                                'llm_response': llm_response,
+                                'rouge_l': rouge_score,
+                                'jaccard': jaccard,
+                                'levenshtein': levenshtein,
+                                'prompt_attempt': prompt_attempt,
+                            })
+                            
+                        except Exception as e:
+                            st.warning(f"⚠️ Failed to evaluate mutation {eval_idx + 1}, attempt {prompt_attempt}: {e}")
+                            continue
                         
-                        eval_metrics = SimilarityMetrics(
-                            rouge_l=rouge_score,
-                            jaccard=jaccard,
-                            levenshtein=levenshtein,
-                        )
-                        
-                        updated_evaluation = MutationEvaluation(
-                            mutation=evaluation.mutation,
-                            parsed=evaluation.parsed,
-                            metrics=eval_metrics,
-                            attempt=evaluation.attempt,
-                            mode=evaluation.mode,
-                        )
-                        
-                        evaluated_mutations.append({
-                            "evaluation": updated_evaluation,
-                            "llm_response": llm_response,
-                        })
-                        
-                    except Exception as e:
-                        st.warning(f"⚠️ Failed to evaluate mutation {eval_idx + 1}: {e}")
-                        continue
-                    
-                    progress_bar.progress((eval_idx + 1) / len(all_evaluations))
+                        eval_count += 1
                 
                 progress_bar.empty()
                 progress_text.empty()
@@ -4206,8 +4234,9 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         )
                         serialised_entry = serialise_mutation_with_judge(mutation_entry)
                         
-                        # Check for duplicates
+                        # Check for duplicates - now include prompt_attempt
                         mutated_text = evaluation.parsed.mutated_text.strip()
+                        prompt_attempt = eval_item.get("prompt_attempt", 1)
                         entry_exists = False
                         for stored in record_entries:
                             stored_config = stored.get("config") or []
@@ -4216,8 +4245,9 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 stored_eval = stored_data.get("evaluation") or {}
                                 stored_parsed = stored_eval.get("parsed") or {}
                                 stored_mutated_text = stored_parsed.get("mutated_text", "").strip()
+                                stored_prompt_attempt = stored.get("prompt_attempt", 1)
                                 
-                                if stored_mutated_text == mutated_text:
+                                if stored_mutated_text == mutated_text and stored_prompt_attempt == prompt_attempt:
                                     entry_exists = True
                                     break
                         
@@ -4226,6 +4256,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 "config": [config_type, False],
                                 "data": serialised_entry,
                                 "llm_response": llm_response,
+                                "prompt_attempt": prompt_attempt,
                             })
                             successful_count += 1
                     
@@ -4259,6 +4290,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 record_entries = mutation_store.get(original_prompt, [])
                                 # Determine config_type from the evaluation's mode
                                 config_type = "one" if evaluation.mode == "One-Shot" else "few"
+                                prompt_attempt = eval_item.get("prompt_attempt", 1)
                                 for stored in record_entries:
                                     stored_config = stored.get("config") or []
                                     if stored_config and stored_config[0] == config_type:
@@ -4266,8 +4298,9 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                         stored_eval = stored_data.get("evaluation") or {}
                                         stored_parsed = stored_eval.get("parsed") or {}
                                         stored_mutated_text = stored_parsed.get("mutated_text", "").strip()
+                                        stored_prompt_attempt = stored.get("prompt_attempt", 1)
                                         
-                                        if stored_mutated_text == mutated_text:
+                                        if stored_mutated_text == mutated_text and stored_prompt_attempt == prompt_attempt:
                                             # Update with judging results
                                             judged_entry = MutationWithJudge(
                                                 evaluation=evaluation,
@@ -4333,6 +4366,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                 judge_meta = entry.get("judge_meta") or {}
                 config = entry.get("config") or []
                 judged_flag = bool(config[1]) if len(config) > 1 else False
+                prompt_attempt = entry.get("prompt_attempt", 1)
 
                 deserialised = deserialise_mutation_with_judge(serialised)
                 evaluation = deserialised.evaluation
@@ -4362,6 +4396,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     "score": rouge_l,
                     "strategy": evaluation.mutation.strategy,
                     "attempt": evaluation.attempt,
+                    "prompt_attempt": prompt_attempt,
                     "mutated_text": mutated_text,
                     "mutated_display": textwrap.shorten(mutated_text, width=120, placeholder="…") if mutated_text else "",
                     "llm_response": llm_response or "",
@@ -4380,6 +4415,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     "judge": deserialised.judge,
                     "judge_meta": judge_meta,
                     "llm_response": llm_response,
+                    "prompt_attempt": prompt_attempt,
                     "status_icon": status_icon,
                     "status_text": status_text,
                     "judged": judged_flag,
@@ -4395,6 +4431,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         "rank": idx,
                         "strategy": row["strategy"],
                         "attempt": row["attempt"],
+                        "prompt_attempt": row["prompt_attempt"],
                         "mutated_text": row["mutated_display"],
                         "llm_response": row["llm_display"],
                         "rouge_l": row["rouge_l"],
@@ -4411,7 +4448,8 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     column_config={
                         "rank": st.column_config.NumberColumn("Rank", width="small"),
                         "strategy": st.column_config.TextColumn("Strategy", width="medium"),
-                        "attempt": st.column_config.NumberColumn("Attempt", width="small"),
+                        "attempt": st.column_config.NumberColumn("Strategy Attempt", width="small"),
+                        "prompt_attempt": st.column_config.NumberColumn("Prompt Attempt", width="small"),
                         "mutated_text": st.column_config.TextColumn("Mutated Prompt", width="large"),
                         "llm_response": st.column_config.TextColumn("LLM Response", width="large"),
                         "rouge_l": st.column_config.TextColumn("ROUGE-L", width="small"),
@@ -4457,7 +4495,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         # Summary and Metrics in compact format
                         col1, col2 = st.columns(2)
                         with col1:
-                            st.caption(f"**Strategy:** {evaluation.mutation.strategy} | **Attempt:** {evaluation.attempt}")
+                            st.caption(f"**Strategy:** {evaluation.mutation.strategy} | **Strategy Attempt:** {evaluation.attempt} | **Prompt Attempt:** {panel_payload.get('prompt_attempt', 1)}")
                         with col2:
                             if metrics:
                                 st.caption(f"**ROUGE-L:** {rouge_score:.4f} | **Jaccard:** {jaccard_value:.4f} | **Levenshtein:** {levenshtein_value}")

@@ -1080,6 +1080,7 @@ def mutate_strategies(
     reference_text: Optional[str] = None,
     few_shot_examples: Optional[Sequence[str]] = None,
     attempts_per_strategy: int = 1,
+    attempts_per_prompt: int = 1,
     temperature: float = 0.7,
     top_p: float = 1.0,
     dry_run: bool = False,
@@ -1095,6 +1096,7 @@ def mutate_strategies(
         reference_text: Optional reference text for similarity scoring
         few_shot_examples: Optional list of example mutations for few-shot learning
         attempts_per_strategy: Number of mutation attempts per strategy
+        attempts_per_prompt: Number of generation attempts per mutated prompt
         temperature: Sampling temperature
         top_p: Top-p nucleus sampling parameter
         dry_run: If True, return placeholders without calling API
@@ -1190,6 +1192,7 @@ def run_few_shot_selection(
         adversarial_prompt,
         reference_text=reference_text,
         attempts_per_strategy=1,
+        attempts_per_prompt=1,
         temperature=temperature,
         top_p=top_p,
         dry_run=dry_run,
@@ -1220,6 +1223,7 @@ def run_inference_scaling(
         adversarial_prompt,
         reference_text=reference_text,
         attempts_per_strategy=runs,
+        attempts_per_prompt=1,
         temperature=temperature,
         top_p=top_p,
         dry_run=dry_run,
@@ -1549,6 +1553,7 @@ def generate_mutations_for_prompt(
         adversarial_prompt,
         reference_text=reference_text,
         attempts_per_strategy=attempts_per_strategy,
+        attempts_per_prompt=1,
         temperature=temperature,
         top_p=top_p,
         dry_run=dry_run,
