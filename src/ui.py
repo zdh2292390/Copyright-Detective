@@ -10,6 +10,8 @@ import pandas as pd
 from Levenshtein import distance
 import html
 from datasets import load_dataset, concatenate_datasets
+from fpdf import FPDF
+import base64
 from src.direct_recall import (
     compare_texts,
     enforce_exact_char_count,
@@ -178,6 +180,221 @@ def _trigger_rerun() -> None:
     experimental_rerun = getattr(st, "experimental_rerun", None)
     if callable(experimental_rerun):
         experimental_rerun()
+
+
+def generate_llm_analysis(results_data: Dict[str, Any], prompt_type: str, model_choice: str, api_key: str, provider: str) -> str:
+    """Generate detailed analysis using LLM for the memorization detection results."""
+    try:
+        from src.prompt_utils import get_full_prompt
+        
+        # Prepare analysis prompt
+        analysis_prompt = f"""
+You are an expert copyright analyst. Based on the following text memorization detection results, provide a detailed analysis of potential copyright implications.
+
+Analysis Context:
+- Detection Type: {prompt_type}
+- Model Used: {model_choice}
+- Analysis Results: {results_data['type']} run{'s' if results_data['type'] == 'multiple' else ''}
+
+Results Summary:
+"""
+
+        if results_data['type'] == 'single':
+            metrics = results_data['metrics_map']
+            rouge_score = results_data.get('rouge_score', 0)
+            jaccard_index = results_data.get('jaccard_index', 0)
+            
+            analysis_prompt += f"""
+- ROUGE-L Score: {rouge_score:.4f}
+- Jaccard Index: {jaccard_index:.4f}
+- Other Metrics: {', '.join([f'{k}: {v:.4f}' for k, v in metrics.items() if isinstance(v, (int, float))])}
+
+Ground Truth Text (excerpt): {results_data['text2'][:200]}...
+Generated Text (excerpt): {results_data['generated_text'][:200]}...
+"""
+        else:
+            similarity_scores = results_data['similarity_scores']
+            if similarity_scores:
+                metrics_df = pd.DataFrame(similarity_scores).apply(pd.to_numeric, errors="coerce")
+                summary_stats = []
+                for col in ['rouge_l', 'rouge_1', 'jaccard_index']:
+                    if col in metrics_df.columns:
+                        series = metrics_df[col].dropna()
+                        if not series.empty:
+                            summary_stats.append(f"{col}: avg={series.mean():.4f}, max={series.max():.4f}")
+                
+                analysis_prompt += f"""
+- Number of Runs: {len(results_data['generated_texts'])}
+- Summary Statistics: {', '.join(summary_stats)}
+"""
+
+        analysis_prompt += """
+
+Please provide a comprehensive analysis covering:
+1. Interpretation of the similarity metrics and what they indicate about memorization
+2. Potential copyright implications based on the similarity levels
+3. Recommendations for content creators or AI developers
+4. Any limitations of this analysis method
+5. Suggestions for further investigation if needed
+
+Keep your analysis professional, objective, and focused on copyright detection implications. Be concise but thorough.
+"""
+
+        # Get LLM completion
+        analysis_result = get_llm_completion(
+            prompt=analysis_prompt,
+            api_key=api_key,
+            model_name=model_choice,
+            provider=provider,
+            temperature=0.3,  # Lower temperature for more consistent analysis
+            max_output_tokens=1000
+        )
+        
+        # Sanitize the result to remove Unicode characters that can't be encoded in latin-1
+        if analysis_result:
+            # Replace common Unicode characters with ASCII equivalents
+            analysis_result = analysis_result.replace('–', '-').replace('—', '-').replace('…', '...').replace(''', "'").replace(''', "'").replace('"', '"').replace('"', '"').replace('•', '-').replace('°', 'deg')
+            # Remove any remaining non-latin-1 characters
+            analysis_result = ''.join(c for c in analysis_result if ord(c) < 256)
+        
+        return analysis_result if analysis_result else "LLM analysis could not be generated."
+        
+    except Exception as e:
+        return f"Error generating LLM analysis: {str(e)}"
+
+
+def generate_text_memorization_pdf_report(results_data: Dict[str, Any], prompt_type: str, model_choice: str, api_key: str = None, provider: str = None) -> bytes:
+    """Generate a PDF report for text memorization detection results."""
+    
+    # Sanitize inputs to remove Unicode characters
+    def sanitize_text(text: str) -> str:
+        if not text:
+            return text
+        # Replace common Unicode characters with ASCII equivalents
+        text = text.replace('–', '-').replace('—', '-').replace('…', '...').replace(''', "'").replace(''', "'").replace('"', '"').replace('"', '"').replace('•', '-').replace('°', 'deg')
+        # Remove any remaining non-latin-1 characters
+        return ''.join(c for c in text if ord(c) < 256)
+    
+    prompt_type = sanitize_text(prompt_type)
+    model_choice = sanitize_text(model_choice)
+    
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+
+    # Title
+    pdf.set_font("Arial", style='B', size=16)
+    pdf.cell(200, 10, txt="Text Memorization Detection Report", ln=True, align='C')
+    pdf.ln(10)
+
+    # Metadata
+    pdf.set_font("Arial", size=12)
+    pdf.cell(200, 10, txt=f"Model: {model_choice}", ln=True)
+    pdf.cell(200, 10, txt=f"Prompt Type: {prompt_type}", ln=True)
+    pdf.cell(200, 10, txt=f"Report Generated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
+    pdf.ln(10)
+
+    if results_data['type'] == 'single':
+        # Single run results
+        pdf.set_font("Arial", style='B', size=14)
+        pdf.cell(200, 10, txt="Single Run Analysis Results", ln=True)
+        pdf.ln(5)
+
+        pdf.set_font("Arial", size=12)
+        pdf.cell(200, 10, txt="Ground Truth Text:", ln=True)
+        pdf.set_font("Arial", size=10)
+        ground_truth = sanitize_text(results_data['text2'][:500])
+        pdf.multi_cell(0, 5, txt=ground_truth + ("..." if len(results_data['text2']) > 500 else ""))
+        pdf.ln(5)
+
+        pdf.set_font("Arial", size=12)
+        pdf.cell(200, 10, txt="Generated Text:", ln=True)
+        pdf.set_font("Arial", size=10)
+        generated_text = sanitize_text(results_data['generated_text'][:500])
+        pdf.multi_cell(0, 5, txt=generated_text + ("..." if len(results_data['generated_text']) > 500 else ""))
+        pdf.ln(5)
+
+        # Metrics
+        pdf.set_font("Arial", style='B', size=12)
+        pdf.cell(200, 10, txt="Similarity Metrics:", ln=True)
+        pdf.set_font("Arial", size=10)
+        metrics = results_data['metrics_map']
+        for key, value in metrics.items():
+            if isinstance(value, (int, float)):
+                pdf.cell(200, 8, txt=f"{key}: {value:.4f}", ln=True)
+
+        # Conclusion
+        pdf.ln(5)
+        rouge_score = results_data.get('rouge_score', 0)
+        jaccard_index = results_data.get('jaccard_index', 0)
+        if rouge_score > 0.5 or jaccard_index > 0.5:
+            conclusion = "HIGH SIMILARITY DETECTED - Potential copyright concerns identified."
+        else:
+            conclusion = "Low to moderate similarity - Generated text appears sufficiently different."
+        pdf.set_font("Arial", style='B', size=12)
+        pdf.cell(200, 10, txt="Conclusion:", ln=True)
+        pdf.set_font("Arial", size=10)
+        pdf.multi_cell(0, 5, txt=sanitize_text(conclusion))
+
+        # LLM Analysis
+        if api_key and provider:
+            pdf.ln(10)
+            pdf.set_font("Arial", style='B', size=14)
+            pdf.cell(200, 10, txt="AI-Generated Analysis", ln=True)
+            pdf.ln(5)
+            
+            pdf.set_font("Arial", size=10)
+            llm_analysis = generate_llm_analysis(results_data, prompt_type, model_choice, api_key, provider)
+            pdf.multi_cell(0, 5, txt=sanitize_text(llm_analysis))
+        else:
+            pdf.ln(10)
+            pdf.set_font("Arial", style='I', size=10)
+            pdf.cell(200, 10, txt="Note: AI analysis not available (API key required)", ln=True)
+
+    elif results_data['type'] == 'multiple':
+        # Multiple runs results
+        pdf.set_font("Arial", style='B', size=14)
+        pdf.cell(200, 10, txt="Multiple Runs Analysis Results", ln=True)
+        pdf.ln(5)
+
+        pdf.set_font("Arial", size=12)
+        pdf.cell(200, 10, txt=f"Total Runs: {len(results_data['generated_texts'])}", ln=True)
+        pdf.ln(5)
+
+        # Summary statistics
+        pdf.set_font("Arial", style='B', size=12)
+        pdf.cell(200, 10, txt="Summary Statistics:", ln=True)
+        pdf.set_font("Arial", size=10)
+
+        similarity_scores = results_data['similarity_scores']
+        if similarity_scores:
+            metrics_df = pd.DataFrame(similarity_scores).apply(pd.to_numeric, errors="coerce")
+            summary_stats = []
+            for col in metrics_df.columns:
+                if col in ['rouge_l', 'rouge_1', 'jaccard_index']:
+                    series = metrics_df[col].dropna()
+                    if not series.empty:
+                        summary_stats.append(f"{col}: Min={series.min():.4f}, Max={series.max():.4f}, Avg={series.mean():.4f}")
+
+            for stat in summary_stats:
+                pdf.cell(200, 8, txt=sanitize_text(stat), ln=True)
+
+        # LLM Analysis for multiple runs
+        if api_key and provider:
+            pdf.ln(10)
+            pdf.set_font("Arial", style='B', size=14)
+            pdf.cell(200, 10, txt="AI-Generated Analysis", ln=True)
+            pdf.ln(5)
+            
+            pdf.set_font("Arial", size=10)
+            llm_analysis = generate_llm_analysis(results_data, prompt_type, model_choice, api_key, provider)
+            pdf.multi_cell(0, 5, txt=sanitize_text(llm_analysis))
+        else:
+            pdf.ln(10)
+            pdf.set_font("Arial", style='I', size=10)
+            pdf.cell(200, 10, txt="Note: AI analysis not available (API key required)", ln=True)
+
+    return pdf.output(dest='S').encode('latin-1', errors='replace')
 
 
 @st.cache_data(show_spinner=False)
@@ -1582,7 +1799,20 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     plt.tight_layout()
                     st.pyplot(fig)
 
+        # PDF Report Generation
+        st.markdown("---")
+        st.markdown('<h3 class="section-header sm">📄 Generate Report</h3>', unsafe_allow_html=True)
 
+        # Generate PDF
+        pdf_bytes = generate_text_memorization_pdf_report(results_data, prompt_type, model_choice, api_key, provider)
+
+        # PDF Preview
+        st.markdown("**📋 Report Preview:**")
+
+        # Convert PDF bytes to base64 for embedding
+        pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+        pdf_display = f'<iframe src="data:application/pdf;base64,{pdf_base64}" width="100%" height="600" type="application/pdf"></iframe>'
+        st.markdown(pdf_display, unsafe_allow_html=True)
 
     # The Jailbreak Persuasion Probe section is now integrated above.
     # render_jailbreak_persuasion_probe_section(api_key, model_choice, provider)

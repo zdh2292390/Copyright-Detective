@@ -17,3 +17,4 @@ accelerate
 datasets
 tqdm
 datasets
+fpdf
