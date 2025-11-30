@@ -1916,8 +1916,6 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
 
         # PDF Report Generation
         st.markdown("---")
-        st.markdown('<h3 class="section-header sm">📄 Generate Report</h3>', unsafe_allow_html=True)
-
         # Generate PDF
         pdf_bytes = generate_text_memorization_pdf_report(results_data, prompt_type, model_choice, api_key, provider)
 
