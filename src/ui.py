@@ -187,6 +187,9 @@ def generate_llm_analysis(results_data: Dict[str, Any], prompt_type: str, model_
     try:
         from src.prompt_utils import get_full_prompt
         
+        # Get user inputs from results data
+        user_inputs = results_data.get('user_inputs', {})
+        
         # Prepare analysis prompt
         analysis_prompt = f"""
 You are an expert copyright analyst. Based on the following text memorization detection results, provide a detailed analysis of potential copyright implications.
@@ -196,6 +199,22 @@ Analysis Context:
 - Model Used: {model_choice}
 - Analysis Results: {results_data['type']} run{'s' if results_data['type'] == 'multiple' else ''}
 
+"""
+
+        if user_inputs:
+            analysis_prompt += f"""
+User Input Parameters:
+- Input Method: {user_inputs.get('input_method', 'N/A')}
+- Number of Inference Runs: {user_inputs.get('inference_runs', 'N/A')}
+- Temperature: {user_inputs.get('temperature', 'N/A')}
+- Top-P: {user_inputs.get('top_p', 'N/A')}
+- Continuation Method: {user_inputs.get('continuation_method', 'N/A')}
+- Target Word Count: {user_inputs.get('word_count', 'N/A')}
+- Target Character Count: {user_inputs.get('char_count', 'N/A')}
+- Input Text Length: {user_inputs.get('input_word_count', 'N/A')} words ({user_inputs.get('input_char_count', 'N/A')} characters)
+"""
+
+        analysis_prompt += """
 Results Summary:
 """
 
@@ -232,12 +251,15 @@ Generated Text (excerpt): {results_data['generated_text'][:200]}...
 
 Please provide a comprehensive analysis covering:
 1. Interpretation of the similarity metrics and what they indicate about memorization
-2. Potential copyright implications based on the similarity levels
-3. Recommendations for content creators or AI developers
-4. Any limitations of this analysis method
-5. Suggestions for further investigation if needed
+2. Analysis of the generation parameters (temperature, top-p, inference runs) and their impact on results
+3. Evaluation of the prompting strategy and input method used
+4. Assessment of text lengths and complexity factors
+5. Potential copyright implications based on the similarity levels
+6. Recommendations for content creators or AI developers
+7. Any limitations of this analysis method
+8. Suggestions for further investigation if needed
 
-Keep your analysis professional, objective, and focused on copyright detection implications. Be concise but thorough.
+Keep your analysis professional, objective, and focused on copyright detection implications. Be concise but thorough, and consider how the user parameters may have influenced the results.
 """
 
         # Get LLM completion
@@ -275,8 +297,8 @@ def generate_text_memorization_pdf_report(results_data: Dict[str, Any], prompt_t
         # Remove any remaining non-latin-1 characters
         return ''.join(c for c in text if ord(c) < 256)
     
-    prompt_type = sanitize_text(prompt_type)
-    model_choice = sanitize_text(model_choice)
+    # Get user inputs from results data
+    user_inputs = results_data.get('user_inputs', {})
     
     pdf = FPDF()
     pdf.add_page()
@@ -294,7 +316,52 @@ def generate_text_memorization_pdf_report(results_data: Dict[str, Any], prompt_t
     pdf.cell(200, 10, txt=f"Report Generated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
     pdf.ln(10)
 
+    # User Input Parameters
+    if user_inputs:
+        pdf.set_font("Arial", style='B', size=14)
+        pdf.cell(200, 10, txt="Analysis Parameters", ln=True)
+        pdf.ln(5)
+        
+        pdf.set_font("Arial", size=10)
+        if 'input_method' in user_inputs:
+            pdf.cell(200, 8, txt=f"Input Method: {sanitize_text(user_inputs['input_method'])}", ln=True)
+        if 'inference_runs' in user_inputs:
+            pdf.cell(200, 8, txt=f"Number of Inference Runs: {user_inputs['inference_runs']}", ln=True)
+        if 'temperature' in user_inputs:
+            pdf.cell(200, 8, txt=f"Temperature: {user_inputs['temperature']}", ln=True)
+        if 'top_p' in user_inputs:
+            pdf.cell(200, 8, txt=f"Top-P: {user_inputs['top_p']}", ln=True)
+        if 'continuation_method' in user_inputs:
+            pdf.cell(200, 8, txt=f"Continuation Method: {sanitize_text(user_inputs['continuation_method'])}", ln=True)
+        if 'word_count' in user_inputs:
+            pdf.cell(200, 8, txt=f"Target Word Count: {user_inputs['word_count']}", ln=True)
+        if 'char_count' in user_inputs:
+            pdf.cell(200, 8, txt=f"Target Character Count: {user_inputs['char_count']}", ln=True)
+        if 'run_timestamp' in user_inputs:
+            pdf.cell(200, 8, txt=f"Analysis Run Time: {user_inputs['run_timestamp']}", ln=True)
+        pdf.ln(10)
+
     if results_data['type'] == 'single':
+        # User Input Texts
+        if user_inputs:
+            pdf.set_font("Arial", style='B', size=14)
+            pdf.cell(200, 10, txt="Input Texts", ln=True)
+            pdf.ln(5)
+            
+            pdf.set_font("Arial", size=12)
+            pdf.cell(200, 10, txt="Input Text:", ln=True)
+            pdf.set_font("Arial", size=10)
+            input_text = user_inputs.get('input_text', results_data.get('text1', ''))
+            pdf.multi_cell(0, 5, txt=sanitize_text(input_text))
+            pdf.ln(5)
+            
+            pdf.set_font("Arial", size=12)
+            pdf.cell(200, 10, txt="Expected Ground Truth:", ln=True)
+            pdf.set_font("Arial", size=10)
+            ground_truth = user_inputs.get('ground_truth', results_data.get('text2', ''))
+            pdf.multi_cell(0, 5, txt=sanitize_text(ground_truth))
+            pdf.ln(10)
+
         # Single run results
         pdf.set_font("Arial", style='B', size=14)
         pdf.cell(200, 10, txt="Single Run Analysis Results", ln=True)
@@ -352,6 +419,26 @@ def generate_text_memorization_pdf_report(results_data: Dict[str, Any], prompt_t
             pdf.cell(200, 10, txt="Note: AI analysis not available (API key required)", ln=True)
 
     elif results_data['type'] == 'multiple':
+        # User Input Texts for multiple runs
+        if user_inputs:
+            pdf.set_font("Arial", style='B', size=14)
+            pdf.cell(200, 10, txt="Input Texts", ln=True)
+            pdf.ln(5)
+            
+            pdf.set_font("Arial", size=12)
+            pdf.cell(200, 10, txt="Input Text:", ln=True)
+            pdf.set_font("Arial", size=10)
+            input_text = user_inputs.get('input_text', results_data.get('text1', ''))
+            pdf.multi_cell(0, 5, txt=sanitize_text(input_text))
+            pdf.ln(5)
+            
+            pdf.set_font("Arial", size=12)
+            pdf.cell(200, 10, txt="Expected Ground Truth:", ln=True)
+            pdf.set_font("Arial", size=10)
+            ground_truth = user_inputs.get('ground_truth', results_data.get('text2', ''))
+            pdf.multi_cell(0, 5, txt=sanitize_text(ground_truth))
+            pdf.ln(10)
+
         # Multiple runs results
         pdf.set_font("Arial", style='B', size=14)
         pdf.cell(200, 10, txt="Multiple Runs Analysis Results", ln=True)
@@ -1559,7 +1646,21 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                             'generated_text': generated_text,
                             'metrics_map': metrics_map,
                             'rouge_score': rouge_score,
-                            'jaccard_index': jaccard_index
+                            'jaccard_index': jaccard_index,
+                            'user_inputs': {
+                                'input_text': text1,
+                                'ground_truth': text2,
+                                'input_method': input_method if 'input_method' in locals() else 'Custom Input',
+                                'inference_runs': inference_runs,
+                                'temperature': temperature,
+                                'top_p': top_p,
+                                'continuation_method': continuation_method if 'continuation_method' in locals() else 'Normal Continuation',
+                                'word_count': ground_word_count,
+                                'char_count': ground_char_count,
+                                'input_word_count': input_word_count,
+                                'input_char_count': input_char_count,
+                                'run_timestamp': pd.Timestamp.now().isoformat()
+                            }
                         }
             else:
                 # Multiple runs: Inference Results Over Multiple Runs
@@ -1643,7 +1744,21 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                         'text2': text2,
                         'generated_texts': generated_texts,
                         'similarity_scores': similarity_scores,
-                        'inference_runs': inference_runs
+                        'inference_runs': inference_runs,
+                        'user_inputs': {
+                            'input_text': text1,
+                            'ground_truth': text2,
+                            'input_method': input_method if 'input_method' in locals() else 'Custom Input',
+                            'inference_runs': inference_runs,
+                            'temperature': temperature,
+                            'top_p': top_p,
+                            'continuation_method': continuation_method if 'continuation_method' in locals() else 'Normal Continuation',
+                            'word_count': ground_word_count,
+                            'char_count': ground_char_count,
+                            'input_word_count': input_word_count,
+                            'input_char_count': input_char_count,
+                            'run_timestamp': pd.Timestamp.now().isoformat()
+                        }
                     }
 
 
