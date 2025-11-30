@@ -1187,10 +1187,34 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         st.session_state['text_analysis_results'] = None
 
     if show_page_header:
-        st.markdown('<h4 class="section-header">📝 Text Memorization Detection</h4>', unsafe_allow_html=True)
-        st.markdown(
-            "Analyze text snippets to detect potential copyright infringement by comparing generated text with ground truth."
-        )
+        header_col, button_col = st.columns([4, 1])
+        with header_col:
+            st.markdown('<h4 class="section-header">📝 Text Memorization Detection</h4>', unsafe_allow_html=True)
+            st.markdown(
+                "Analyze text snippets to detect potential copyright infringement by comparing generated text with ground truth."
+            )
+        with button_col:
+            if st.button(
+                "🗑️ Clear Cache",
+                key="clear_text_memorization_cache",
+                help="Reset cached analysis results, input texts, and parameters.",
+            ):
+                # Clear all text memorization related session state
+                text_keys_to_clear = [
+                    'text_prompt_type_index',
+                    'text_input_method_index', 
+                    'text_custom_input_text1',
+                    'text_custom_input_text2',
+                    'text_inference_runs',
+                    'text_temperature',
+                    'text_top_p',
+                    'text_analysis_results',
+                    'text_pdf_report'
+                ]
+                for key in text_keys_to_clear:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                _trigger_rerun()
 
     long_output_instruction = _get_verbose_generation_instruction()
 
@@ -1662,6 +1686,16 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                                 'run_timestamp': pd.Timestamp.now().isoformat()
                             }
                         }
+                        
+                        # Generate and cache PDF report
+                        pdf_bytes = generate_text_memorization_pdf_report(
+                            st.session_state['text_analysis_results'], 
+                            prompt_type, 
+                            model_choice, 
+                            api_key, 
+                            provider
+                        )
+                        st.session_state['text_pdf_report'] = pdf_bytes
             else:
                 # Multiple runs: Inference Results Over Multiple Runs
                 st.divider()
@@ -1760,6 +1794,16 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                             'run_timestamp': pd.Timestamp.now().isoformat()
                         }
                     }
+                    
+                    # Generate and cache PDF report
+                    pdf_bytes = generate_text_memorization_pdf_report(
+                        st.session_state['text_analysis_results'], 
+                        prompt_type, 
+                        model_choice, 
+                        api_key, 
+                        provider
+                    )
+                    st.session_state['text_pdf_report'] = pdf_bytes
 
 
     # Display results section (outside of run_analysis block to preserve results)
@@ -1916,11 +1960,30 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
 
         # PDF Report Generation
         st.markdown("---")
-        # Generate PDF
-        pdf_bytes = generate_text_memorization_pdf_report(results_data, prompt_type, model_choice, api_key, provider)
+        
+        # Use cached PDF if available, otherwise generate new one
+        if 'text_pdf_report' in st.session_state:
+            pdf_bytes = st.session_state['text_pdf_report']
+        else:
+            # Fallback: generate PDF if not cached (shouldn't happen in normal flow)
+            pdf_bytes = generate_text_memorization_pdf_report(results_data, prompt_type, model_choice, api_key, provider)
+            st.session_state['text_pdf_report'] = pdf_bytes
 
         # PDF Preview
         st.markdown("**📋 Report Preview:**")
+        
+        # Add download button
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            st.download_button(
+                label="📥 Download PDF",
+                data=pdf_bytes,
+                file_name=f"text_memorization_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                mime="application/pdf",
+                key="download_text_pdf"
+            )
+        with col2:
+            st.caption("Click to download the complete PDF report")
 
         # Convert PDF bytes to base64 for embedding
         pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
