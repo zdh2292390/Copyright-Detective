@@ -781,7 +781,7 @@ def render_sidebar():
         # Model Selection Accordion
         with st.expander("👾 Model Selection", expanded=True):
             st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
-            provider = st.selectbox("Select Provider", ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"], help="Choose your AI provider", key="sidebar_provider_selectbox")
+            provider = st.selectbox("Select provider", ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"], help="Choose your AI provider", key="sidebar_provider_selectbox")
 
             model_choice = None
             if provider == "OpenAI":
@@ -3132,7 +3132,7 @@ def render_legal_case_display_page():
     """Showcase real-world lawsuits that underscore memorization risk."""
 
     st.markdown("### ⚖️ Legal Cases Display")
-    st.caption(
+    st.markdown(
         "Curated legal milestones that illustrate why Copyright Detective workflows are essential."
     )
 
@@ -3232,7 +3232,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         col_rank1, col_rank2 = st.columns(2)
         with col_rank1:
             display_score_type = st.selectbox(
-                "Ranking Metric",
+                "Ranking metric",
                 metrics_options,
                 index=metrics_options.index(current_score_type),
                 help="Choose how to rank the most similar sections",
@@ -3242,7 +3242,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
 
         with col_rank2:
             display_top_k = st.number_input(
-                "Display Count",
+                "Display count",
                 min_value=1,
                 max_value=20,
                 value=min(max(current_top_k, 1), 20),
@@ -3274,7 +3274,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
 
         final_display_limit = min(int(display_top_k), len(sorted_results))
 
-        st.markdown(f"#### 🏆 Top {final_display_limit} Most Similar Sections")
+        st.markdown(f'<h3 class="section-header sm">🏆 Top {final_display_limit} most similar sections</h3>', unsafe_allow_html=True)
         st.caption(
             f"Ranking by {display_score_type}. Showing top {final_display_limit} of {len(sorted_results)} chunks. "
             f"Generation strategy: {continuation_method} · Temperature {temperature:.2f} · Top-P {top_p:.2f}.\n"
@@ -3339,7 +3339,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
     config_col1, config_col2 = st.columns(2)
     with config_col1:
         chunk_size = st.number_input(
-            'Change Chunk Size (words):',
+            'Change chunk size (words):',
             min_value=50,
             max_value=2000,
             value=st.session_state['pdf_chunk_size'],
