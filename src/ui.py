@@ -910,6 +910,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         "Next-Passage Prediction",
         "Prior-Context Reconstruction",
         "Title Prediction",
+        "User-Defined Evaluation",
     ]
     prompt_type = st.selectbox(
         "Choose the recall type",
@@ -933,116 +934,151 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         st.markdown(
             "_Title Prediction: Based on the provided snippet, ask the model to infer the most likely title or attribution for the work. This can surface potential source identification signals._"
         )
+    elif prompt_type == "User-Defined Evaluation":
+        st.markdown(
+            "_User-Defined Evaluation: Provide a completely custom prompt and ground truth to evaluate the model's response directly._"
+        )
 
     st.markdown('<p class="analysis-step-label">Step 2 · Provide comparison texts</p>', unsafe_allow_html=True)
 
-    base_text_examples = [
-        "Example: A Tale of Two Cities", 
-        "Example: Harry Potter", 
-        "Example: Pride and Prejudice", 
-        "Example: 1984", 
-        "Example: To Kill a Mockingbird", 
-        "Example: The Great Gatsby", 
-        "Example: The Catcher in the Rye"
-    ]
-    input_options = ["Custom Input", *base_text_examples]
-
-    input_method = st.selectbox(
-        "Choose an input type",
-        input_options,
-        index=min(st.session_state['text_input_method_index'], len(input_options) - 1),
-        help="Select custom input or choose from examples.",
-        key="text_input_method_selectbox",
-    )
-    st.session_state['text_input_method_index'] = input_options.index(input_method)
-
-    examples = {
-        "Example: A Tale of Two Cities": {
-            "input": "It was the best of times, it was the worst of times, it was the age of wisdom,",
-            "ground_truth": "it was the age of foolishness, it was the epoch of belief,"
-        },
-        "Example: Harry Potter": {
-            "input": "Mr and Mrs Dursley, of number four, Privet Drive, were proud to say that they were perfectly normal, thank you very much.",
-            "ground_truth": "They were the last people you'd expect to be involved in anything strange or mysterious, because they just didn't hold with such nonsense."
-        },
-        "Example: Pride and Prejudice": {
-            "input": "It is a truth universally acknowledged, that a single man in possession of a good fortune, must be in want of a wife. However little known the feelings or views of such a man may be on his",
-            "ground_truth": "first entering a neighbourhood, this truth is so well fixed in the minds of the surrounding families that he is considered as the rightful property of some one or other of their daughters."
-        },
-        "Example: 1984": {
-            "input": "It was a bright cold day in April, and the clocks were striking thirteen. Winston Smith, his chin nuzzled into his breast in an effort to escape the vile wind,",
-            "ground_truth": "slipped quickly through the glass doors of Victory Mansions, though not quickly enough to prevent a swirl of gritty dust from entering along with him."
-        },
-        "Example: To Kill a Mockingbird": {
-            "input": "When he was nearly thirteen, my brother Jem got his arm badly broken at the elbow. When it healed, and Jem's fears of never being able to play football were assuaged, he was seldom self-conscious about his injury.",
-            "ground_truth": "His left arm was somewhat shorter than his right; when he stood or walked, the back of his hand was at right angles to his body, his thumb parallel to his thigh. He couldn't have cared less, so long as he could pass and punt."
-        },
-        "Example: The Great Gatsby": {
-            "input": "Only Gatsby, the man who gives his name to this book, was exempt from my reaction—Gatsby, who represented everything for which I have an unaffected scorn. If personality is an unbroken series of successful gestures,",
-            "ground_truth": "then there was something gorgeous about him, some heightened sensitivity to the promises of life, as if he were related to one of those intricate machines that register earthquakes ten thousand miles away."
-        },
-        "Example: The Catcher in the Rye": {
-            "input": "If you really want to hear about it, the first thing you'll probably want to know is where I was born, and what my lousy childhood was like,",
-            "ground_truth": "and how my parents were occupied and all before they had me, and all that David Copperfield kind of crap, but I don't feel like going into it, if you want to know the truth."
-        }
-    }
-
-    # Adjust examples based on prompt type for Prior-Context Reconstruction and Title Prediction
-    adjusted_examples = {}
-    for key, val in examples.items():
-        if prompt_type == "Prior-Context Reconstruction":
-            adjusted_examples[key] = {"input": val["ground_truth"], "ground_truth": val["input"]}
-        elif prompt_type == "Title Prediction":
-            title = key.split(": ", 1)[1] if ": " in key else key
-            adjusted_examples[key] = {"input": val["input"], "ground_truth": title}
-        else:
-            adjusted_examples[key] = val
-
-    if input_method == "Custom Input":
+    if prompt_type == "User-Defined Evaluation":
+        # For User-Defined Evaluation, show Custom Prompt and Ground Truth side by side
+        text1 = ""  # No input text needed
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown("**Input Text**")
-            text1 = st.text_area(
-                "Input Text",
-                value=st.session_state['text_custom_input_text1'],
-                height=150,
-                placeholder="Enter the input snippet (e.g., a previous sentence, a continuation, or an excerpt). The role of this field depends on the selected prompt type.",
+            st.markdown("**Custom Prompt**")
+            custom_user_prompt = st.text_area(
+                "Custom Prompt",
+                value=st.session_state.get('custom_user_prompt', ''),
+                height=200,
+                placeholder="Enter your complete custom prompt. The model will respond to this exact prompt.",
                 label_visibility="collapsed",
-                key=f"text_input_text1_widget_{prompt_type}"
+                key="custom_user_prompt",
+                help="Write the complete prompt you want to send to the model. Use {input_text} to include the text from the input field.",
             )
-            st.session_state['text_custom_input_text1'] = text1
         with col2:
             st.markdown("**Ground Truth**")
             text2 = st.text_area(
                 "Ground Truth",
-                value=st.session_state['text_custom_input_text2'],
-                height=150,
-                placeholder="Enter the ground truth text or expected target to compare against (e.g., the known reference or target continuation). Leave blank if not applicable.",
+                value=st.session_state.get('text_custom_ground_truth', ''),
+                height=200,
+                placeholder="Enter the expected correct response from the model. This will be compared with the actual model output for evaluation.",
                 label_visibility="collapsed",
-                key=f"text_input_text2_widget_{prompt_type}"
+                key="text_ground_truth_user_defined"
             )
-            st.session_state['text_custom_input_text2'] = text2
+        
+        # Show prompt preview if custom prompt is provided
+        if custom_user_prompt:
+            prompt_to_preview = custom_user_prompt.replace("{input_text}", text1 if text1 else "{input_text}")
+            render_prompt_preview(prompt_to_preview)
     else:
-        example = adjusted_examples[input_method]
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("**Input Text**")
-            text1 = st.text_area(
-                "Input Text",
-                value=example["input"],
-                height=150,
-                label_visibility="collapsed",
-                key=f"text_input_text1_example_widget_{input_method}_{prompt_type}"
-            )
-        with col2:
-            st.markdown("**Ground Truth**")
-            text2 = st.text_area(
-                "Ground Truth",
-                value=example["ground_truth"],
-                height=150,
-                label_visibility="collapsed",
-                key=f"text_input_text2_example_widget_{input_method}_{prompt_type}"
-            )
+        base_text_examples = [
+            "Example: A Tale of Two Cities", 
+            "Example: Harry Potter", 
+            "Example: Pride and Prejudice", 
+            "Example: 1984", 
+            "Example: To Kill a Mockingbird", 
+            "Example: The Great Gatsby", 
+            "Example: The Catcher in the Rye"
+        ]
+        input_options = ["Custom Input", *base_text_examples]
+
+        input_method = st.selectbox(
+            "Choose an input type",
+            input_options,
+            index=min(st.session_state['text_input_method_index'], len(input_options) - 1),
+            help="Select custom input or choose from examples.",
+            key="text_input_method_selectbox",
+        )
+        st.session_state['text_input_method_index'] = input_options.index(input_method)
+
+        examples = {
+            "Example: A Tale of Two Cities": {
+                "input": "It was the best of times, it was the worst of times, it was the age of wisdom,",
+                "ground_truth": "it was the age of foolishness, it was the epoch of belief,"
+            },
+            "Example: Harry Potter": {
+                "input": "Mr and Mrs Dursley, of number four, Privet Drive, were proud to say that they were perfectly normal, thank you very much.",
+                "ground_truth": "They were the last people you'd expect to be involved in anything strange or mysterious, because they just didn't hold with such nonsense."
+            },
+            "Example: Pride and Prejudice": {
+                "input": "It is a truth universally acknowledged, that a single man in possession of a good fortune, must be in want of a wife. However little known the feelings or views of such a man may be on his",
+                "ground_truth": "first entering a neighbourhood, this truth is so well fixed in the minds of the surrounding families that he is considered as the rightful property of some one or other of their daughters."
+            },
+            "Example: 1984": {
+                "input": "It was a bright cold day in April, and the clocks were striking thirteen. Winston Smith, his chin nuzzled into his breast in an effort to escape the vile wind,",
+                "ground_truth": "slipped quickly through the glass doors of Victory Mansions, though not quickly enough to prevent a swirl of gritty dust from entering along with him."
+            },
+            "Example: To Kill a Mockingbird": {
+                "input": "When he was nearly thirteen, my brother Jem got his arm badly broken at the elbow. When it healed, and Jem's fears of never being able to play football were assuaged, he was seldom self-conscious about his injury.",
+                "ground_truth": "His left arm was somewhat shorter than his right; when he stood or walked, the back of his hand was at right angles to his body, his thumb parallel to his thigh. He couldn't have cared less, so long as he could pass and punt."
+            },
+            "Example: The Great Gatsby": {
+                "input": "Only Gatsby, the man who gives his name to this book, was exempt from my reaction—Gatsby, who represented everything for which I have an unaffected scorn. If personality is an unbroken series of successful gestures,",
+                "ground_truth": "then there was something gorgeous about him, some heightened sensitivity to the promises of life, as if he were related to one of those intricate machines that register earthquakes ten thousand miles away."
+            },
+            "Example: The Catcher in the Rye": {
+                "input": "If you really want to hear about it, the first thing you'll probably want to know is where I was born, and what my lousy childhood was like,",
+                "ground_truth": "and how my parents were occupied and all before they had me, and all that David Copperfield kind of crap, but I don't feel like going into it, if you want to know the truth."
+            }
+        }
+
+        # Adjust examples based on prompt type for Prior-Context Reconstruction and Title Prediction
+        adjusted_examples = {}
+        for key, val in examples.items():
+            if prompt_type == "Prior-Context Reconstruction":
+                adjusted_examples[key] = {"input": val["ground_truth"], "ground_truth": val["input"]}
+            elif prompt_type == "Title Prediction":
+                title = key.split(": ", 1)[1] if ": " in key else key
+                adjusted_examples[key] = {"input": val["input"], "ground_truth": title}
+            else:
+                adjusted_examples[key] = val
+
+        if input_method == "Custom Input":
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Input Text**")
+                text1 = st.text_area(
+                    "Input Text",
+                    value=st.session_state['text_custom_input_text1'],
+                    height=150,
+                    placeholder="Enter the input snippet (e.g., a previous sentence, a continuation, or an excerpt). The role of this field depends on the selected prompt type.",
+                    label_visibility="collapsed",
+                    key=f"text_input_text1_widget_{prompt_type}"
+                )
+                st.session_state['text_custom_input_text1'] = text1
+            with col2:
+                st.markdown("**Ground Truth**")
+                text2 = st.text_area(
+                    "Ground Truth",
+                    value=st.session_state['text_custom_input_text2'],
+                    height=150,
+                    placeholder="Enter the ground truth text or expected target to compare against (e.g., the known reference or target continuation). Leave blank if not applicable.",
+                    label_visibility="collapsed",
+                    key=f"text_input_text2_widget_{prompt_type}"
+                )
+                st.session_state['text_custom_input_text2'] = text2
+        else:
+            example = adjusted_examples[input_method]
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Input Text**")
+                text1 = st.text_area(
+                    "Input Text",
+                    value=example["input"],
+                    height=150,
+                    label_visibility="collapsed",
+                    key=f"text_input_text1_example_widget_{input_method}_{prompt_type}"
+                )
+            with col2:
+                st.markdown("**Ground Truth**")
+                text2 = st.text_area(
+                    "Ground Truth",
+                    value=example["ground_truth"],
+                    height=150,
+                    label_visibility="collapsed",
+                    key=f"text_input_text2_example_widget_{input_method}_{prompt_type}"
+                )
 
     input_word_count = len(text1.split()) if text1 else 0
     ground_word_count = len(text2.split()) if text2 else 0
@@ -1199,7 +1235,9 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         
         if not api_key:
             st.error(f"⚠️ Please enter your API key in the sidebar.")
-        elif not text1 or not text2:
+        elif prompt_type == "User-Defined Evaluation" and not text2:
+            st.warning("⚠️ Please enter the ground truth.")
+        elif prompt_type != "User-Defined Evaluation" and (not text1 or not text2):
             st.warning("⚠️ Please enter both input text and ground truth.")
         else:
             # Define a variable for continuation_method if it's not set
@@ -1210,6 +1248,13 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     if continuation_method == "Custom Prompt"
                     else None
                 )
+            elif prompt_type == "User-Defined Evaluation":
+                continuation_method = "Custom Prompt"  # Treat as custom prompt
+                custom_template = st.session_state.get("custom_user_prompt", "").strip()
+                if not custom_template:
+                    st.error("⚠️ Please provide a custom prompt before running the analysis.")
+                    return
+                prompt_mode = "Zero-Shot"  # Custom prompts are typically zero-shot
             else:
                 continuation_method = st.session_state.get("continuation_method_selector", "Normal Continuation")
                 custom_template = (

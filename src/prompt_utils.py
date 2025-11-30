@@ -356,6 +356,10 @@ def get_prompt_template(
             "Snippet:\n{input_text}"
         )
 
+    if prompt_type == "User-Defined Evaluation":
+        # For user-defined, the custom_template will be provided directly
+        return custom_template if custom_template else "{input_text}"
+
     return "No template available for this selection."
 
 

@@ -477,6 +477,9 @@ def compare_texts(
             char_count=target_char_count,
             custom_template=custom_template,
         )
+    elif prompt_type == "User-Defined Evaluation":
+        # For user-defined evaluation, use the custom template directly as the prompt
+        prompt = custom_template if custom_template else ""
     else:  # Title Prediction
         prompt = (
             "Provide only a short, likely title or attribution for the following text snippet. Do NOT include commentary, summaries, or extra formatting — return only the inferred title/attribution.\n\nSnippet:\n" + input_text
