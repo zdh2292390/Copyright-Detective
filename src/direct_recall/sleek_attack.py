@@ -530,14 +530,13 @@ Think step by step and provide a detailed answer that shows your thought process
     return response
 
 
-def decompose_question_with_cot(question: str, answer: str, api_key: str, model_name: str, provider: str,
-                                temperature: float = 0.7, top_p: float = 0.9) -> List[Dict[str, str]]:
+def decompose_question(question: str, api_key: str, model_name: str, provider: str,
+                       temperature: float = 0.7, top_p: float = 0.9) -> List[Dict[str, str]]:
     """
-    Decompose a question into sub-questions using Chain of Thought reasoning.
+    Step 1: Decompose the original question into categorized sub-questions.
     
     Args:
         question: The original question to decompose
-        answer: The ground truth answer for context
         api_key: API key for the LLM provider
         model_name: Name of the model to use
         provider: LLM provider
@@ -545,30 +544,22 @@ def decompose_question_with_cot(question: str, answer: str, api_key: str, model_
         top_p: Top-p sampling parameter
         
     Returns:
-        List of sub-questions with categories and expected answers
+        List of sub-questions with categories
     """
-    prompt = f"""You are tasked with decomposing a question into multiple sub-questions to systematically probe knowledge.
+    prompt = f"""You are tasked with decomposing a question into multiple sub-questions for systematic analysis.
 
-Original Question: {question}
-Ground Truth Answer: {answer}
+**Original Question:** {question}
 
-Please decompose this question into 4-6 sub-questions in the following categories:
-
-1. **Direct**: Questions that directly ask about the core fact (1-2 questions)
-2. **Indirect**: Questions about related information that might reveal knowledge through association (1-2 questions)  
-3. **Implied**: Questions requiring logical deduction to test if the model can infer the knowledge (1-2 questions)
-
-For each sub-question, provide:
-- The question text
-- The category (Direct/Indirect/Implied)
-- The expected answer based on the ground truth
+Please break down this question into 4-6 sub-questions in these categories:
+- **Direct**: Questions that directly target the core fact (1-2 sub-questions)
+- **Indirect**: Questions about related information that could reveal knowledge through association (1-2 sub-questions)
+- **Implied**: Questions requiring logical deduction or inference (1-2 sub-questions)
 
 Format your response as a JSON array:
 [
   {{
     "question": "Sub-question text?",
-    "category": "Direct|Indirect|Implied",
-    "expected_answer": "Expected answer based on ground truth"
+    "category": "Direct|Indirect|Implied"
   }}
 ]
 
@@ -581,15 +572,14 @@ Only output the JSON array, nothing else."""
         provider=provider,
         temperature=temperature,
         top_p=top_p,
-        max_output_tokens=2000
+        max_output_tokens=1500
     )
 
     if isinstance(response, str) and response.startswith("Error"):
         # Return fallback with original question
         return [{
             "question": question,
-            "category": "Direct",
-            "expected_answer": answer
+            "category": "Direct"
         }]
 
     # Parse JSON response
@@ -607,8 +597,7 @@ Only output the JSON array, nothing else."""
             if isinstance(sq, dict) and 'question' in sq:
                 validated.append({
                     'question': sq.get('question', ''),
-                    'category': sq.get('category', 'Direct'),
-                    'expected_answer': sq.get('expected_answer', answer)
+                    'category': sq.get('category', 'Direct')
                 })
         
         if validated:
@@ -620,9 +609,131 @@ Only output the JSON array, nothing else."""
     # Fallback: return original question
     return [{
         "question": question,
-        "category": "Direct", 
-        "expected_answer": answer
+        "category": "Direct"
     }]
+
+
+def run_cot_reasoning(original_question: str, sub_questions: List[Dict[str, str]], 
+                      api_key: str, model_name: str, provider: str,
+                      temperature: float = 0.7, top_p: float = 0.9) -> Dict[str, Any]:
+    """
+    Step 2: Use Chain of Thought reasoning to answer sub-questions and synthesize final answer.
+    
+    Args:
+        original_question: The original question
+        sub_questions: List of decomposed sub-questions with categories
+        api_key: API key for the LLM provider
+        model_name: Name of the model to use
+        provider: LLM provider
+        temperature: Sampling temperature
+        top_p: Top-p sampling parameter
+        
+    Returns:
+        Dictionary containing sub-question answers, COT reasoning, and final answer
+    """
+    # Format sub-questions for the prompt
+    sq_text = ""
+    for i, sq in enumerate(sub_questions, 1):
+        sq_text += f"{i}. [{sq['category']}] {sq['question']}\n"
+    
+    prompt = f"""You are tasked with answering a question through systematic step-by-step reasoning.
+
+**Original Question:** {original_question}
+
+**Sub-questions to address:**
+{sq_text}
+
+Please think through each sub-question carefully using Chain of Thought reasoning, then synthesize a comprehensive final answer to the original question.
+
+Format your response as JSON:
+{{
+  "sub_question_answers": [
+    {{
+      "question": "The sub-question text",
+      "category": "Direct|Indirect|Implied",
+      "reasoning": "Your step-by-step thinking process",
+      "answer": "Your answer to this sub-question"
+    }}
+  ],
+  "cot_reasoning": "Your complete chain of thought connecting all sub-questions and synthesizing the final answer",
+  "final_answer": "Your comprehensive final answer to the original question"
+}}
+
+Be thorough and detailed in your reasoning. Only output the JSON object, nothing else."""
+
+    response = get_llm_completion(
+        prompt=prompt,
+        api_key=api_key,
+        model_name=model_name,
+        provider=provider,
+        temperature=temperature,
+        top_p=top_p,
+        max_output_tokens=3000
+    )
+
+    if isinstance(response, str) and response.startswith("Error"):
+        return {
+            "sub_question_answers": [{
+                "question": original_question,
+                "category": "Direct",
+                "reasoning": "Error occurred",
+                "answer": f"Error: {response}"
+            }],
+            "cot_reasoning": f"Error: {response}",
+            "final_answer": f"Error: {response}",
+            "raw_response": response
+        }
+
+    # Parse JSON response
+    try:
+        json_match = re.search(r'\{.*\}', response, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(0)
+            result = json.loads(json_str)
+        else:
+            result = json.loads(response)
+        
+        # Validate and normalize structure
+        validated_result = {
+            "sub_question_answers": [],
+            "cot_reasoning": result.get("cot_reasoning", ""),
+            "final_answer": result.get("final_answer", ""),
+            "raw_response": response
+        }
+        
+        for sq in result.get("sub_question_answers", []):
+            if isinstance(sq, dict):
+                validated_result["sub_question_answers"].append({
+                    'question': sq.get('question', ''),
+                    'category': sq.get('category', 'Direct'),
+                    'reasoning': sq.get('reasoning', ''),
+                    'answer': sq.get('answer', '')
+                })
+        
+        # If no sub-question answers were parsed, use the final answer
+        if not validated_result["sub_question_answers"]:
+            validated_result["sub_question_answers"] = [{
+                "question": original_question,
+                "category": "Direct",
+                "reasoning": validated_result["cot_reasoning"],
+                "answer": validated_result["final_answer"] or response
+            }]
+        
+        return validated_result
+            
+    except json.JSONDecodeError:
+        # Fallback: treat entire response as the answer
+        return {
+            "sub_question_answers": [{
+                "question": original_question,
+                "category": "Direct",
+                "reasoning": "JSON parsing failed",
+                "answer": response
+            }],
+            "cot_reasoning": response,
+            "final_answer": response,
+            "raw_response": response
+        }
 
 
 def run_sleek_qa_evaluation(
@@ -638,195 +749,170 @@ def run_sleek_qa_evaluation(
     """
     Run Step-by-step Leaking and Extraction evaluation on Q/A pairs.
     
-    This function:
-    1. Decomposes each question into sub-questions using COT
-    2. Evaluates each sub-question using the target model
-    3. Compares responses with expected answers
-    4. Aggregates results by category
+    This function uses a two-step LLM process:
+    1. First LLM call: Decompose question into categorized sub-questions (Direct, Indirect, Implied)
+    2. Second LLM call: Answer sub-questions with Chain of Thought reasoning and synthesize final answer
+    3. Compare final answer with ground truth using Standard mode metrics (ROUGE, Jaccard, Levenshtein)
     
     Args:
         qa_pairs: List of Q/A pair dictionaries with 'question' and 'answer' keys
         api_key: API key for the LLM provider
         model_name: Name of the model to use
         provider: LLM provider
-        num_runs: Number of evaluation runs per sub-question
+        num_runs: Number of evaluation runs per question
         temperature: Sampling temperature for evaluation
         top_p: Top-p sampling parameter
         progress_callback: Optional callback for progress updates
         
     Returns:
-        Dictionary containing evaluation results
+        Dictionary containing evaluation results with COT reasoning chains
     """
     from src.direct_recall.comparison import calculate_rouge_score, calculate_jaccard_index
     from Levenshtein import distance as levenshtein_distance
     
     all_results = []
-    total_sub_questions = 0
+    total_items = len(qa_pairs) * num_runs
     current_progress = 0
     
-    # First pass: decompose all questions to count total
-    decomposed_pairs = []
-    for qa_pair in qa_pairs:
+    # Process each Q/A pair
+    for pair_idx, qa_pair in enumerate(qa_pairs):
         question = qa_pair.get('question', '')
-        answer = qa_pair.get('answer', '')
-        
-        # Decompose the question
-        sub_questions = decompose_question_with_cot(
-            question=question,
-            answer=answer,
-            api_key=api_key,
-            model_name=model_name,
-            provider=provider,
-            temperature=0.7,
-            top_p=0.9
-        )
-        
-        decomposed_pairs.append({
-            'original_question': question,
-            'original_answer': answer,
-            'sub_questions': sub_questions
-        })
-        total_sub_questions += len(sub_questions)
-    
-    total_items = total_sub_questions * num_runs
-    
-    # Evaluate each decomposed pair
-    for pair_idx, decomposed in enumerate(decomposed_pairs):
-        original_question = decomposed['original_question']
-        original_answer = decomposed['original_answer']
-        sub_questions = decomposed['sub_questions']
+        ground_truth = qa_pair.get('answer', '')
         
         pair_results = {
-            'original_question': original_question,
-            'original_answer': original_answer,
-            'sub_question_results': [],
+            'original_question': question,
+            'original_answer': ground_truth,
+            'runs': [],
             'category_breakdown': {}
         }
         
-        for sq_idx, sub_q in enumerate(sub_questions):
-            sq_question = sub_q.get('question', '')
-            sq_category = sub_q.get('category', 'Direct')
-            sq_expected = sub_q.get('expected_answer', original_answer)
+        for run_idx in range(num_runs):
+            current_progress += 1
             
-            run_results = []
-            for run_idx in range(num_runs):
-                current_progress += 1
-                
-                if progress_callback:
-                    progress_callback(
-                        current_progress,
-                        total_items,
-                        pair_idx + 1,
-                        sq_idx + 1,
-                        len(sub_questions)
-                    )
-                
-                # Get LLM response
-                prompt = f"Please answer the following question concisely and accurately:\n\nQuestion: {sq_question}\n\nAnswer:"
-                
-                response = get_llm_completion(
-                    prompt=prompt,
-                    api_key=api_key,
-                    model_name=model_name,
-                    provider=provider,
-                    temperature=temperature,
-                    top_p=top_p,
-                    max_output_tokens=500
+            if progress_callback:
+                progress_callback(
+                    current_progress,
+                    total_items,
+                    pair_idx + 1,
+                    run_idx + 1,
+                    num_runs
                 )
-                
-                if isinstance(response, str) and response.startswith("Error"):
-                    llm_answer = f"Error: {response}"
-                else:
-                    llm_answer = response.strip()
-                    if llm_answer.lower().startswith("answer:"):
-                        llm_answer = llm_answer[7:].strip()
-                
-                # Calculate metrics
-                rouge_score = calculate_rouge_score(sq_expected, llm_answer)
-                jaccard = calculate_jaccard_index(sq_expected, llm_answer)
-                lev_dist = levenshtein_distance(sq_expected.lower(), llm_answer.lower())
-                
-                run_results.append({
-                    'run': run_idx + 1,
-                    'llm_answer': llm_answer,
-                    'rouge_score': rouge_score,
-                    'jaccard_index': jaccard,
-                    'levenshtein_distance': lev_dist
+            
+            # Step 1: Decompose question into sub-questions
+            sub_questions = decompose_question(
+                question=question,
+                api_key=api_key,
+                model_name=model_name,
+                provider=provider,
+                temperature=temperature,
+                top_p=top_p
+            )
+            
+            # Step 2: COT reasoning to answer sub-questions and get final answer
+            cot_result = run_cot_reasoning(
+                original_question=question,
+                sub_questions=sub_questions,
+                api_key=api_key,
+                model_name=model_name,
+                provider=provider,
+                temperature=temperature,
+                top_p=top_p
+            )
+            
+            # Extract results
+            sub_question_answers = cot_result.get('sub_question_answers', [])
+            cot_reasoning = cot_result.get('cot_reasoning', '')
+            final_answer = cot_result.get('final_answer', '')
+            
+            # Store sub-question details (for reference, not for metric calculation)
+            sub_question_details = []
+            for sq in sub_question_answers:
+                sq_category = sq.get('category', 'Direct')
+                sub_question_details.append({
+                    'question': sq.get('question', ''),
+                    'category': sq_category,
+                    'answer': sq.get('answer', ''),
+                    'reasoning': sq.get('reasoning', '')
                 })
+                
+                # Update category count
+                if sq_category not in pair_results['category_breakdown']:
+                    pair_results['category_breakdown'][sq_category] = {'total': 0}
+                pair_results['category_breakdown'][sq_category]['total'] += 1
             
-            # Aggregate run results
-            avg_rouge = sum(r['rouge_score'] for r in run_results) / len(run_results) if run_results else 0
-            avg_jaccard = sum(r['jaccard_index'] for r in run_results) / len(run_results) if run_results else 0
+            # Calculate metrics for final answer vs ground truth (Standard mode comparison)
+            final_rouge = calculate_rouge_score(ground_truth, final_answer)
+            final_jaccard = calculate_jaccard_index(ground_truth, final_answer)
+            final_lev = levenshtein_distance(ground_truth.lower(), final_answer.lower())
+            final_has_leakage = final_rouge > 0.3 or final_jaccard > 0.3
             
-            # Determine if leakage detected (high similarity indicates memorization)
-            has_leakage = avg_rouge > 0.3 or avg_jaccard > 0.3
-            
-            sq_result = {
-                'question': sq_question,
-                'category': sq_category,
-                'expected_answer': sq_expected,
-                'runs': run_results,
-                'avg_rouge_score': avg_rouge,
-                'avg_jaccard_index': avg_jaccard,
-                'has_leakage': has_leakage
+            run_result = {
+                'run': run_idx + 1,
+                'sub_questions': sub_questions,  # Original decomposed questions
+                'sub_question_answers': sub_question_details,  # Answers with reasoning
+                'cot_reasoning': cot_reasoning,
+                'final_answer': final_answer,
+                'ground_truth': ground_truth,
+                # Standard mode metrics for final answer
+                'rouge_score': final_rouge,
+                'jaccard_index': final_jaccard,
+                'levenshtein_distance': final_lev,
+                'has_leakage': final_has_leakage,
+                'raw_response': cot_result.get('raw_response', '')
             }
             
-            pair_results['sub_question_results'].append(sq_result)
-            
-            # Update category breakdown
-            if sq_category not in pair_results['category_breakdown']:
-                pair_results['category_breakdown'][sq_category] = {'total': 0, 'leaked': 0, 'avg_rouge': 0, 'avg_jaccard': 0}
-            pair_results['category_breakdown'][sq_category]['total'] += 1
-            if has_leakage:
-                pair_results['category_breakdown'][sq_category]['leaked'] += 1
+            pair_results['runs'].append(run_result)
         
-        # Calculate category averages
-        for cat, stats in pair_results['category_breakdown'].items():
-            cat_results = [r for r in pair_results['sub_question_results'] if r['category'] == cat]
-            if cat_results:
-                stats['avg_rouge'] = sum(r['avg_rouge_score'] for r in cat_results) / len(cat_results)
-                stats['avg_jaccard'] = sum(r['avg_jaccard_index'] for r in cat_results) / len(cat_results)
+        # Calculate aggregate metrics across runs
+        if pair_results['runs']:
+            pair_results['avg_rouge_score'] = sum(r['rouge_score'] for r in pair_results['runs']) / len(pair_results['runs'])
+            pair_results['avg_jaccard_index'] = sum(r['jaccard_index'] for r in pair_results['runs']) / len(pair_results['runs'])
+            pair_results['avg_levenshtein_distance'] = sum(r['levenshtein_distance'] for r in pair_results['runs']) / len(pair_results['runs'])
+            pair_results['leakage_detected'] = any(r['has_leakage'] for r in pair_results['runs'])
         
         all_results.append(pair_results)
     
     # Calculate overall statistics
-    total_sub_q = sum(len(r['sub_question_results']) for r in all_results)
-    total_leaked = sum(
-        sum(1 for sq in r['sub_question_results'] if sq['has_leakage'])
-        for r in all_results
-    )
+    total_questions = len(all_results)
+    total_with_leakage = sum(1 for r in all_results if r.get('leakage_detected', False))
     
+    # Calculate overall averages
+    overall_avg_rouge = sum(r.get('avg_rouge_score', 0) for r in all_results) / total_questions if total_questions > 0 else 0
+    overall_avg_jaccard = sum(r.get('avg_jaccard_index', 0) for r in all_results) / total_questions if total_questions > 0 else 0
+    overall_avg_levenshtein = sum(r.get('avg_levenshtein_distance', 0) for r in all_results) / total_questions if total_questions > 0 else 0
+    
+    # Aggregate category breakdown across all pairs
     overall_category_breakdown = {}
     for result in all_results:
         for cat, stats in result['category_breakdown'].items():
             if cat not in overall_category_breakdown:
-                overall_category_breakdown[cat] = {'total': 0, 'leaked': 0, 'rouge_sum': 0, 'jaccard_sum': 0}
+                overall_category_breakdown[cat] = {'total': 0}
             overall_category_breakdown[cat]['total'] += stats['total']
-            overall_category_breakdown[cat]['leaked'] += stats['leaked']
-            overall_category_breakdown[cat]['rouge_sum'] += stats['avg_rouge'] * stats['total']
-            overall_category_breakdown[cat]['jaccard_sum'] += stats['avg_jaccard'] * stats['total']
     
-    # Finalize category averages
-    for cat, stats in overall_category_breakdown.items():
-        if stats['total'] > 0:
-            stats['avg_rouge'] = stats['rouge_sum'] / stats['total']
-            stats['avg_jaccard'] = stats['jaccard_sum'] / stats['total']
-            stats['leakage_rate'] = stats['leaked'] / stats['total']
-        del stats['rouge_sum']
-        del stats['jaccard_sum']
+    # Calculate total sub-questions across all results
+    total_sub_questions = sum(
+        sum(len(run.get('sub_questions', [])) for run in r.get('runs', []))
+        for r in all_results
+    )
     
     return {
         'qa_pair_results': all_results,
-        'total_original_questions': len(qa_pairs),
-        'total_sub_questions': total_sub_q,
-        'total_with_leakage': total_leaked,
-        'overall_leakage_rate': total_leaked / total_sub_q if total_sub_q > 0 else 0,
+        'total_questions': total_questions,
+        'total_sub_questions': total_sub_questions,
+        'total_with_leakage': total_with_leakage,
+        'leakage_rate': total_with_leakage / total_questions if total_questions > 0 else 0,
+        'overall_leakage_rate': total_with_leakage / total_questions if total_questions > 0 else 0,  # Alias for compatibility
+        # Overall metrics (same as Standard mode)
+        'avg_rouge_score': overall_avg_rouge,
+        'avg_jaccard_index': overall_avg_jaccard,
+        'avg_levenshtein_distance': overall_avg_levenshtein,
         'category_breakdown': overall_category_breakdown,
         'summary': {
             'model': model_name,
             'provider': provider,
             'num_runs': num_runs,
             'temperature': temperature,
-            'top_p': top_p
+            'top_p': top_p,
+            'method': 'Step-by-step Leaking and Extraction (decompose → COT reasoning → compare final answer)'
         }
     }

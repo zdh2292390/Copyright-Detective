@@ -1878,9 +1878,9 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     ]
                     available_columns = [col for col in column_order if col in metrics_df.columns]
                     if available_columns:
-                        st.dataframe(metrics_df[available_columns].round(4))
+                        st.dataframe(metrics_df[available_columns].round(4), width='stretch')
                     else:
-                        st.dataframe(metrics_df.round(4))
+                        st.dataframe(metrics_df.round(4), width='stretch')
 
                 summary_labels = [
                     ("rouge_l", "ROUGE-L"),
@@ -1913,7 +1913,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 with st.expander("📊 Statistical Results", expanded=False):
                     if summary_rows:
                         summary_df = pd.DataFrame(summary_rows).set_index("Metric")
-                        st.dataframe(summary_df.round(4))
+                        st.dataframe(summary_df.round(4), width='stretch')
                     else:
                         st.info("No similarity statistics could be computed for the current runs.")
 
@@ -2003,7 +2003,7 @@ def render_knowledge_memorization_page(api_key, model_choice, provider, *, show_
         <div class="analysis-callout">
             <div class="analysis-callout__title">How Knowledge Memorization Detection works</div>
             <ul class="analysis-callout__list">
-                <li><strong>Open-ended Question:</strong> Generate open-ended questions and evaluate how well the target model answers them. Supports two generation modes: Standard Q/A generation and Step-by-step Leaking and Extraction which uses systematic reasoning to probe residual knowledge.</li>
+                <li><strong>Open-ended Question:</strong> Generate open-ended questions and evaluate how well the target model answers them. Supports two evaluation modes: Standard Q/A evaluation and Step-by-step Leaking and Extraction which decomposes questions, uses COT reasoning, then compares final answer with ground truth.</li>
                 <li><strong>Single-choice Question:</strong> Design single-choice questions where the options include verbatim text and nearly identical but distinct alternatives. Observing the model's selection bias helps infer prior exposure to the source text.</li>
             </ul>
         </div>
@@ -2072,7 +2072,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
             <ul class="analysis-callout__list">
                 <li>Provide source text through direct input, document upload, or dataset selection.</li>
                 <li>Generate Q/A pairs from your source content.</li>
-                <li>Choose evaluation mode: <strong>Standard</strong> for direct evaluation, or <strong>Step-by-step Leaking and Extraction</strong> for systematic probing with question decomposition.</li>
+                <li>Choose evaluation mode: <strong>Standard</strong> for direct evaluation, or <strong>Step-by-step Leaking and Extraction</strong> for decomposing questions into sub-questions, answering with COT reasoning, then comparing final output with ground truth.</li>
                 <li>Use the target LLM (configured in the sidebar) to answer questions and evaluate memorization.</li>
             </ul>
         </div>
@@ -2491,12 +2491,12 @@ def render_qa_based_detection(api_key, model_choice, provider):
             index=0 if st.session_state.get('qa_evaluation_mode', 'Standard') == 'Standard' else 1,
             horizontal=True,
             key="qa_evaluation_mode_radio",
-            help="Standard: Direct Q/A evaluation. Step-by-step Leaking and Extraction: Decompose each question into categorized probes (Direct, Indirect, Implied) for systematic detection."
+            help="Standard: Direct Q/A evaluation. Step-by-step Leaking and Extraction: Decompose question → COT reasoning → Compare final answer with ground truth using Standard metrics."
         )
         st.session_state['qa_evaluation_mode'] = evaluation_mode
         
         if evaluation_mode == "Step-by-step Leaking and Extraction":
-            st.info("🔬 **Step-by-step Leaking and Extraction Mode**: Each generated question will be decomposed into sub-questions using Chain of Thought reasoning (Direct, Indirect, Implied), then evaluated like Standard mode.")
+            st.info("🔬 **Step-by-step Leaking and Extraction Mode**: First, the LLM decomposes each question into sub-questions (Direct, Indirect, Implied). Then, it uses Chain of Thought reasoning to answer these sub-questions and synthesize a final answer. The final answer is compared with ground truth using the same metrics as Standard mode (ROUGE, Jaccard, Levenshtein).")
         
         # Standard evaluation mode
         if evaluation_mode == "Standard":
@@ -2782,9 +2782,9 @@ def render_qa_based_detection(api_key, model_choice, provider):
                     
                     progress_bar = st.progress(0, text="🔄 Starting Step-by-step Leaking and Extraction evaluation...")
                     
-                    def update_sleek_progress(current, total, pair_num, sq_num, sq_total):
+                    def update_sleek_progress(current, total, pair_num, run_num, run_total):
                         progress = current / total if total > 0 else 0
-                        progress_bar.progress(progress, text=f"🔄 Q/A Pair {pair_num}/{total_qa_pairs} | Sub-Q {sq_num}/{sq_total} | Overall: {current}/{total}")
+                        progress_bar.progress(progress, text=f"🔄 Q/A Pair {pair_num}/{total_qa_pairs} | Run {run_num}/{run_total} | Overall: {current}/{total}")
                     
                     try:
                         sleek_results = run_sleek_qa_evaluation(
@@ -2815,43 +2815,6 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 
                 st.markdown("---")
                 
-                # Summary metrics
-                st.markdown('<h3 class="section-header sm">📊 Step-by-step Leaking and Extraction Evaluation Summary</h3>', unsafe_allow_html=True)
-                
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Original Q/A Pairs", sleek_results.get('total_original_questions', 0))
-                with col2:
-                    st.metric("Total Sub-Questions", sleek_results.get('total_sub_questions', 0))
-                with col3:
-                    st.metric("With Leakage", sleek_results.get('total_with_leakage', 0))
-                with col4:
-                    leakage_rate = sleek_results.get('overall_leakage_rate', 0)
-                    st.metric("Leakage Rate", f"{leakage_rate:.1%}")
-                
-                summary = sleek_results.get('summary', {})
-                st.caption(f"Model: {summary.get('model', 'N/A')} | Provider: {summary.get('provider', 'N/A')} | Runs: {summary.get('num_runs', 1)}")
-                
-                # Category breakdown
-                category_breakdown = sleek_results.get('category_breakdown', {})
-                if category_breakdown:
-                    st.markdown('<h3 class="section-header sm">📊 Category Breakdown</h3>', unsafe_allow_html=True)
-                    
-                    cat_data = []
-                    for cat, stats in category_breakdown.items():
-                        cat_data.append({
-                            'Category': cat,
-                            'Total': stats.get('total', 0),
-                            'Leaked': stats.get('leaked', 0),
-                            'Leakage Rate': f"{stats.get('leakage_rate', 0):.1%}",
-                            'Avg ROUGE': f"{stats.get('avg_rouge', 0):.3f}",
-                            'Avg Jaccard': f"{stats.get('avg_jaccard', 0):.3f}"
-                        })
-                    
-                    if cat_data:
-                        cat_df = pd.DataFrame(cat_data)
-                        st.dataframe(cat_df, use_container_width=True, hide_index=True)
-                
                 # Detailed results by Q/A pair
                 st.markdown('<h3 class="section-header sm">📝 Detailed Results by Q/A Pair</h3>', unsafe_allow_html=True)
                 
@@ -2864,39 +2827,65 @@ def render_qa_based_detection(api_key, model_choice, provider):
                         st.markdown("**📥 Original Question**")
                         st.info(original_q)
                         
-                        st.markdown("**📤 Original Answer (Ground Truth)**")
-                        st.success(pair_result.get('original_answer', ''))
-                        
-                        st.markdown("**🔬 Decomposed Sub-Questions**")
-                        
-                        sub_results = pair_result.get('sub_question_results', [])
-                        for sq_idx, sq_result in enumerate(sub_results):
-                            category = sq_result.get('category', 'Unknown')
-                            has_leakage = sq_result.get('has_leakage', False)
-                            status_icon = "⚠️" if has_leakage else "✅"
+                        # Show runs
+                        runs = pair_result.get('runs', [])
+                        for run in runs:
+                            run_num = run.get('run', 1)
+                            st.markdown(f"---\n**⚡ Run {run_num}**")
                             
-                            with st.expander(f"{status_icon} Sub-Q {sq_idx + 1} [{category}]: {sq_result.get('question', '')[:50]}...", expanded=False):
-                                st.markdown(f"**Category:** {category}")
-                                st.markdown(f"**Question:** {sq_result.get('question', '')}")
-                                st.markdown(f"**Expected Answer:** {sq_result.get('expected_answer', '')}")
-                                
-                                # Show run results
-                                runs = sq_result.get('runs', [])
-                                for run in runs:
-                                    st.markdown(f"**Run {run.get('run', 1)} Response:**")
-                                    st.write(run.get('llm_answer', ''))
-                                
-                                # Metrics
-                                col_a, col_b, col_c = st.columns(3)
-                                with col_a:
-                                    st.metric("Avg ROUGE-L", f"{sq_result.get('avg_rouge_score', 0):.3f}")
-                                with col_b:
-                                    st.metric("Avg Jaccard", f"{sq_result.get('avg_jaccard_index', 0):.3f}")
-                                with col_c:
-                                    if has_leakage:
-                                        st.error("⚠️ Leakage Detected")
-                                    else:
-                                        st.success("✅ No Leakage")
+                            # Show decomposed sub-questions
+                            st.markdown("**🔬 Decomposed Sub-Questions:**")
+                            sub_questions = run.get('sub_questions', [])
+                            for sq_idx, sq in enumerate(sub_questions):
+                                st.markdown(f"  {sq_idx + 1}. [{sq.get('category', 'Direct')}] {sq.get('question', '')}")
+                            
+                            # Show COT reasoning
+                            cot_reasoning = run.get('cot_reasoning', '')
+                            if cot_reasoning:
+                                with st.expander("💭 Chain of Thought Reasoning", expanded=False):
+                                    st.write(cot_reasoning)
+                            
+                            # Show side-by-side comparison with ground truth
+                            ground_truth = run.get('ground_truth', '')
+                            final_answer = run.get('final_answer', '')
+                            if ground_truth and final_answer:
+                                st.markdown("**🔍 Answer Comparison:**")
+                                metrics_payload = {
+                                    "rouge_l": run.get('rouge_score', 0),
+                                    "jaccard_index": run.get('jaccard_index', 0),
+                                    "levenshtein": float(run.get('levenshtein_distance', 0) or 0.0),
+                                }
+                                render_direct_recall_diff(
+                                    ground_truth,
+                                    final_answer,
+                                    title="Ground Truth vs Model Final Answer",
+                                    metrics=metrics_payload,
+                                )
+                            
+                            # Metrics are displayed in the comparison above
+                        
+                        # Show aggregate metrics for this pair
+                        st.markdown("---\n**📊 Aggregate Metrics (across runs):**")
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.markdown(f"""
+                            <div style="text-align: center; padding: 10px;">
+                                <div style="font-size: 0.8em; color: #666; margin-bottom: 5px;">Avg ROUGE-L</div>
+                                <div style="font-size: 1.2em; font-weight: bold; color: #1f77b4;">{pair_result.get('avg_rouge_score', 0):.3f}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        with col2:
+                            st.markdown(f"""
+                            <div style="text-align: center; padding: 10px;">
+                                <div style="font-size: 0.8em; color: #666; margin-bottom: 5px;">Avg Jaccard</div>
+                                <div style="font-size: 1.2em; font-weight: bold; color: #1f77b4;">{pair_result.get('avg_jaccard_index', 0):.3f}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        with col3:
+                            if pair_result.get('leakage_detected', False):
+                                st.error("⚠️ Leakage Detected")
+                            else:
+                                st.success("✅ No Leakage")
                 
                 # Overall interpretation
                 st.markdown('<h3 class="section-header sm">🔍 Overall Interpretation</h3>', unsafe_allow_html=True)
@@ -3438,7 +3427,7 @@ def render_sc_detection(api_key, model_choice, provider):
                             for item in per_question
                         ]
                     )
-                    st.dataframe(per_question_df, hide_index=True)
+                    st.dataframe(per_question_df, hide_index=True, width='stretch')
 
         st.markdown('<h3 class="section-header sm">📝 Detailed responses</h3>', unsafe_allow_html=True)
         for question_idx, mcq in enumerate(st.session_state['sc_generated_mcqs'], start=1):
@@ -6119,35 +6108,6 @@ def generate_sleek_attack_pdf_report(results_data: Dict[str, Any], model_choice:
         support_response = support_response[:2000] + "... [truncated]"
     pdf.multi_cell(0, 5, txt=support_response)
     pdf.ln(10)
-
-    # Category Breakdown
-    category_breakdown = results_data.get('category_breakdown', {})
-    if category_breakdown:
-        if pdf.get_y() > 200:
-            pdf.add_page()
-
-        pdf.set_font("Arial", style='B', size=14)
-        pdf.cell(200, 10, txt="Category Analysis", ln=True)
-        pdf.ln(5)
-
-        pdf.set_font("Arial", style='B', size=9)
-        pdf.cell(40, 6, txt="Category", border=1)
-        pdf.cell(30, 6, txt="Total", border=1)
-        pdf.cell(30, 6, txt="Leaked", border=1)
-        pdf.cell(30, 6, txt="Rate", border=1)
-        pdf.ln()
-
-        pdf.set_font("Arial", size=9)
-        for cat, stats in category_breakdown.items():
-            total = stats.get('total', 0)
-            leaked = stats.get('leaked', 0)
-            rate = leaked / total if total > 0 else 0
-            pdf.cell(40, 5, txt=sanitize_text(cat), border=1)
-            pdf.cell(30, 5, txt=str(total), border=1)
-            pdf.cell(30, 5, txt=str(leaked), border=1)
-            pdf.cell(30, 5, txt=f"{rate:.1%}", border=1)
-            pdf.ln()
-        pdf.ln(10)
 
     # Detailed Question Results
     questions = results_data.get('questions', [])
