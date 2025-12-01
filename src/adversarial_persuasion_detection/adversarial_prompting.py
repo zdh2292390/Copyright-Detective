@@ -959,7 +959,7 @@ def run_adversarial_persuasion(
     *,
     few_shot_examples: Optional[Sequence[str]] = None,
     temperature: float = 0.7,
-    top_p: float = 1.0,
+    top_p: float = 0.9,
     dry_run: bool = False,
 ) -> MutationResult:
     """Execute a single adversarial persuasion prompt mutation.
@@ -1082,7 +1082,7 @@ def mutate_strategies(
     attempts_per_strategy: int = 1,
     attempts_per_prompt: int = 1,
     temperature: float = 0.7,
-    top_p: float = 1.0,
+    top_p: float = 0.9,
     dry_run: bool = False,
 ) -> List[MutationEvaluation]:
     """Run adversarial mutations across multiple strategies with optional repeat attempts.
@@ -1179,7 +1179,7 @@ def run_few_shot_selection(
     reference_text: Optional[str],
     *,
     temperature: float = 0.7,
-    top_p: float = 1.0,
+    top_p: float = 0.9,
     dry_run: bool = False,
 ) -> List[MutationEvaluation]:
     """Generate one mutation per strategy and return them ranked by ROUGE-L."""
@@ -1210,7 +1210,7 @@ def run_inference_scaling(
     *,
     reference_text: Optional[str] = None,
     temperature: float = 0.7,
-    top_p: float = 1.0,
+    top_p: float = 0.9,
     dry_run: bool = False,
 ) -> Dict[str, Optional[object]]:
     """Execute repeated mutations for a single strategy and summarise the metrics."""
@@ -1318,9 +1318,9 @@ def run_baseline_prompt_suite(
     few_shot_attempts: int = 1,
     evaluation_models: Optional[Sequence[Tuple[str, Optional[str]]]] = None,
     temperature: float = 0.7,
-    top_p: float = 1.0,
-    evaluation_temperature: float = 0.0,
-    evaluation_top_p: float = 0.0,
+    top_p: float = 0.9,
+    evaluation_temperature: float = 0.7,
+    evaluation_top_p: float = 0.9,
     dry_run: bool = False,
     precomputed_mutations: Optional[Dict[str, Dict[Tuple[str, bool], Sequence[MutationWithJudge]]]] = None,
 ) -> Dict[str, Dict[ExperimentMode, ModeResult]]:
@@ -1536,7 +1536,7 @@ def generate_mutations_for_prompt(
     judge_model_name: Optional[str] = None,
     judge_provider: Optional[str] = None,
     temperature: float = 0.7,
-    top_p: float = 1.0,
+    top_p: float = 0.9,
     dry_run: bool = False,
 ) -> List[MutationWithJudge]:
     """Generate mutations for a single prompt, optionally applying an intention judge."""
@@ -1577,8 +1577,8 @@ def generate_mutations_for_prompt(
                     judge_provider_to_use,
                     adversarial_prompt,
                     mutated_text,
-                    temperature=0.0,
-                                       top_p=0.0,
+                    temperature=0.7,
+                                       top_p=0.9,
                     dry_run=dry_run,
                 )
                 judge_vote = _parse_judge_vote(judge_entry.response if judge_entry else None)
@@ -1601,8 +1601,8 @@ def run_primary_intention_assessment(
     original_text: str,
     mutated_text: str,
     *,
-    temperature: float = 0.0,
-    top_p: float = 0.0,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
     dry_run: bool = False,
 ) -> MutationResult:
     """Extract the core harmful intention from the original/mutated prompt pair."""
@@ -1653,8 +1653,8 @@ def assess_intention_preservation(
     original_text: str,
     mutated_text: str,
     *,
-    temperature: float = 0.0,
-    top_p: float = 0.0,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
     dry_run: bool = False,
 ) -> IntentionAssessmentOutcome:
     """Run full intention preservation assessment: primary extraction + secondary validation."""
@@ -1852,8 +1852,8 @@ def run_intention_judge(
     original_text: str,
     mutated_text: str,
     *,
-    temperature: float = 0.0,
-    top_p: float = 0.0,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
     dry_run: bool = False,
 ) -> MutationResult:
     """Use an LLM judge to determine if the mutated text preserves the original intention."""

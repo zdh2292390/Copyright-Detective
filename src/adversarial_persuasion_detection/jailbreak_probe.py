@@ -247,7 +247,7 @@ def run_persuasion_probe(
     ground_truth_text: str,
     chunk_size: Optional[int] = None,
     temperature: float = 0.7,
-    top_p: float = 1.0,
+    top_p: float = 0.9,
     custom_template: Optional[str] = None,
     mode: str = "Zero-Shot",
     target_word_count: Optional[int] = None,

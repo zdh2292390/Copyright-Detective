@@ -185,8 +185,8 @@ def answer_question_with_llm(
     api_key: str,
     model_choice: str,
     provider: str,
-    temperature: float = 0.0,
-    top_p: float = 1.0,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
     max_tokens: int = 150,
 ) -> str:
     """
@@ -279,8 +279,8 @@ def run_knowledge_qa_evaluation(
     model_choice: str,
     provider: str,
     num_runs: int = 1,
-    temperature: float = 0.0,
-    top_p: float = 1.0,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
     progress_callback: Optional[callable] = None,
 ) -> List[List[Dict[str, Any]]]:
     """

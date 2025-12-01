@@ -128,8 +128,8 @@ def generate_single_choice_questions_from_text(
     model_choice: str,
     provider: str,
     num_questions: int = 5,
-    temperature: float = 0.5,
-    top_p: float = 0.8,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
 ) -> List[Dict[str, Any]]:
     """Generate multiple single-choice questions from raw text."""
 
@@ -273,8 +273,8 @@ def generate_single_choice_questions_from_fragments(
     num_questions: int = 5,
     fragment_size: int = 30,
     num_distractors: int = 3,
-    temperature: float = 0.5,
-    top_p: float = 0.8,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
     progress_callback: Optional[Callable[[int, int, int], None]] = None,
 ) -> List[Dict[str, Any]]:
     """Generate single-choice questions by extracting text fragments and creating distractors."""
@@ -358,8 +358,8 @@ def generate_single_choice_questions_from_document_fragments(
     num_questions: int = 5,
     fragment_size: int = 30,
     num_distractors: int = 3,
-    temperature: float = 0.5,
-    top_p: float = 0.8,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
     progress_callback: Optional[Callable[[int, int, int], None]] = None,
 ) -> Tuple[List[Dict[str, Any]], str]:
     """Extract text from a document and generate single-choice questions from fragments."""
@@ -394,8 +394,8 @@ def generate_single_choice_questions_from_document(
     model_choice: str,
     provider: str,
     num_questions: int = 5,
-    temperature: float = 0.5,
-    top_p: float = 0.8,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
 ) -> Tuple[List[Dict[str, Any]], str]:
     """Extract text from a document and generate single-choice questions."""
 
@@ -714,8 +714,8 @@ def _evaluate_with_basic_completion(
         api_key,
         model_choice,
         provider,
-        temperature=0.0,
-        top_p=1.0,
+        temperature=0.7,
+        top_p=0.9,
         max_output_tokens=1,
         stop_sequences=["\n"],
         progress_message="Running single-choice evaluation",
@@ -735,8 +735,8 @@ def evaluate_single_choice_question(
     api_key: str,
     model_choice: str,
     provider: str,
-    temperature: float = 0.0,
-    top_p: float = 1.0,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
 ) -> Dict[str, Any]:
     openai_prompt, anthropic_prompt = _build_sc_prompt_body(question)
 
@@ -759,8 +759,8 @@ def run_single_choice_evaluation(
     model_choice: str,
     provider: str,
     num_runs: int = 1,
-    temperature: float = 0.0,
-    top_p: float = 1.0,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
     progress_callback: Optional[Callable[[int, int, int, int, int], None]] = None,
 ) -> List[List[Dict[str, Any]]]:
     """Evaluate generated MCQs using the target LLM."""

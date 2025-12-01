@@ -528,3 +528,305 @@ Think step by step and provide a detailed answer that shows your thought process
         raise Exception(f"Failed to generate support response: {response}")
 
     return response
+
+
+def decompose_question_with_cot(question: str, answer: str, api_key: str, model_name: str, provider: str,
+                                temperature: float = 0.7, top_p: float = 0.9) -> List[Dict[str, str]]:
+    """
+    Decompose a question into sub-questions using Chain of Thought reasoning.
+    
+    Args:
+        question: The original question to decompose
+        answer: The ground truth answer for context
+        api_key: API key for the LLM provider
+        model_name: Name of the model to use
+        provider: LLM provider
+        temperature: Sampling temperature
+        top_p: Top-p sampling parameter
+        
+    Returns:
+        List of sub-questions with categories and expected answers
+    """
+    prompt = f"""You are tasked with decomposing a question into multiple sub-questions to systematically probe knowledge.
+
+Original Question: {question}
+Ground Truth Answer: {answer}
+
+Please decompose this question into 4-6 sub-questions in the following categories:
+
+1. **Direct**: Questions that directly ask about the core fact (1-2 questions)
+2. **Indirect**: Questions about related information that might reveal knowledge through association (1-2 questions)  
+3. **Implied**: Questions requiring logical deduction to test if the model can infer the knowledge (1-2 questions)
+
+For each sub-question, provide:
+- The question text
+- The category (Direct/Indirect/Implied)
+- The expected answer based on the ground truth
+
+Format your response as a JSON array:
+[
+  {{
+    "question": "Sub-question text?",
+    "category": "Direct|Indirect|Implied",
+    "expected_answer": "Expected answer based on ground truth"
+  }}
+]
+
+Only output the JSON array, nothing else."""
+
+    response = get_llm_completion(
+        prompt=prompt,
+        api_key=api_key,
+        model_name=model_name,
+        provider=provider,
+        temperature=temperature,
+        top_p=top_p,
+        max_output_tokens=2000
+    )
+
+    if isinstance(response, str) and response.startswith("Error"):
+        # Return fallback with original question
+        return [{
+            "question": question,
+            "category": "Direct",
+            "expected_answer": answer
+        }]
+
+    # Parse JSON response
+    try:
+        json_match = re.search(r'\[.*\]', response, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(0)
+            sub_questions = json.loads(json_str)
+        else:
+            sub_questions = json.loads(response)
+        
+        # Validate structure
+        validated = []
+        for sq in sub_questions:
+            if isinstance(sq, dict) and 'question' in sq:
+                validated.append({
+                    'question': sq.get('question', ''),
+                    'category': sq.get('category', 'Direct'),
+                    'expected_answer': sq.get('expected_answer', answer)
+                })
+        
+        if validated:
+            return validated
+            
+    except json.JSONDecodeError:
+        pass
+    
+    # Fallback: return original question
+    return [{
+        "question": question,
+        "category": "Direct", 
+        "expected_answer": answer
+    }]
+
+
+def run_sleek_qa_evaluation(
+    qa_pairs: List[Dict[str, str]],
+    api_key: str,
+    model_name: str,
+    provider: str,
+    num_runs: int = 1,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
+    progress_callback=None
+) -> Dict[str, Any]:
+    """
+    Run Step-by-step Leaking and Extraction evaluation on Q/A pairs.
+    
+    This function:
+    1. Decomposes each question into sub-questions using COT
+    2. Evaluates each sub-question using the target model
+    3. Compares responses with expected answers
+    4. Aggregates results by category
+    
+    Args:
+        qa_pairs: List of Q/A pair dictionaries with 'question' and 'answer' keys
+        api_key: API key for the LLM provider
+        model_name: Name of the model to use
+        provider: LLM provider
+        num_runs: Number of evaluation runs per sub-question
+        temperature: Sampling temperature for evaluation
+        top_p: Top-p sampling parameter
+        progress_callback: Optional callback for progress updates
+        
+    Returns:
+        Dictionary containing evaluation results
+    """
+    from src.direct_recall.comparison import calculate_rouge_score, calculate_jaccard_index
+    from Levenshtein import distance as levenshtein_distance
+    
+    all_results = []
+    total_sub_questions = 0
+    current_progress = 0
+    
+    # First pass: decompose all questions to count total
+    decomposed_pairs = []
+    for qa_pair in qa_pairs:
+        question = qa_pair.get('question', '')
+        answer = qa_pair.get('answer', '')
+        
+        # Decompose the question
+        sub_questions = decompose_question_with_cot(
+            question=question,
+            answer=answer,
+            api_key=api_key,
+            model_name=model_name,
+            provider=provider,
+            temperature=0.7,
+            top_p=0.9
+        )
+        
+        decomposed_pairs.append({
+            'original_question': question,
+            'original_answer': answer,
+            'sub_questions': sub_questions
+        })
+        total_sub_questions += len(sub_questions)
+    
+    total_items = total_sub_questions * num_runs
+    
+    # Evaluate each decomposed pair
+    for pair_idx, decomposed in enumerate(decomposed_pairs):
+        original_question = decomposed['original_question']
+        original_answer = decomposed['original_answer']
+        sub_questions = decomposed['sub_questions']
+        
+        pair_results = {
+            'original_question': original_question,
+            'original_answer': original_answer,
+            'sub_question_results': [],
+            'category_breakdown': {}
+        }
+        
+        for sq_idx, sub_q in enumerate(sub_questions):
+            sq_question = sub_q.get('question', '')
+            sq_category = sub_q.get('category', 'Direct')
+            sq_expected = sub_q.get('expected_answer', original_answer)
+            
+            run_results = []
+            for run_idx in range(num_runs):
+                current_progress += 1
+                
+                if progress_callback:
+                    progress_callback(
+                        current_progress,
+                        total_items,
+                        pair_idx + 1,
+                        sq_idx + 1,
+                        len(sub_questions)
+                    )
+                
+                # Get LLM response
+                prompt = f"Please answer the following question concisely and accurately:\n\nQuestion: {sq_question}\n\nAnswer:"
+                
+                response = get_llm_completion(
+                    prompt=prompt,
+                    api_key=api_key,
+                    model_name=model_name,
+                    provider=provider,
+                    temperature=temperature,
+                    top_p=top_p,
+                    max_output_tokens=500
+                )
+                
+                if isinstance(response, str) and response.startswith("Error"):
+                    llm_answer = f"Error: {response}"
+                else:
+                    llm_answer = response.strip()
+                    if llm_answer.lower().startswith("answer:"):
+                        llm_answer = llm_answer[7:].strip()
+                
+                # Calculate metrics
+                rouge_score = calculate_rouge_score(sq_expected, llm_answer)
+                jaccard = calculate_jaccard_index(sq_expected, llm_answer)
+                lev_dist = levenshtein_distance(sq_expected.lower(), llm_answer.lower())
+                
+                run_results.append({
+                    'run': run_idx + 1,
+                    'llm_answer': llm_answer,
+                    'rouge_score': rouge_score,
+                    'jaccard_index': jaccard,
+                    'levenshtein_distance': lev_dist
+                })
+            
+            # Aggregate run results
+            avg_rouge = sum(r['rouge_score'] for r in run_results) / len(run_results) if run_results else 0
+            avg_jaccard = sum(r['jaccard_index'] for r in run_results) / len(run_results) if run_results else 0
+            
+            # Determine if leakage detected (high similarity indicates memorization)
+            has_leakage = avg_rouge > 0.3 or avg_jaccard > 0.3
+            
+            sq_result = {
+                'question': sq_question,
+                'category': sq_category,
+                'expected_answer': sq_expected,
+                'runs': run_results,
+                'avg_rouge_score': avg_rouge,
+                'avg_jaccard_index': avg_jaccard,
+                'has_leakage': has_leakage
+            }
+            
+            pair_results['sub_question_results'].append(sq_result)
+            
+            # Update category breakdown
+            if sq_category not in pair_results['category_breakdown']:
+                pair_results['category_breakdown'][sq_category] = {'total': 0, 'leaked': 0, 'avg_rouge': 0, 'avg_jaccard': 0}
+            pair_results['category_breakdown'][sq_category]['total'] += 1
+            if has_leakage:
+                pair_results['category_breakdown'][sq_category]['leaked'] += 1
+        
+        # Calculate category averages
+        for cat, stats in pair_results['category_breakdown'].items():
+            cat_results = [r for r in pair_results['sub_question_results'] if r['category'] == cat]
+            if cat_results:
+                stats['avg_rouge'] = sum(r['avg_rouge_score'] for r in cat_results) / len(cat_results)
+                stats['avg_jaccard'] = sum(r['avg_jaccard_index'] for r in cat_results) / len(cat_results)
+        
+        all_results.append(pair_results)
+    
+    # Calculate overall statistics
+    total_sub_q = sum(len(r['sub_question_results']) for r in all_results)
+    total_leaked = sum(
+        sum(1 for sq in r['sub_question_results'] if sq['has_leakage'])
+        for r in all_results
+    )
+    
+    overall_category_breakdown = {}
+    for result in all_results:
+        for cat, stats in result['category_breakdown'].items():
+            if cat not in overall_category_breakdown:
+                overall_category_breakdown[cat] = {'total': 0, 'leaked': 0, 'rouge_sum': 0, 'jaccard_sum': 0}
+            overall_category_breakdown[cat]['total'] += stats['total']
+            overall_category_breakdown[cat]['leaked'] += stats['leaked']
+            overall_category_breakdown[cat]['rouge_sum'] += stats['avg_rouge'] * stats['total']
+            overall_category_breakdown[cat]['jaccard_sum'] += stats['avg_jaccard'] * stats['total']
+    
+    # Finalize category averages
+    for cat, stats in overall_category_breakdown.items():
+        if stats['total'] > 0:
+            stats['avg_rouge'] = stats['rouge_sum'] / stats['total']
+            stats['avg_jaccard'] = stats['jaccard_sum'] / stats['total']
+            stats['leakage_rate'] = stats['leaked'] / stats['total']
+        del stats['rouge_sum']
+        del stats['jaccard_sum']
+    
+    return {
+        'qa_pair_results': all_results,
+        'total_original_questions': len(qa_pairs),
+        'total_sub_questions': total_sub_q,
+        'total_with_leakage': total_leaked,
+        'overall_leakage_rate': total_leaked / total_sub_q if total_sub_q > 0 else 0,
+        'category_breakdown': overall_category_breakdown,
+        'summary': {
+            'model': model_name,
+            'provider': provider,
+            'num_runs': num_runs,
+            'temperature': temperature,
+            'top_p': top_p
+        }
+    }
