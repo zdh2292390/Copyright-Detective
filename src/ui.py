@@ -2802,7 +2802,6 @@ def render_qa_based_detection(api_key, model_choice, provider):
                         progress_bar.empty()
                         
                         st.session_state['qa_sleek_results'] = sleek_results
-                        st.success(f"✅ Completed evaluation: {sleek_results['total_sub_questions']} sub-questions from {total_qa_pairs} Q/A pairs!")
                         
                         # Generate and cache PDF report
                         pdf_bytes = generate_sleek_attack_pdf_report(
