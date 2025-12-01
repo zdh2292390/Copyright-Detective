@@ -2804,6 +2804,14 @@ def render_qa_based_detection(api_key, model_choice, provider):
                         st.session_state['qa_sleek_results'] = sleek_results
                         st.success(f"✅ Completed evaluation: {sleek_results['total_sub_questions']} sub-questions from {total_qa_pairs} Q/A pairs!")
                         
+                        # Generate and cache PDF report
+                        pdf_bytes = generate_sleek_attack_pdf_report(
+                            sleek_results, 
+                            model_choice, 
+                            provider
+                        )
+                        st.session_state['qa_sleek_pdf_report'] = pdf_bytes
+                        
                     except Exception as e:
                         progress_bar.empty()
                         st.error(f"❌ Evaluation failed: {str(e)}")
@@ -2864,30 +2872,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                             
                             # Metrics are displayed in the comparison above
                         
-                        # Show aggregate metrics for this pair
-                        st.markdown("---\n**📊 Aggregate Metrics (across runs):**")
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.markdown(f"""
-                            <div style="text-align: center; padding: 10px;">
-                                <div style="font-size: 0.8em; color: #666; margin-bottom: 5px;">Avg ROUGE-L</div>
-                                <div style="font-size: 1.2em; font-weight: bold; color: #1f77b4;">{pair_result.get('avg_rouge_score', 0):.3f}</div>
-                            </div>
-                            """, unsafe_allow_html=True)
-                        with col2:
-                            st.markdown(f"""
-                            <div style="text-align: center; padding: 10px;">
-                                <div style="font-size: 0.8em; color: #666; margin-bottom: 5px;">Avg Jaccard</div>
-                                <div style="font-size: 1.2em; font-weight: bold; color: #1f77b4;">{pair_result.get('avg_jaccard_index', 0):.3f}</div>
-                            </div>
-                            """, unsafe_allow_html=True)
-                        with col3:
-                            if pair_result.get('leakage_detected', False):
-                                st.error("⚠️ Leakage Detected")
-                            else:
-                                st.success("✅ No Leakage")
-                
-                # Overall interpretation
+                        # Overall interpretation
                 st.markdown('<h3 class="section-header sm">🔍 Overall Interpretation</h3>', unsafe_allow_html=True)
                 overall_leakage = sleek_results.get('overall_leakage_rate', 0)
                 
@@ -2906,6 +2891,25 @@ def render_qa_based_detection(api_key, model_choice, provider):
                         "✅ **Low Knowledge Leakage**: The model's answers differ significantly from expected answers "
                         "across most categories, suggesting limited memorization of the source content."
                     )
+
+                # PDF Report Generation
+                st.markdown("---")
+                
+                # Use cached PDF if available, otherwise generate new one
+                if 'qa_sleek_pdf_report' in st.session_state:
+                    pdf_bytes = st.session_state['qa_sleek_pdf_report']
+                else:
+                    # Fallback: generate PDF if not cached (shouldn't happen in normal flow)
+                    pdf_bytes = generate_sleek_attack_pdf_report(sleek_results, model_choice, provider)
+                    st.session_state['qa_sleek_pdf_report'] = pdf_bytes
+
+                # PDF Preview
+                st.markdown("**📋 Report Preview:**")
+                
+                # Convert PDF bytes to base64 for embedding
+                pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+                pdf_display = f'<iframe src="data:application/pdf;base64,{pdf_base64}" width="100%" height="600" type="application/pdf"></iframe>'
+                st.markdown(pdf_display, unsafe_allow_html=True)
 
         elif not st.session_state['qa_generated_qa_pairs']:
             st.info("👆 Upload a PDF or TXT file and generate Q/A pairs to begin the knowledge memorization detection process.")
@@ -6026,6 +6030,7 @@ def generate_open_ended_question_pdf_report(
 
 def generate_sleek_attack_pdf_report(results_data: Dict[str, Any], model_choice: str, provider: str) -> bytes:
     """Generate a PDF report for SLEEK attack evaluation results."""
+    import textwrap
 
     # Sanitize inputs to remove Unicode characters
     def sanitize_text(text: str) -> str:
@@ -6035,6 +6040,8 @@ def generate_sleek_attack_pdf_report(results_data: Dict[str, Any], model_choice:
         text = text.replace('–', '-').replace('—', '-').replace('…', '...').replace(''', "'").replace(''', "'").replace('"', '"').replace('"', '"').replace('•', '-').replace('°', 'deg')
         # Replace checkmarks and symbols
         text = text.replace('✓', '[x]').replace('✗', '[ ]').replace('✅', '[x]').replace('❌', '[ ]').replace('⚠️', '[!]').replace('⚠', '[!]')
+        # Replace arrows
+        text = text.replace('→', '->').replace('←', '<-').replace('↔', '<->').replace('⇒', '=>').replace('⇐', '<=')
         # Remove any remaining non-latin-1 characters
         return ''.join(c for c in text if ord(c) < 256)
 
@@ -6056,6 +6063,19 @@ def generate_sleek_attack_pdf_report(results_data: Dict[str, Any], model_choice:
     pdf.cell(200, 10, txt=f"Report Generated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
     pdf.ln(10)
 
+    # Analysis Parameters
+    pdf.set_font("Arial", style='B', size=14)
+    pdf.cell(200, 10, txt="Analysis Parameters", ln=True)
+    pdf.ln(5)
+
+    pdf.set_font("Arial", size=10)
+    summary = results_data.get('summary', {})
+    pdf.cell(200, 8, txt=f"Number of Evaluation Runs: {summary.get('num_runs', 'N/A')}", ln=True)
+    pdf.cell(200, 8, txt=f"Evaluation Temperature: {summary.get('temperature', 'N/A')}", ln=True)
+    pdf.cell(200, 8, txt=f"Evaluation Top-P: {summary.get('top_p', 'N/A')}", ln=True)
+    pdf.cell(200, 8, txt=f"Method: {sanitize_text(str(summary.get('method', 'N/A')))}", ln=True)
+    pdf.ln(10)
+
     # Summary Metrics
     pdf.set_font("Arial", style='B', size=14)
     pdf.cell(200, 10, txt="Evaluation Summary", ln=True)
@@ -6063,116 +6083,191 @@ def generate_sleek_attack_pdf_report(results_data: Dict[str, Any], model_choice:
 
     pdf.set_font("Arial", size=10)
     total_questions = results_data.get('total_questions', 0)
-    questions_with_leakage = results_data.get('questions_with_leakage', 0)
+    total_sub_questions = results_data.get('total_sub_questions', 0)
+    questions_with_leakage = results_data.get('total_with_leakage', 0)
     leakage_rate = results_data.get('leakage_rate', 0)
+    avg_rouge = results_data.get('avg_rouge_score', 0)
+    avg_jaccard = results_data.get('avg_jaccard_index', 0)
+    avg_levenshtein = results_data.get('avg_levenshtein_distance', 0)
 
-    pdf.cell(200, 8, txt=f"Total Probing Questions: {total_questions}", ln=True)
-    pdf.cell(200, 8, txt=f"Questions with Leakage Detected: {questions_with_leakage}", ln=True)
+    pdf.cell(200, 8, txt=f"Total Q/A Pairs Evaluated: {total_questions}", ln=True)
+    pdf.cell(200, 8, txt=f"Total Sub-Questions Generated: {total_sub_questions}", ln=True)
+    pdf.cell(200, 8, txt=f"Q/A Pairs with Leakage Detected: {questions_with_leakage}", ln=True)
     pdf.cell(200, 8, txt=f"Overall Leakage Rate: {leakage_rate:.1%}", ln=True)
     pdf.ln(5)
 
-    # Leakage Risk Assessment
-    pdf.set_font("Arial", style='B', size=12)
-    pdf.cell(200, 8, txt="Knowledge Leakage Assessment:", ln=True)
+    # Aggregate Metrics
+    pdf.set_font("Arial", style='B', size=14)
+    pdf.cell(200, 10, txt="Aggregate Metrics", ln=True)
+    pdf.ln(5)
+
+    pdf.set_font("Arial", size=10)
+    pdf.cell(200, 8, txt=f"Average ROUGE-L Score: {avg_rouge:.4f}", ln=True)
+    pdf.cell(200, 8, txt=f"Average Jaccard Index: {avg_jaccard:.4f}", ln=True)
+    pdf.cell(200, 8, txt=f"Average Levenshtein Distance: {avg_levenshtein:.2f}", ln=True)
+    pdf.ln(10)
+
+    # Interpretation
+    pdf.set_font("Arial", style='B', size=14)
+    pdf.cell(200, 10, txt="Overall Interpretation", ln=True)
+    pdf.ln(5)
+
     pdf.set_font("Arial", size=10)
     if leakage_rate > 0.5:
-        pdf.cell(200, 8, txt="HIGH LEAKAGE RISK - Significant residual knowledge detected", ln=True)
+        interpretation = "HIGH KNOWLEDGE LEAKAGE DETECTED: The model shows significant memorization across multiple question categories, suggesting it retains detailed knowledge from the source content. This indicates potential copyright concerns."
     elif leakage_rate > 0.2:
-        pdf.cell(200, 8, txt="MODERATE LEAKAGE - Some knowledge retention indicated", ln=True)
+        interpretation = "MODERATE KNOWLEDGE LEAKAGE: The model shows some memorization patterns, particularly in certain question categories. This may indicate partial knowledge retention from the source material."
     else:
-        pdf.cell(200, 8, txt="LOW LEAKAGE - Limited residual knowledge detected", ln=True)
+        interpretation = "LOW KNOWLEDGE LEAKAGE: The model's answers differ significantly from expected answers across most categories, suggesting limited memorization of the source content."
+
+    wrapped_interpretation = textwrap.wrap(interpretation, width=90)
+    for line in wrapped_interpretation:
+        pdf.cell(200, 6, txt=line, ln=True)
     pdf.ln(10)
 
-    # Forget Question
-    pdf.set_font("Arial", style='B', size=14)
-    pdf.cell(200, 10, txt="Core Knowledge Target (Forget Question)", ln=True)
-    pdf.ln(3)
-
-    pdf.set_font("Arial", size=10)
-    forget_question = sanitize_text(results_data.get('forget_question', 'N/A'))
-    pdf.multi_cell(0, 6, txt=forget_question)
-    pdf.ln(10)
-
-    # Auxiliary Reasoning Chain
-    if pdf.get_y() > 200:
+    # Detailed Results by Q/A Pair
+    qa_pair_results = results_data.get('qa_pair_results', [])
+    if qa_pair_results:
         pdf.add_page()
-
-    pdf.set_font("Arial", style='B', size=14)
-    pdf.cell(200, 10, txt="Auxiliary Reasoning Chain", ln=True)
-    pdf.ln(3)
-
-    pdf.set_font("Arial", size=9)
-    support_response = sanitize_text(results_data.get('support_response', 'N/A'))
-    # Limit length for PDF
-    if len(support_response) > 2000:
-        support_response = support_response[:2000] + "... [truncated]"
-    pdf.multi_cell(0, 5, txt=support_response)
-    pdf.ln(10)
-
-    # Detailed Question Results
-    questions = results_data.get('questions', [])
-    if questions:
-        if pdf.get_y() > 180:
-            pdf.add_page()
-
         pdf.set_font("Arial", style='B', size=14)
-        pdf.cell(200, 10, txt="Detailed Probing Results", ln=True)
+        pdf.cell(200, 10, txt="Detailed Results by Q/A Pair", ln=True)
         pdf.ln(5)
 
-        for qa_idx, q_data in enumerate(questions[:15]):  # Limit to first 15 questions
-            if pdf.get_y() > 220:
+        for pair_idx, pair_result in enumerate(qa_pair_results):
+            if pdf.get_y() > 230:
                 pdf.add_page()
 
-            pdf.set_font("Arial", style='B', size=11)
-            pdf.cell(200, 7, txt=f"Question {qa_idx + 1} [{q_data.get('category', 'N/A')}]", ln=True)
-            pdf.ln(2)
+            # Q/A Pair Header
+            pdf.set_font("Arial", style='B', size=12)
+            pdf.set_fill_color(240, 240, 240)
+            pdf.cell(200, 8, txt=f"Q/A Pair {pair_idx + 1}", ln=True, fill=True)
+            pdf.ln(3)
 
-            # Question text
+            # Original Question
+            pdf.set_font("Arial", style='B', size=10)
+            pdf.cell(200, 6, txt="Original Question:", ln=True)
             pdf.set_font("Arial", size=9)
-            question_text = sanitize_text(q_data.get('question', ''))
-            pdf.multi_cell(0, 5, txt=f"Q: {question_text}")
-            pdf.ln(2)
+            original_question = sanitize_text(pair_result.get('original_question', ''))
+            wrapped_q = textwrap.wrap(original_question, width=100)
+            for line in wrapped_q[:3]:  # Limit to 3 lines
+                pdf.cell(200, 5, txt=line, ln=True)
+            if len(wrapped_q) > 3:
+                pdf.cell(200, 5, txt="...", ln=True)
+            pdf.ln(3)
 
-            # Knowledge point
-            pdf.set_font("Arial", style='I', size=8)
-            knowledge_point = sanitize_text(q_data.get('knowledge_point', ''))
-            pdf.multi_cell(0, 4, txt=f"Target: {knowledge_point}")
-            pdf.ln(2)
-
-            # Response (truncated)
-            response = sanitize_text(q_data.get('response', ''))
-            if len(response) > 300:
-                response = response[:300] + "..."
+            # Ground Truth Answer
+            pdf.set_font("Arial", style='B', size=10)
+            pdf.cell(200, 6, txt="Ground Truth Answer:", ln=True)
             pdf.set_font("Arial", size=9)
-            pdf.multi_cell(0, 5, txt=f"Response: {response}")
-            pdf.ln(2)
+            ground_truth = sanitize_text(pair_result.get('ground_truth', ''))
+            wrapped_gt = textwrap.wrap(ground_truth, width=100)
+            for line in wrapped_gt[:4]:  # Limit to 4 lines
+                pdf.cell(200, 5, txt=line, ln=True)
+            if len(wrapped_gt) > 4:
+                pdf.cell(200, 5, txt="...", ln=True)
+            pdf.ln(3)
 
-            # Leakage assessment
-            leakage_score = q_data.get('leakage_score', 0)
-            has_leakage = q_data.get('has_leakage', False)
-            status = "LEAKAGE DETECTED" if has_leakage else "No Leakage"
+            # Aggregate metrics for this pair
+            pdf.set_font("Arial", style='B', size=10)
+            pdf.cell(200, 6, txt="Pair-Level Metrics:", ln=True)
+            pdf.set_font("Arial", size=9)
+            pair_avg_rouge = pair_result.get('avg_rouge_score', 0)
+            pair_avg_jaccard = pair_result.get('avg_jaccard_index', 0)
+            pair_avg_lev = pair_result.get('avg_levenshtein_distance', 0)
+            pair_leakage = pair_result.get('leakage_detected', False)
 
-            pdf.set_font("Arial", style='B', size=9)
-            pdf.cell(200, 5, txt=f"Assessment: {status} (Score: {leakage_score:.2f})", ln=True)
+            pdf.cell(200, 5, txt=f"  - Average ROUGE-L: {pair_avg_rouge:.4f}", ln=True)
+            pdf.cell(200, 5, txt=f"  - Average Jaccard Index: {pair_avg_jaccard:.4f}", ln=True)
+            pdf.cell(200, 5, txt=f"  - Average Levenshtein Distance: {pair_avg_lev:.2f}", ln=True)
+            pdf.cell(200, 5, txt=f"  - Leakage Detected: {'YES' if pair_leakage else 'No'}", ln=True)
+            pdf.ln(3)
+
+            # Detailed runs for this pair
+            runs = pair_result.get('runs', [])
+            for run in runs:
+                if pdf.get_y() > 240:
+                    pdf.add_page()
+
+                run_num = run.get('run', 1)
+                pdf.set_font("Arial", style='B', size=10)
+                pdf.cell(200, 6, txt=f"  Run {run_num}:", ln=True)
+
+                # Show decomposed sub-questions
+                sub_questions = run.get('sub_questions', [])
+                if sub_questions:
+                    pdf.set_font("Arial", style='I', size=9)
+                    pdf.cell(200, 5, txt="    Decomposed Sub-Questions:", ln=True)
+                    pdf.set_font("Arial", size=8)
+                    for sq_idx, sq in enumerate(sub_questions[:5]):  # Limit to 5 sub-questions
+                        category = sq.get('category', 'Direct')
+                        question = sanitize_text(sq.get('question', ''))[:80]
+                        pdf.cell(200, 4, txt=f"      {sq_idx + 1}. [{category}] {question}", ln=True)
+                    if len(sub_questions) > 5:
+                        pdf.cell(200, 4, txt=f"      ... and {len(sub_questions) - 5} more sub-questions", ln=True)
+
+                # Show final answer (truncated)
+                final_answer = sanitize_text(run.get('final_answer', ''))
+                if final_answer:
+                    pdf.set_font("Arial", style='I', size=9)
+                    pdf.cell(200, 5, txt="    Model's Final Answer:", ln=True)
+                    pdf.set_font("Arial", size=8)
+                    wrapped_answer = textwrap.wrap(final_answer, width=110)
+                    for line in wrapped_answer[:3]:  # Limit to 3 lines
+                        pdf.cell(200, 4, txt=f"      {line}", ln=True)
+                    if len(wrapped_answer) > 3:
+                        pdf.cell(200, 4, txt="      ...", ln=True)
+
+                # Show run metrics
+                pdf.set_font("Arial", size=8)
+                run_rouge = run.get('rouge_score', 0)
+                run_jaccard = run.get('jaccard_index', 0)
+                run_lev = run.get('levenshtein_distance', 0)
+                run_leakage = run.get('has_leakage', False)
+                pdf.cell(200, 4, txt=f"    Metrics: ROUGE-L={run_rouge:.4f}, Jaccard={run_jaccard:.4f}, Levenshtein={run_lev:.0f}, Leakage={'YES' if run_leakage else 'No'}", ln=True)
+                pdf.ln(2)
+
             pdf.ln(5)
 
-        if len(questions) > 15:
+        # Note about truncation
+        if len(qa_pair_results) > 10:
             pdf.set_font("Arial", style='I', size=9)
-            pdf.cell(200, 5, txt=f"... and {len(questions) - 15} more questions", ln=True)
+            pdf.cell(200, 6, txt=f"Note: Showing all {len(qa_pair_results)} Q/A pairs in this report.", ln=True)
 
-    # Source Document Excerpt
-    document_text = results_data.get('document_text', '')
-    if document_text:
+    # Category Breakdown
+    category_breakdown = results_data.get('category_breakdown', {})
+    if category_breakdown:
         if pdf.get_y() > 200:
             pdf.add_page()
 
         pdf.set_font("Arial", style='B', size=14)
-        pdf.cell(200, 10, txt="Source Document Excerpt", ln=True)
+        pdf.cell(200, 10, txt="Sub-Question Category Breakdown", ln=True)
         pdf.ln(5)
 
-        pdf.set_font("Arial", size=9)
-        excerpt = sanitize_text(document_text[:1500] + ('...' if len(document_text) > 1500 else ''))
-        pdf.multi_cell(0, 5, txt=excerpt)
+        pdf.set_font("Arial", size=10)
+        for cat, stats in category_breakdown.items():
+            total = stats.get('total', 0)
+            pdf.cell(200, 6, txt=f"  - {cat}: {total} sub-questions", ln=True)
+        pdf.ln(10)
+
+    # Conclusion
+    if pdf.get_y() > 220:
+        pdf.add_page()
+
+    pdf.set_font("Arial", style='B', size=14)
+    pdf.cell(200, 10, txt="Conclusion", ln=True)
+    pdf.ln(5)
+
+    pdf.set_font("Arial", size=10)
+    if leakage_rate > 0.5:
+        conclusion = f"Based on the SLEEK attack evaluation, the model '{model_choice}' demonstrates HIGH levels of knowledge memorization. Out of {total_questions} Q/A pairs tested, {questions_with_leakage} showed signs of leakage (rate: {leakage_rate:.1%}). The average similarity metrics (ROUGE-L: {avg_rouge:.4f}, Jaccard: {avg_jaccard:.4f}) indicate the model retains significant knowledge from the source material. This suggests potential copyright concerns that warrant further investigation."
+    elif leakage_rate > 0.2:
+        conclusion = f"Based on the SLEEK attack evaluation, the model '{model_choice}' demonstrates MODERATE levels of knowledge memorization. Out of {total_questions} Q/A pairs tested, {questions_with_leakage} showed signs of leakage (rate: {leakage_rate:.1%}). The average similarity metrics (ROUGE-L: {avg_rouge:.4f}, Jaccard: {avg_jaccard:.4f}) suggest partial knowledge retention. Consider additional testing with different question categories."
+    else:
+        conclusion = f"Based on the SLEEK attack evaluation, the model '{model_choice}' demonstrates LOW levels of knowledge memorization. Out of {total_questions} Q/A pairs tested, only {questions_with_leakage} showed signs of leakage (rate: {leakage_rate:.1%}). The average similarity metrics (ROUGE-L: {avg_rouge:.4f}, Jaccard: {avg_jaccard:.4f}) indicate the model does not appear to have memorized significant portions of the source content."
+
+    wrapped_conclusion = textwrap.wrap(conclusion, width=90)
+    for line in wrapped_conclusion:
+        pdf.cell(200, 6, txt=line, ln=True)
 
     return pdf.output(dest='S').encode('latin-1', errors='replace')
 
