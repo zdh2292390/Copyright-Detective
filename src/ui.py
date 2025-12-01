@@ -1820,13 +1820,12 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             
             st.divider()
             st.markdown('<p class="analysis-step-label">Results</p>', unsafe_allow_html=True)
-            st.markdown("### 📊 Analysis Results")
+            st.markdown("**📊 Analysis Results**")
             st.caption(
                 "Metrics reported: ROUGE-1, ROUGE-L, LCS (character/word), ACS (word), Levenshtein distance, semantic similarity, MinHash similarity, and Jaccard index."
             )
 
             # Highlighted overlap view
-            st.markdown("**🧠 Recall Overlap**")
             render_direct_recall_diff(text2, generated_text, metrics=metrics_map)
 
             # Conclusion
@@ -1972,19 +1971,6 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         # PDF Preview
         st.markdown("**📋 Report Preview:**")
         
-        # Add download button
-        col1, col2 = st.columns([1, 4])
-        with col1:
-            st.download_button(
-                label="📥 Download PDF",
-                data=pdf_bytes,
-                file_name=f"text_memorization_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-                mime="application/pdf",
-                key="download_text_pdf"
-            )
-        with col2:
-            st.caption("Click to download the complete PDF report")
-
         # Convert PDF bytes to base64 for embedding
         pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
         pdf_display = f'<iframe src="data:application/pdf;base64,{pdf_base64}" width="100%" height="600" type="application/pdf"></iframe>'
@@ -2681,6 +2667,43 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 "✅ **Low Memorization**: The LLM's answers differ significantly from ground truth, "
                 "suggesting it is not recalling memorized content from this specific document."
             )
+
+        # PDF Report Generation
+        st.markdown("---")
+
+        # Gather data for PDF
+        qa_pairs = st.session_state.get('qa_generated_qa_pairs', [])
+        source_mode = st.session_state.get('qa_source_mode', 'Input Text')
+        num_qa_pairs = st.session_state.get('qa_num_qa_pairs', 5)
+        num_eval_runs = st.session_state.get('qa_num_eval_runs', 1)
+        eval_temperature = st.session_state.get('qa_eval_temperature', 0.7)
+        eval_top_p = st.session_state.get('qa_eval_top_p', 0.9)
+
+        # Generate PDF Report
+        if 'qa_pdf_report_bytes' not in st.session_state:
+            pdf_bytes = generate_open_ended_question_pdf_report(
+                all_results,
+                agg_metrics,
+                qa_pairs,
+                model_choice,
+                source_mode,
+                num_qa_pairs,
+                num_eval_runs,
+                eval_temperature,
+                eval_top_p
+            )
+            st.session_state['qa_pdf_report_bytes'] = pdf_bytes
+        else:
+            pdf_bytes = st.session_state['qa_pdf_report_bytes']
+
+        # PDF Preview
+        st.markdown("**📋 Report Preview:**")
+
+        # Convert PDF bytes to base64 for embedding
+        pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+        pdf_display = f'<iframe src="data:application/pdf;base64,{pdf_base64}" width="100%" height="600" type="application/pdf"></iframe>'
+        st.markdown(pdf_display, unsafe_allow_html=True)
+
     elif not st.session_state['qa_generated_qa_pairs']:
         st.info("👆 Upload a PDF or TXT file and generate Q/A pairs to begin the knowledge memorization detection process.")
 
@@ -3726,6 +3749,30 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                     metrics=metrics_for_display,
                 )
 
+        # Generate PDF Report
+        if 'pdf_report_bytes' not in st.session_state:
+            filename = uploaded_file.name if uploaded_file else "document.pdf"
+            pdf_bytes = generate_document_memorization_pdf_report(
+                results_data,
+                model_choice,
+                continuation_method,
+                temperature,
+                top_p,
+                st.session_state.get('pdf_chunk_size', 200),
+                filename
+            )
+            st.session_state['pdf_report_bytes'] = pdf_bytes
+        else:
+            pdf_bytes = st.session_state['pdf_report_bytes']
+
+        # PDF Preview
+        st.markdown("**📋 Report Preview:**")
+        
+        # Convert PDF bytes to base64 for embedding
+        pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+        pdf_display = f'<iframe src="data:application/pdf;base64,{pdf_base64}" width="100%" height="600" type="application/pdf"></iframe>'
+        st.markdown(pdf_display, unsafe_allow_html=True)
+
     uploaded_file = st.file_uploader(
         "Choose a pdf or txt file",
         type=["pdf", "txt"],
@@ -3842,6 +3889,9 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
     )
 
     if analyze_document:
+        # Clear previous report
+        st.session_state.pop('pdf_report_bytes', None)
+        
         # Get values from session state
         temperature = st.session_state.get('pdf_temperature_slider', 0.7)
         top_p = st.session_state.get('pdf_top_p_slider', 0.9)
@@ -3956,6 +4006,138 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
             temperature=cached_temperature,
             top_p=cached_top_p,
         )
+
+
+def generate_jailbreak_detection_pdf_report(
+    results_data: List[Dict[str, Any]],
+    model_choice: str,
+    original_prompt: str,
+    reference_text: str,
+    generation_mode: str,
+    strategies: List[str],
+    attempts_per_strategy: int,
+    attempts_per_prompt: int
+) -> bytes:
+    """Generate a PDF report for persuasive jailbreak detection results."""
+    
+    # Sanitize inputs to remove Unicode characters
+    def sanitize_text(text: str) -> str:
+        if not text:
+            return ""
+        # Replace common Unicode characters with ASCII equivalents
+        text = text.replace('–', '-').replace('—', '-').replace('…', '...').replace('‘', "'").replace('’', "'").replace('“', '"').replace('”', '"').replace('•', '-').replace('°', 'deg')
+        # Encode to latin-1 with replacement to handle unsupported characters
+        return text.encode('latin-1', 'replace').decode('latin-1')
+    
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+
+    # Title
+    pdf.set_font("Arial", style='B', size=16)
+    pdf.cell(200, 10, txt="Persuasive Jailbreak Detection Report", ln=True, align='C')
+    pdf.ln(10)
+
+    # Metadata
+    pdf.set_font("Arial", size=12)
+    pdf.cell(200, 10, txt=f"Model: {model_choice}", ln=True)
+    pdf.cell(200, 10, txt=f"Report Generated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
+    pdf.ln(10)
+
+    # Analysis Parameters
+    pdf.set_font("Arial", style='B', size=14)
+    pdf.cell(200, 10, txt="Analysis Parameters", ln=True)
+    pdf.ln(5)
+    
+    pdf.set_font("Arial", size=10)
+    pdf.cell(200, 8, txt=f"Generation Mode: {sanitize_text(generation_mode)}", ln=True)
+    pdf.cell(200, 8, txt=f"Strategies: {sanitize_text(', '.join(strategies))}", ln=True)
+    pdf.cell(200, 8, txt=f"Attempts per Strategy: {attempts_per_strategy}", ln=True)
+    pdf.cell(200, 8, txt=f"Attempts per Prompt: {attempts_per_prompt}", ln=True)
+    pdf.cell(200, 8, txt=f"Total Mutations Evaluated: {len(results_data)}", ln=True)
+    pdf.ln(10)
+
+    # Original Prompt & Reference
+    pdf.set_font("Arial", style='B', size=14)
+    pdf.cell(200, 10, txt="Input Configuration", ln=True)
+    pdf.ln(5)
+
+    pdf.set_font("Arial", style='B', size=12)
+    pdf.cell(200, 10, txt="Original Adversarial Prompt:", ln=True)
+    pdf.set_font("Arial", size=10)
+    pdf.multi_cell(0, 5, txt=sanitize_text(original_prompt))
+    pdf.ln(5)
+
+    pdf.set_font("Arial", style='B', size=12)
+    pdf.cell(200, 10, txt="Reference Text:", ln=True)
+    pdf.set_font("Arial", size=10)
+    pdf.multi_cell(0, 5, txt=sanitize_text(reference_text))
+    pdf.ln(10)
+
+    # Top Results
+    pdf.set_font("Arial", style='B', size=14)
+    pdf.cell(200, 10, txt="Top Successful Mutations", ln=True)
+    pdf.ln(5)
+
+    # Sort results by ROUGE-L descending
+    sorted_results = sorted(
+        results_data,
+        key=lambda x: float(x.get("rouge_l", 0.0) if isinstance(x.get("rouge_l"), (int, float)) else 0.0),
+        reverse=True
+    )
+    
+    # Show top 10 results
+    top_n = min(10, len(sorted_results))
+    
+    for i, result in enumerate(sorted_results[:top_n], 1):
+        pdf.set_font("Arial", style='B', size=12)
+        rouge_val = result.get("rouge_l", "N/A")
+        if isinstance(rouge_val, (int, float)):
+            rouge_str = f"{rouge_val:.4f}"
+        else:
+            rouge_str = str(rouge_val)
+            
+        pdf.cell(200, 10, txt=f"Rank {i} (ROUGE-L: {rouge_str})", ln=True)
+        
+        pdf.set_font("Arial", size=10)
+        
+        # Strategy & Status
+        strategy = sanitize_text(result.get("strategy", "Unknown"))
+        status = sanitize_text(result.get("judge_status", "Unknown"))
+        pdf.cell(200, 6, txt=f"Strategy: {strategy}", ln=True)
+        pdf.cell(200, 6, txt=f"Judge Status: {status}", ln=True)
+        
+        # Metrics
+        metrics_parts = []
+        if "jaccard" in result:
+            val = result["jaccard"]
+            metrics_parts.append(f"Jaccard: {val:.4f}" if isinstance(val, (int, float)) else f"Jaccard: {val}")
+        if "levenshtein" in result:
+            metrics_parts.append(f"Levenshtein: {result['levenshtein']}")
+            
+        if metrics_parts:
+            pdf.cell(200, 6, txt=", ".join(metrics_parts), ln=True)
+        pdf.ln(2)
+        
+        # Mutated Prompt
+        pdf.set_font("Arial", style='B', size=10)
+        pdf.cell(200, 5, txt="Mutated Prompt:", ln=True)
+        pdf.set_font("Arial", size=9)
+        pdf.multi_cell(0, 5, txt=sanitize_text(result.get("mutated_text", "")))
+        pdf.ln(2)
+        
+        # LLM Response
+        pdf.set_font("Arial", style='B', size=10)
+        pdf.cell(200, 5, txt="LLM Response:", ln=True)
+        pdf.set_font("Arial", size=9)
+        pdf.multi_cell(0, 5, txt=sanitize_text(result.get("llm_response", "")))
+        pdf.ln(5)
+        
+        # Add page break if needed
+        if pdf.get_y() > 250:
+            pdf.add_page()
+
+    return pdf.output(dest='S').encode('latin-1', errors='replace')
 
 
 def render_adversarial_persuasion_page(api_key, model_choice, provider):
@@ -4358,6 +4540,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     if run_generation:
         # Clear previous results to only store current run data
         mutation_store.clear()
+        st.session_state.pop('jailbreak_pdf_report_bytes', None)
         
         # Get values from session state
         original_prompt = st.session_state.get('input_prompt', '')
@@ -4690,8 +4873,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
 
     if prompts:
         st.markdown('<p class="analysis-step-label">Results explorer</p>', unsafe_allow_html=True)
-        st.markdown("**📚 Generation Results Library**")
-        st.caption("Results are cached in session state so you can revisit them.")
 
         # Get the first (and only) prompt from current run
         selected_prompt = prompts[0]
@@ -4769,43 +4950,152 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             ranked_rows.sort(key=lambda item: item["score"], reverse=True)
             stored_panels.sort(key=lambda item: item["score"], reverse=True)
 
-            if ranked_rows:
-                df_data = []
-                for idx, row in enumerate(ranked_rows, start=1):
-                    df_data.append({
-                        "rank": idx,
-                        "strategy": row["strategy"],
-                        "attempt": row["attempt"],
-                        "prompt_attempt": row["prompt_attempt"],
-                        "mutated_text": row["mutated_display"],
-                        "llm_response": row["llm_display"],
-                        "rouge_l": row["rouge_l"],
-                        "jaccard": row["jaccard"],
-                        "levenshtein": row["levenshtein"],
-                        "judge_status": row["judge_status"],
-                    })
+            # 🎯 Intention Preservation Judging Results (moved to front)
+            st.markdown("**🎯 Intention Preservation Judging Results**")
+            st.caption("Click to expand each mutation result and view detailed intention preservation analysis.")
 
-                df = pd.DataFrame(df_data)
-                st.dataframe(
-                    df,
-                    width='stretch',
-                    hide_index=True,
-                    column_config={
-                        "rank": st.column_config.NumberColumn("Rank", width="small"),
-                        "strategy": st.column_config.TextColumn("Strategy", width="medium"),
-                        "attempt": st.column_config.NumberColumn("Strategy Attempt", width="small"),
-                        "prompt_attempt": st.column_config.NumberColumn("Prompt Attempt", width="small"),
-                        "mutated_text": st.column_config.TextColumn("Mutated Prompt", width="large"),
-                        "llm_response": st.column_config.TextColumn("LLM Response", width="large"),
-                        "rouge_l": st.column_config.TextColumn("ROUGE-L", width="small"),
-                        "jaccard": st.column_config.TextColumn("Jaccard", width="small"),
-                        "levenshtein": st.column_config.TextColumn("Levenshtein", width="small"),
-                        "judge_status": st.column_config.TextColumn("Judge Status", width="medium"),
-                    },
-                )
+            for idx, panel_payload in enumerate(stored_panels, start=1):
+                evaluation = panel_payload["evaluation"]
+                metrics = panel_payload.get("metrics")
+                parsed = evaluation.parsed
+                mutated_text = parsed.mutated_text.strip() if parsed and parsed.mutated_text else ""
+                rouge_score = metrics.rouge_l if metrics else 0.0
+                jaccard_value = metrics.jaccard if metrics else 0.0
+                levenshtein_value = metrics.levenshtein if metrics else None
+                status_icon = panel_payload["status_icon"]
+                status_text = panel_payload["status_text"]
+                judged_flag = panel_payload["judged"]
+                judge_meta = panel_payload.get("judge_meta") or {}
+                judge_result = panel_payload.get("judge")
+                llm_response = panel_payload.get("llm_response") or ""
 
-                # Add boxplot analysis by strategy
-                st.markdown("**📦 Distribution Analysis by Strategy**")
+                # Build meta string with metrics
+                meta_parts = [f"{status_icon.strip()} {status_text.strip()}"]
+                if metrics:
+                    levenshtein_display = (
+                        str(levenshtein_value)
+                        if levenshtein_value is not None
+                        else "N/A"
+                    )
+                    meta_parts.append(f"ROUGE-L {rouge_score:.4f}")
+                    meta_parts.append(f"Jaccard {jaccard_value:.4f}")
+                    meta_parts.append(f"Levenshtein {levenshtein_display}")
+                meta_text = " | ".join(meta_parts)
+
+                # Use Streamlit's native accordion (expander) for each mutation
+                with st.expander(f"Mutation #{idx} — {evaluation.mutation.strategy} | {meta_text}", expanded=False):
+                    # Summary and Metrics in compact format
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.caption(f"**Strategy:** {evaluation.mutation.strategy} | **Strategy Attempt:** {evaluation.attempt} | **Prompt Attempt:** {panel_payload.get('prompt_attempt', 1)}")
+                    with col2:
+                        if metrics:
+                            st.caption(f"**ROUGE-L:** {rouge_score:.4f} | **Jaccard:** {jaccard_value:.4f} | **Levenshtein:** {levenshtein_value}")
+                    
+                    # Mutated prompt
+                    st.markdown("**📝 Mutated Prompt**")
+                    st.text(mutated_text)
+                    
+                    # Ground truth comparison - moved inside accordion
+                    if llm_response:
+                        reference_text = stage1_reference_map.get(selected_prompt, '')
+                        if reference_text:
+                            st.markdown("**🧠 Ground Truth Comparison**")
+                            render_direct_recall_diff(
+                                reference_text,
+                                llm_response,
+                                title="Generated Text vs. Reference Text",
+                                metrics=metrics,
+                            )
+                    
+                    # Intention judging results
+                    if judged_flag:
+                        st.markdown("**🧠 Primary Intention Assessment**")
+                        primary_error = judge_meta.get("primary_error")
+                        if primary_error:
+                            st.caption(f"Error: {primary_error}")
+                        else:
+                            core_intention = judge_meta.get("core_intention")
+                            restated_mutated_text = judge_meta.get("restated_mutated_text")
+                            bits = []
+                            if core_intention:
+                                bits.append(f"**Core Intention:** {core_intention}")
+                            if restated_mutated_text:
+                                bits.append(f"**Restated:** {restated_mutated_text}")
+                            if bits:
+                                st.markdown("\n\n".join(bits))
+                            else:
+                                st.caption("No assessment data available")
+                        
+                        col3, col4 = st.columns(2)
+                        with col3:
+                            st.markdown("**🗳️ Judge Raw Response**")
+                            judge_response = judge_result.response if judge_result else ""
+                            if judge_response:
+                                st.text(judge_response)
+                            else:
+                                st.caption("No response available")
+                        
+                        with col4:
+                            st.markdown("**⚖️ Secondary Validation**")
+                            secondary_error = judge_meta.get("secondary_error")
+                            if secondary_error:
+                                st.caption(f"Error: {secondary_error}")
+                            else:
+                                st.markdown(f"{status_icon} {status_text}")
+                    else:
+                        st.caption("⏳ **Primary Intention Assessment & Secondary Validation:** Pending — judge not run yet.")
+
+            # 📚 Generation Results Library (wrapped in accordion)
+            st.markdown("---")
+            with render_streamlit_accordion(
+                "📚 Generation Results Library",
+                key="generation_results_library",
+                expanded=False,
+            ):
+                st.caption("Results are cached in session state so you can revisit them.")
+
+                if ranked_rows:
+                    df_data = []
+                    for idx, row in enumerate(ranked_rows, start=1):
+                        df_data.append({
+                            "rank": idx,
+                            "strategy": row["strategy"],
+                            "attempt": row["attempt"],
+                            "prompt_attempt": row["prompt_attempt"],
+                            "mutated_text": row["mutated_display"],
+                            "llm_response": row["llm_display"],
+                            "rouge_l": row["rouge_l"],
+                            "jaccard": row["jaccard"],
+                            "levenshtein": row["levenshtein"],
+                            "judge_status": row["judge_status"],
+                        })
+
+                    df = pd.DataFrame(df_data)
+                    st.dataframe(
+                        df,
+                        width='stretch',
+                        hide_index=True,
+                        column_config={
+                            "rank": st.column_config.NumberColumn("Rank", width="small"),
+                            "strategy": st.column_config.TextColumn("Strategy", width="medium"),
+                            "attempt": st.column_config.NumberColumn("Strategy Attempt", width="small"),
+                            "prompt_attempt": st.column_config.NumberColumn("Prompt Attempt", width="small"),
+                            "mutated_text": st.column_config.TextColumn("Mutated Prompt", width="large"),
+                            "llm_response": st.column_config.TextColumn("LLM Response", width="large"),
+                            "rouge_l": st.column_config.TextColumn("ROUGE-L", width="small"),
+                            "jaccard": st.column_config.TextColumn("Jaccard", width="small"),
+                            "levenshtein": st.column_config.TextColumn("Levenshtein", width="small"),
+                            "judge_status": st.column_config.TextColumn("Judge Status", width="medium"),
+                        },
+                    )
+
+            # 📦 Distribution Analysis by Strategy (moved outside Generation Results Library)
+            with render_streamlit_accordion(
+                "📦 Distribution Analysis by Strategy",
+                key="distribution_analysis",
+                expanded=False,
+            ):
                 st.caption("Boxplots showing the distribution of ROUGE-L scores across different persuasion strategies.")
                 
                 # Prepare data for boxplots
@@ -4853,101 +5143,38 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                 else:
                     st.info("No valid ROUGE-L scores available for boxplot analysis.")
 
-                st.markdown("**🎯 Intention Preservation Judging Results**")
-                st.caption("Click to expand each mutation result and view detailed intention preservation analysis.")
+            # PDF Report Generation
+            st.markdown("---")
+            
+            # Gather data for PDF
+            pdf_reference_text = stage1_reference_map.get(selected_prompt, "")
+            pdf_strategies = list(set(row["strategy"] for row in ranked_rows))
+            pdf_generation_mode = "One-Shot" if records and (records[0].get("config") or ["one"])[0] == "one" else "Few-Shot"
+            
+            # Generate PDF Report
+            if 'jailbreak_pdf_report_bytes' not in st.session_state:
+                pdf_bytes = generate_jailbreak_detection_pdf_report(
+                    ranked_rows,
+                    model_choice,
+                    selected_prompt,
+                    pdf_reference_text,
+                    pdf_generation_mode,
+                    pdf_strategies,
+                    st.session_state.get('adv_attempts', 3),
+                    st.session_state.get('adv_attempts_per_prompt', 1)
+                )
+                st.session_state['jailbreak_pdf_report_bytes'] = pdf_bytes
+            else:
+                pdf_bytes = st.session_state['jailbreak_pdf_report_bytes']
 
-                for idx, panel_payload in enumerate(stored_panels, start=1):
-                    evaluation = panel_payload["evaluation"]
-                    metrics = panel_payload.get("metrics")
-                    parsed = evaluation.parsed
-                    mutated_text = parsed.mutated_text.strip() if parsed and parsed.mutated_text else ""
-                    rouge_score = metrics.rouge_l if metrics else 0.0
-                    jaccard_value = metrics.jaccard if metrics else 0.0
-                    levenshtein_value = metrics.levenshtein if metrics else None
-                    status_icon = panel_payload["status_icon"]
-                    status_text = panel_payload["status_text"]
-                    judged_flag = panel_payload["judged"]
-                    judge_meta = panel_payload.get("judge_meta") or {}
-                    judge_result = panel_payload.get("judge")
-                    llm_response = panel_payload.get("llm_response") or ""
-
-                    # Build meta string with metrics
-                    meta_parts = [f"{status_icon.strip()} {status_text.strip()}"]
-                    if metrics:
-                        levenshtein_display = (
-                            str(levenshtein_value)
-                            if levenshtein_value is not None
-                            else "N/A"
-                        )
-                        meta_parts.append(f"ROUGE-L {rouge_score:.4f}")
-                        meta_parts.append(f"Jaccard {jaccard_value:.4f}")
-                        meta_parts.append(f"Levenshtein {levenshtein_display}")
-                    meta_text = " | ".join(meta_parts)
-
-                    # Use Streamlit's native accordion (expander) for each mutation
-                    with st.expander(f"Mutation #{idx} — {evaluation.mutation.strategy} | {meta_text}", expanded=False):
-                        # Summary and Metrics in compact format
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.caption(f"**Strategy:** {evaluation.mutation.strategy} | **Strategy Attempt:** {evaluation.attempt} | **Prompt Attempt:** {panel_payload.get('prompt_attempt', 1)}")
-                        with col2:
-                            if metrics:
-                                st.caption(f"**ROUGE-L:** {rouge_score:.4f} | **Jaccard:** {jaccard_value:.4f} | **Levenshtein:** {levenshtein_value}")
-                        
-                        # Mutated prompt
-                        st.markdown("**📝 Mutated Prompt**")
-                        st.text(mutated_text)
-                        
-                        # Ground truth comparison - moved inside accordion
-                        if llm_response:
-                            reference_text = stage1_reference_map.get(selected_prompt, '')
-                            if reference_text:
-                                st.markdown("**🧠 Ground Truth Comparison**")
-                                render_direct_recall_diff(
-                                    reference_text,
-                                    llm_response,
-                                    title="Generated Text vs. Reference Text",
-                                    metrics=metrics,
-                                )
-                        
-                        # Intention judging results
-                        if judged_flag:
-                            st.markdown("**🧠 Primary Intention Assessment**")
-                            primary_error = judge_meta.get("primary_error")
-                            if primary_error:
-                                st.caption(f"Error: {primary_error}")
-                            else:
-                                core_intention = judge_meta.get("core_intention")
-                                restated_mutated_text = judge_meta.get("restated_mutated_text")
-                                bits = []
-                                if core_intention:
-                                    bits.append(f"**Core Intention:** {core_intention}")
-                                if restated_mutated_text:
-                                    bits.append(f"**Restated:** {restated_mutated_text}")
-                                if bits:
-                                    st.markdown("\n\n".join(bits))
-                                else:
-                                    st.caption("No assessment data available")
-                            
-                            col3, col4 = st.columns(2)
-                            with col3:
-                                st.markdown("**🗳️ Judge Raw Response**")
-                                judge_response = judge_result.response if judge_result else ""
-                                if judge_response:
-                                    st.text(judge_response)
-                                else:
-                                    st.caption("No response available")
-                            
-                            with col4:
-                                st.markdown("**⚖️ Secondary Validation**")
-                                secondary_error = judge_meta.get("secondary_error")
-                                if secondary_error:
-                                    st.caption(f"Error: {secondary_error}")
-                                else:
-                                    st.markdown(f"{status_icon} {status_text}")
-                        else:
-                            st.caption("⏳ **Primary Intention Assessment & Secondary Validation:** Pending — judge not run yet.")
-
+            # PDF Preview
+            st.markdown("**📋 Report Preview:**")
+            
+            # Convert PDF bytes to base64 for embedding
+            pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+            pdf_display = f'<iframe src="data:application/pdf;base64,{pdf_base64}" width="100%" height="600" type="application/pdf"></iframe>'
+            st.markdown(pdf_display, unsafe_allow_html=True)
+            st.markdown("---")
 def render_unlearning_detection_page(api_key, model_choice, provider):
     """Render the representational analysis experience."""
     
@@ -5599,6 +5826,261 @@ def render_sleek_attack_page(api_key, model_choice, provider):
                 if 'support_response' in question_data:
                     st.markdown("**Auxiliary Reasoning:**")
                     st.write(question_data['support_response'])
+
+def generate_document_memorization_pdf_report(
+    results_data: List[Tuple[str, str, str, Dict[str, float]]],
+    model_choice: str,
+    continuation_method: str,
+    temperature: float,
+    top_p: float,
+    chunk_size: int,
+    filename: str
+) -> bytes:
+    """Generate a PDF report for document memorization detection results."""
+    
+    # Sanitize inputs to remove Unicode characters
+    def sanitize_text(text: str) -> str:
+        if not text:
+            return ""
+        # Replace common Unicode characters with ASCII equivalents
+        text = text.replace('–', '-').replace('—', '-').replace('…', '...').replace('‘', "'").replace('’', "'").replace('“', '"').replace('”', '"').replace('•', '-').replace('°', 'deg')
+        # Encode to latin-1 with replacement to handle unsupported characters
+        return text.encode('latin-1', 'replace').decode('latin-1')
+    
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+
+    # Title
+    pdf.set_font("Arial", style='B', size=16)
+    pdf.cell(200, 10, txt="Document Memorization Detection Report", ln=True, align='C')
+    pdf.ln(10)
+
+    # Metadata
+    pdf.set_font("Arial", size=12)
+    pdf.cell(200, 10, txt=f"Model: {model_choice}", ln=True)
+    pdf.cell(200, 10, txt=f"Analyzed File: {sanitize_text(filename)}", ln=True)
+    pdf.cell(200, 10, txt=f"Report Generated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
+    pdf.ln(10)
+
+    # Analysis Parameters
+    pdf.set_font("Arial", style='B', size=14)
+    pdf.cell(200, 10, txt="Analysis Parameters", ln=True)
+    pdf.ln(5)
+    
+    pdf.set_font("Arial", size=10)
+    pdf.cell(200, 8, txt=f"Continuation Method: {sanitize_text(continuation_method)}", ln=True)
+    pdf.cell(200, 8, txt=f"Chunk Size: {chunk_size} words", ln=True)
+    pdf.cell(200, 8, txt=f"Temperature: {temperature}", ln=True)
+    pdf.cell(200, 8, txt=f"Top-P: {top_p}", ln=True)
+    pdf.cell(200, 8, txt=f"Total Chunks Analyzed: {len(results_data)}", ln=True)
+    pdf.ln(10)
+
+    # Top Results
+    pdf.set_font("Arial", style='B', size=14)
+    pdf.cell(200, 10, txt="Top Similar Sections", ln=True)
+    pdf.ln(5)
+
+    # Sort results by ROUGE-L descending for the report
+    sorted_results = sorted(
+        results_data,
+        key=lambda entry: float(entry[3].get("rouge_l", 0.0)),
+        reverse=True
+    )
+    
+    # Show top 10 results in PDF
+    top_n = min(10, len(sorted_results))
+    
+    for i, (upper, lower, gen, metrics) in enumerate(sorted_results[:top_n], 1):
+        pdf.set_font("Arial", style='B', size=12)
+        pdf.cell(200, 10, txt=f"Rank {i} (ROUGE-L: {metrics.get('rouge_l', 0.0):.4f})", ln=True)
+        
+        pdf.set_font("Arial", size=10)
+        
+        # Metrics
+        metrics_str = ", ".join([f"{k}: {v:.4f}" for k, v in metrics.items() if isinstance(v, (int, float))])
+        pdf.multi_cell(0, 5, txt=f"Metrics: {metrics_str}")
+        pdf.ln(2)
+        
+        # Context
+        pdf.set_font("Arial", style='B', size=10)
+        pdf.cell(200, 5, txt="Prefix Context:", ln=True)
+        pdf.set_font("Arial", size=9)
+        pdf.multi_cell(0, 5, txt=sanitize_text(upper))
+        pdf.ln(2)
+        
+        # Ground Truth
+        pdf.set_font("Arial", style='B', size=10)
+        pdf.cell(200, 5, txt="Ground Truth:", ln=True)
+        pdf.set_font("Arial", size=9)
+        pdf.multi_cell(0, 5, txt=sanitize_text(lower))
+        pdf.ln(2)
+        
+        # Generated
+        pdf.set_font("Arial", style='B', size=10)
+        pdf.cell(200, 5, txt="Generated Text:", ln=True)
+        pdf.set_font("Arial", size=9)
+        pdf.multi_cell(0, 5, txt=sanitize_text(gen))
+        pdf.ln(5)
+        
+        # Add page break if needed
+        if pdf.get_y() > 250:
+            pdf.add_page()
+
+    return pdf.output(dest='S').encode('latin-1', errors='replace')
+
+
+def generate_open_ended_question_pdf_report(
+    all_results: List[List[Dict[str, Any]]],
+    agg_metrics: Dict[str, float],
+    qa_pairs: List[Dict[str, str]],
+    model_choice: str,
+    source_mode: str,
+    num_qa_pairs: int,
+    num_eval_runs: int,
+    eval_temperature: float,
+    eval_top_p: float
+) -> bytes:
+    """Generate a PDF report for open-ended question knowledge memorization detection results."""
+
+    # Sanitize inputs to remove Unicode characters
+    def sanitize_text(text: str) -> str:
+        if not text:
+            return ""
+        # Replace common Unicode characters with ASCII equivalents
+        text = text.replace('–', '-').replace('—', '-').replace('…', '...').replace(''', "'").replace(''', "'").replace('"', '"').replace('"', '"').replace('•', '-').replace('°', 'deg')
+        # Encode to latin-1 with replacement to handle unsupported characters
+        return text.encode('latin-1', 'replace').decode('latin-1')
+
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+
+    # Title
+    pdf.set_font("Arial", style='B', size=16)
+    pdf.cell(200, 10, txt="Open-ended Question Knowledge Memorization Detection Report", ln=True, align='C')
+    pdf.ln(10)
+
+    # Metadata
+    pdf.set_font("Arial", size=12)
+    pdf.cell(200, 10, txt=f"Model: {model_choice}", ln=True)
+    pdf.cell(200, 10, txt=f"Source Mode: {sanitize_text(source_mode)}", ln=True)
+    pdf.cell(200, 10, txt=f"Report Generated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
+    pdf.ln(10)
+
+    # Analysis Parameters
+    pdf.set_font("Arial", style='B', size=14)
+    pdf.cell(200, 10, txt="Analysis Parameters", ln=True)
+    pdf.ln(5)
+
+    pdf.set_font("Arial", size=10)
+    pdf.cell(200, 8, txt=f"Number of Q/A Pairs: {num_qa_pairs}", ln=True)
+    pdf.cell(200, 8, txt=f"Number of Evaluation Runs: {num_eval_runs}", ln=True)
+    pdf.cell(200, 8, txt=f"Evaluation Temperature: {eval_temperature}", ln=True)
+    pdf.cell(200, 8, txt=f"Evaluation Top-P: {eval_top_p}", ln=True)
+    pdf.ln(10)
+
+    # Aggregate Metrics
+    pdf.set_font("Arial", style='B', size=14)
+    pdf.cell(200, 10, txt="Aggregate Metrics", ln=True)
+    pdf.ln(5)
+
+    pdf.set_font("Arial", size=10)
+    avg_rouge = agg_metrics.get('avg_rouge_score', 0)
+    avg_jaccard = agg_metrics.get('avg_jaccard_index', 0)
+    avg_levenshtein = agg_metrics.get('avg_levenshtein_distance', 0)
+
+    pdf.cell(200, 8, txt=f"Average ROUGE-L Score: {avg_rouge:.4f}", ln=True)
+    pdf.cell(200, 8, txt=f"Average Jaccard Index: {avg_jaccard:.4f}", ln=True)
+    pdf.cell(200, 8, txt=f"Average Levenshtein Distance: {avg_levenshtein:.2f}", ln=True)
+    pdf.ln(10)
+
+    # Interpretation
+    pdf.set_font("Arial", style='B', size=14)
+    pdf.cell(200, 10, txt="Interpretation", ln=True)
+    pdf.ln(5)
+
+    pdf.set_font("Arial", size=10)
+    if avg_rouge > 0.5 or avg_jaccard > 0.5:
+        interpretation = "High Memorization Detected: The LLM shows strong similarity to the ground truth answers, suggesting it may have memorized content from the document or similar sources."
+    elif avg_rouge > 0.3 or avg_jaccard > 0.3:
+        interpretation = "Moderate Memorization: The LLM shows some similarity to ground truth answers, which could indicate partial memorization or general knowledge overlap."
+    else:
+        interpretation = "Low Memorization: The LLM's answers differ significantly from ground truth, suggesting it is not recalling memorized content from this specific document."
+
+    # Split interpretation text to fit PDF width
+    interpretation_lines = []
+    words = interpretation.split()
+    current_line = ""
+    for word in words:
+        if len(current_line + " " + word) < 80:
+            current_line += " " + word if current_line else word
+        else:
+            interpretation_lines.append(current_line)
+            current_line = word
+    if current_line:
+        interpretation_lines.append(current_line)
+
+    for line in interpretation_lines:
+        pdf.cell(200, 6, txt=line, ln=True)
+    pdf.ln(10)
+
+    # Detailed Results by Q/A Pair
+    pdf.set_font("Arial", style='B', size=14)
+    pdf.cell(200, 10, txt="Detailed Results by Q/A Pair", ln=True)
+    pdf.ln(5)
+
+    for qa_idx, qa_pair in enumerate(qa_pairs):
+        if qa_idx >= len(qa_pairs):
+            break
+
+        pdf.set_font("Arial", style='B', size=12)
+        pdf.cell(200, 10, txt=f"Q/A Pair {qa_idx + 1}", ln=True)
+        pdf.ln(2)
+
+        # Question
+        pdf.set_font("Arial", style='B', size=10)
+        pdf.cell(200, 5, txt="Question:", ln=True)
+        pdf.set_font("Arial", size=9)
+        question_text = sanitize_text(qa_pair.get('question', ''))
+        pdf.multi_cell(0, 5, txt=question_text)
+        pdf.ln(2)
+
+        # Ground Truth
+        pdf.set_font("Arial", style='B', size=10)
+        pdf.cell(200, 5, txt="Ground Truth:", ln=True)
+        pdf.set_font("Arial", size=9)
+        ground_truth = sanitize_text(qa_pair.get('answer', ''))
+        pdf.multi_cell(0, 5, txt=ground_truth)
+        pdf.ln(2)
+
+        # Results from each run
+        for run_idx, run_results in enumerate(all_results):
+            if qa_idx < len(run_results):
+                eval_result = run_results[qa_idx]
+                llm_answer = sanitize_text(eval_result.get('llm_answer', ''))
+
+                pdf.set_font("Arial", style='B', size=10)
+                pdf.cell(200, 5, txt=f"Run {run_idx + 1} - LLM Answer:", ln=True)
+                pdf.set_font("Arial", size=9)
+                pdf.multi_cell(0, 5, txt=llm_answer)
+                pdf.ln(2)
+
+                # Metrics
+                rouge_score = eval_result.get('rouge_score', 0)
+                jaccard_index = eval_result.get('jaccard_index', 0)
+                levenshtein_distance = eval_result.get('levenshtein_distance', 0)
+
+                pdf.set_font("Arial", size=8)
+                pdf.cell(200, 4, txt=f"ROUGE-L: {rouge_score:.4f} | Jaccard: {jaccard_index:.4f} | Levenshtein: {levenshtein_distance}", ln=True)
+                pdf.ln(3)
+
+        # Add page break if needed
+        if pdf.get_y() > 250:
+            pdf.add_page()
+
+    return pdf.output(dest='S').encode('latin-1', errors='replace')
+
 
 def render_footer():
     """Renders a footer section."""
