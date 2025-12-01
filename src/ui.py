@@ -2594,7 +2594,25 @@ def render_qa_based_detection(api_key, model_choice, provider):
                     else:
                         # Store results in session state
                         st.session_state['qa_evaluation_results'] = all_results
-                        st.success(f"✅ Completed {num_eval_runs} evaluation run(s)!")
+                        
+                        # Generate and cache PDF report
+                        qa_pairs = st.session_state.get('qa_generated_qa_pairs', [])
+                        source_mode = st.session_state.get('qa_source_mode', 'Input Text')
+                        num_qa_pairs = st.session_state.get('qa_num_qa_pairs', 5)
+                        agg_metrics = calculate_aggregate_metrics(all_results)
+                        
+                        pdf_bytes = generate_open_ended_question_pdf_report(
+                            all_results,
+                            agg_metrics,
+                            qa_pairs,
+                            model_choice,
+                            source_mode,
+                            num_qa_pairs,
+                            num_eval_runs,
+                            eval_temperature,
+                            eval_top_p
+                        )
+                        st.session_state['qa_pdf_report_bytes'] = pdf_bytes
             
             # Display results (whether just generated or retrieved from session state)
             if st.session_state['qa_evaluation_results']:
@@ -2620,48 +2638,48 @@ def render_qa_based_detection(api_key, model_choice, provider):
                     if not run_details:
                         continue
 
-                # Use first available evaluation as reference for question/ground truth
-                reference_eval = run_details[0][1]
-                question_preview = textwrap.shorten(reference_eval['question'], width=60, placeholder='…')
+                    # Use first available evaluation as reference for question/ground truth
+                    reference_eval = run_details[0][1]
+                    question_preview = textwrap.shorten(reference_eval['question'], width=60, placeholder='…')
 
-                with st.expander(f"Q/A Pair {qa_idx + 1} · {question_preview}", expanded=(qa_idx == 0)):
-                    st.markdown("**📥 Question**")
-                    question_card_html = (
-                        "<div style=\""
-                        "background: rgba(255, 255, 255, 0.9);"
-                        " border: 1px solid rgba(191, 219, 254, 0.8);"
-                        " border-left: 4px solid #2563eb;"
-                        " border-radius: 12px;"
-                        " padding: 0.75rem 0.85rem;"
-                        " font-size: 0.95rem;"
-                        " line-height: 1.7;"
-                        " color: #0f172a;"
-                        " white-space: pre-wrap;"
-                        " word-break: break-word;"
-                        " margin: 0.35rem 0 1rem 0;"
-                        '\">'
-                        f"{html.escape(reference_eval['question'])}"
-                        "</div>"
-                    )
-
-                    st.markdown(question_card_html, unsafe_allow_html=True)
-
-                    for run_idx, eval_result in run_details:
-                        metrics_payload = {
-                            "rouge_l": eval_result.get('rouge_score'),
-                            "jaccard_index": eval_result.get('jaccard_index'),
-                            "levenshtein": float(eval_result.get('levenshtein_distance', 0) or 0.0),
-                        }
-
-                        # Filter out None values to avoid rendering issues
-                        metrics_payload = {k: v for k, v in metrics_payload.items() if v is not None}
-
-                        render_direct_recall_diff(
-                            reference_eval['ground_truth'],
-                            eval_result['llm_answer'],
-                            title=f"Run #{run_idx}",
-                            metrics=metrics_payload,
+                    with st.expander(f"Q/A Pair {qa_idx + 1} · {question_preview}", expanded=(qa_idx == 0)):
+                        st.markdown("**📥 Question**")
+                        question_card_html = (
+                            "<div style=\""
+                            "background: rgba(255, 255, 255, 0.9);"
+                            " border: 1px solid rgba(191, 219, 254, 0.8);"
+                            " border-left: 4px solid #2563eb;"
+                            " border-radius: 12px;"
+                            " padding: 0.75rem 0.85rem;"
+                            " font-size: 0.95rem;"
+                            " line-height: 1.7;"
+                            " color: #0f172a;"
+                            " white-space: pre-wrap;"
+                            " word-break: break-word;"
+                            " margin: 0.35rem 0 1rem 0;"
+                            '\">'
+                            f"{html.escape(reference_eval['question'])}"
+                            "</div>"
                         )
+
+                        st.markdown(question_card_html, unsafe_allow_html=True)
+
+                        for run_idx, eval_result in run_details:
+                            metrics_payload = {
+                                "rouge_l": eval_result.get('rouge_score'),
+                                "jaccard_index": eval_result.get('jaccard_index'),
+                                "levenshtein": float(eval_result.get('levenshtein_distance', 0) or 0.0),
+                            }
+
+                            # Filter out None values to avoid rendering issues
+                            metrics_payload = {k: v for k, v in metrics_payload.items() if v is not None}
+
+                            render_direct_recall_diff(
+                                reference_eval['ground_truth'],
+                                eval_result['llm_answer'],
+                                title=f"Run #{run_idx}",
+                                metrics=metrics_payload,
+                            )
             
                 # Interpretation
                 st.markdown('<h3 class="section-header sm">🔍 Interpretation</h3>', unsafe_allow_html=True)
@@ -2686,17 +2704,19 @@ def render_qa_based_detection(api_key, model_choice, provider):
 
                 # PDF Report Generation
                 st.markdown("---")
-
-                # Gather data for PDF
-                qa_pairs = st.session_state.get('qa_generated_qa_pairs', [])
-                source_mode = st.session_state.get('qa_source_mode', 'Input Text')
-                num_qa_pairs = st.session_state.get('qa_num_qa_pairs', 5)
-                num_eval_runs = st.session_state.get('qa_num_eval_runs', 1)
-                eval_temperature = st.session_state.get('qa_eval_temperature', 0.7)
-                eval_top_p = st.session_state.get('qa_eval_top_p', 0.9)
-
-                # Generate PDF Report
-                if 'qa_pdf_report_bytes' not in st.session_state:
+                
+                # Use cached PDF if available, otherwise generate new one
+                if 'qa_pdf_report_bytes' in st.session_state:
+                    pdf_bytes = st.session_state['qa_pdf_report_bytes']
+                else:
+                    # Fallback: generate PDF if not cached (shouldn't happen in normal flow)
+                    qa_pairs = st.session_state.get('qa_generated_qa_pairs', [])
+                    source_mode = st.session_state.get('qa_source_mode', 'Input Text')
+                    num_qa_pairs = st.session_state.get('qa_num_qa_pairs', 5)
+                    num_eval_runs = st.session_state.get('qa_num_eval_runs', 1)
+                    eval_temperature = st.session_state.get('qa_eval_temperature', 0.7)
+                    eval_top_p = st.session_state.get('qa_eval_top_p', 0.9)
+                    
                     pdf_bytes = generate_open_ended_question_pdf_report(
                         all_results,
                         agg_metrics,
@@ -2709,8 +2729,6 @@ def render_qa_based_detection(api_key, model_choice, provider):
                         eval_top_p
                     )
                     st.session_state['qa_pdf_report_bytes'] = pdf_bytes
-                else:
-                    pdf_bytes = st.session_state['qa_pdf_report_bytes']
 
                 # PDF Preview
                 st.markdown("**📋 Report Preview:**")
