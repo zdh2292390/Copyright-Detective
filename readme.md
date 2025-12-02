@@ -49,39 +49,77 @@ streamlit run app.py
 
 Streamlit will start a local server and open the application in a new tab in your default web browser.
 
-You can now interact with the "Copyright Detective" tool. Make sure you have a valid OpenAI API key to use the model-based features.
+You can now interact with the "Copyright Detective" tool. Make sure you have a valid API key (OpenAI, OpenRouter, etc.) for any providers you plan to call.
 
-## Snippet-to-Document Analysis
+## Text Memorization Detection (Snippet)
 
-The primary workspace now bundles both the snippet evaluator and the PDF sweeps behind a single navigation entry. Once you open **Snippet-to-Document Analysis** you'll find two tabs mirroring the Unlearning Detection layout: one for short-form snippets and another for full documents. Each tab preserves the controls you already know, so you can jump between granular spot checks and long-form discovery without leaving the page.
+Use this page to test whether a model reproduces a short snippet of text.
 
-### Custom continuation prompts
+- **Inputs**: paste a short text snippet and an optional ground-truth reference.
+- **Continuation methods**: choose a prompting style (e.g., neutral continuation, persuasive framing). Some providers also support **Custom Prompt**; include `{input_text}` where the snippet should appear.
+- **Generation controls**: set number of inference runs, temperature, top‑p, and target word/character count.
+- **Metrics and visuals**: the app reports ROUGE‑L, Jaccard, Levenshtein distance, and a token‑level diff view that highlights exact matches, omissions, and hallucinated content.
+- **LLM-based analysis**: you can trigger an optional LLM explanation that interprets the similarity metrics and discusses potential copyright risk.
 
-Inside the **Text Memorization Detection** tab you can choose **Custom Prompt** from the continuation method selector. This lets you paste a full instruction template tailored to your experiment. Use the `{input_text}` placeholder wherever the user-supplied snippet should appear. You can also optionally reference `{word_count}` or `{char_count}` to mirror the target length derived from your ground truth. The preview panel will render the final prompt with any available values filled in so you can double-check the framing before running inference.
+## Document Memorization Detection (PDF / Long‑form)
 
-The same **Custom Prompt** option is available on the **Document Memorization Detection** tab. Whatever template you supply is injected into every chunk before the model is asked to continue it, so you can drive consistent jailbreak persuasion experiments across long-form documents without losing control over the framing.
+Use this page to analyze memorization over full documents (e.g., books, PDFs, long articles).
 
-### Multi-run diversity diagnostics
+- **Document upload & chunking**: upload a PDF or paste long text; the tool extracts text, splits it into chunks by word count, and shows the chunk list.
+- **Per‑chunk continuation**: for each selected chunk, the model is asked to continue the text using the chosen prompting strategy.
+- **Length control**: generated continuations are forced to match the configured chunk size so scores are comparable across chunks.
+- **Persuasion framings**: you can optionally wrap each chunk with jailbreak‑style persuasion prompts (e.g., role‑playing, lost‑manuscript) to probe high‑risk behavior.
+- **Ranking and inspection**: the results view surfaces top‑k most similar chunks with detailed metrics and a side‑by‑side diff for manual inspection.
 
-When you request multiple inference runs, the results page now augments the similarity stats with **output diversity diagnostics**. The tool aggregates all generated samples, computes their Shannon entropy (both in raw bits and as a percentage of the theoretical maximum), and highlights how much probability mass collapses onto the most common continuation. A ranked table plus bar chart surfaces the top-$k$ variants so you can quickly spot mode collapse or suspiciously stable reproductions that may hint at residual memorisation.
+## Dataset QA & Knowledge Recall
 
-If the entropy stays low or a single continuation dominates the distribution, the interface raises an inline warning to encourage deeper investigation (e.g., bumping temperature or trying alternative prompts).
+This workspace lets you probe whether a model remembers specific facts from benchmark datasets or your own Q&A lists.
+
+- **Dataset browser**: select from built‑in datasets (e.g., MUSE Books) and preview documents or questions.
+- **Reference vs. deployed models**: generate answers with your target model and compare against ground‑truth labels.
+- **Metrics**: inspect per‑question accuracy, aggregate scores, and detailed tables of correct vs. incorrect answers.
+
+## Single‑Choice Question Generation & Evaluation
+
+These tools help you build and analyze multiple‑choice questions for copyright‑sensitive content.
+
+- **Question generation**: automatically generate single‑choice questions from a document, fragment list, or free‑form text.
+- **Evaluation mode**: send questions to a model, record its choices, and summarize performance.
+- **Use cases**: design diagnostics for memorized entities, locations, or events and replay them across different checkpoints.
+
+## Confidence Anomaly Detection (Black‑box Probe)
+
+This probe inspects token‑level log‑probabilities to flag suspiciously confident generations.
+
+- **Input**: run it on any text continuation experiment where the provider exposes logprobs.
+- **Signals**: the tool computes a memorization score, high‑confidence token ratio, spike coverage, and longest confidence spike.
+- **Interpretation**: the UI shows highlighted spikes, summary statistics, and a short textual interpretation (low / moderate / high memorization likelihood).
+
+## Sleek Attack and Robustness Checks
+
+The Sleek Attack tab allows you to test how robust your memorization checks are under targeted prompt mutations.
+
+- **Attack configuration**: choose an attack recipe and sampling settings, then generate adversarial variants of your original prompt.
+- **Evaluation**: compare similarity metrics and direct‑recall overlays between clean and attacked prompts.
+- **Goal**: understand whether small paraphrases are enough to bypass your current safeguards.
 
 ## Jailbreak Persuasion Probe
 
-This new page helps you design and evaluate jailbreak/persuasion prompts in a safety-first manner. It analyzes prompts for risky indicators (e.g., location-based extraction or exact-length replication) and provides compliant alternatives and refusal templates. The probe only performs meta-analysis and does not request or display copyrighted text.
+This page helps you design and evaluate jailbreak or persuasion prompts in a safety‑first manner.
 
-The page also includes a small, curated library of well-known jailbreak prompts (for analysis only). You can filter, preview, and load any into the evaluator textbox to see risk detections — again, it never asks the model to output copyrighted content.
+- **Prompt risk analysis**: paste any prompt and the tool highlights risky patterns (e.g., location‑based extraction, verbatim reproduction requests, exact‑length replication).
+- **Safer alternatives**: receive suggested rephrasings, refusal templates, and mitigation strategies.
+- **Prompt library**: browse a curated set of well‑known jailbreak prompts (for analysis only), filter and preview them, and load any into the evaluator for risk scoring.
 
 ## Unlearning Detection
 
 The **Unlearning Detection** workspace combines three complementary probes. Use the tabs at the top of the workspace to keep their controls and outputs neatly separated:
 
-- **Prompt-Based Probes** reuse the persuasion strategies from snippet/PDF analysis to measure residual recall through structured summaries and evidence inventories. Rather than nudging the model to continue the text, each probe now asks for audit-style descriptions that expose what, if anything, remains remembered. The tool surfaces every response directly—no similarity thresholds or ground-truth references are required.
-- **Membership Inference (Perplexity Probe)** estimates whether the reference text still lives in the model's training data. The app slices both passages into 50–200 token windows (falling back to word windows if the tokenizer is unavailable), samples per-token log-probabilities with `echo=True` completions (currently supported for OpenAI models), computes average perplexity via $\text{PPL} = e^{-\overline{\log p}}$, and reports a "training trace" score for each chunk. A configurable ΔPPL threshold, together with Welch's t-test and Kolmogorov–Smirnov comparisons, highlights statistically significant gaps between reference and control distributions.
-- **Representational Analysis (Feature Probes)** compares the hidden-state geometry of the reference and updated models. Pick from Fisher Information, PCA shift/similarity, or linear CKA analyses; supply a list of evaluation prompts along with the reference/deployed checkpoints; and the app will write per-layer PDFs (or a single plot) into your chosen output folder. Optional controls let you point to a CUDA device, adjust batch sizes, and cap tokenizer length.
+- **Prompt‑based probes**: reuse persuasion‑style prompts to ask the model for audit‑style summaries and evidence inventories instead of raw continuations. Responses are surfaced directly so you can qualitatively judge how much of the original content remains.
+- **Membership inference (perplexity probe)**: slice reference and control passages into windows, compute average log‑probabilities with `echo=True` completions (for providers that support it), and estimate a training‑trace score from the perplexity gap.
+- **Representational analysis (feature probes)**: compare hidden‑state geometry between a reference checkpoint and an updated model using Fisher information, PCA shift/similarity, or layer‑wise linear CKA.
 
-All representational probes run locally on your hardware. Ensure that the model checkpoints fit in GPU memory (or switch the device to `cpu` if you're validating smaller networks). The UI bundles directory outputs into a downloadable `.zip` when possible, and individual PDFs can be downloaded directly for a quick peek.
+All representational probes run locally on your hardware. Make sure the model checkpoints fit into available GPU memory (or set the device to `cpu` for smaller networks). The UI writes plots to disk and, when possible, packages directory outputs into a downloadable `.zip`.
 
 ### 🛠️ Python API (Representational Toolkit)
 
