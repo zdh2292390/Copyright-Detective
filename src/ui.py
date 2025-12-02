@@ -5156,7 +5156,7 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
     if 'unlearn_last_result' not in st.session_state:
         st.session_state['unlearn_last_result'] = None
     
-    st.markdown("### 🧬 Representational Analysis")
+    st.markdown('<h4 class="section-header">🧬 Representational Analysis</h4>', unsafe_allow_html=True)
     st.markdown(
         "Run Fisher Information, PCA shift/sim, and layer-wise CKA probes to quantify how unlearning reshapes the reference versus adapted model across every layer."
     )
