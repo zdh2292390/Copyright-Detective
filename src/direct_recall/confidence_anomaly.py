@@ -309,7 +309,6 @@ def _sliding_window_spike_detection(
                     avg_confidence=avg_c,
                     max_confidence=max_c,
                     text=spike_text,
-                    detection_method="window",
                 ))
             in_spike = False
             spike_tokens = []
@@ -327,7 +326,6 @@ def _sliding_window_spike_detection(
             avg_confidence=avg_c,
             max_confidence=max_c,
             text=spike_text,
-            detection_method="window",
         ))
     
     return spikes
@@ -397,7 +395,6 @@ def _detect_confidence_spikes(
             avg_confidence=avg_conf,
             max_confidence=max_conf,
             text=spike_text,
-            detection_method="threshold",
         )
         spike.intensity_score = spike.calculate_intensity()
         spikes.append(spike)
@@ -433,7 +430,6 @@ def _merge_overlapping_spikes(spikes: List[ConfidenceSpike]) -> List[ConfidenceS
                 avg_confidence=statistics.mean(t.linear_prob for t in all_tokens),
                 max_confidence=max(t.linear_prob for t in all_tokens),
                 text="".join(t.token for t in all_tokens),
-                detection_method="combined",
                 intensity_score=current.intensity_score,
             )
         else:
@@ -806,9 +802,8 @@ def format_confidence_analysis_summary(result: ConfidenceAnalysisResult) -> str:
         lines.append("**Detected Confidence Spikes:**")
         for i, spike in enumerate(result.spikes[:5], 1):  # Show top 5 spikes
             spike_text = spike.text[:50] + "..." if len(spike.text) > 50 else spike.text
-            method_tag = f"[{spike.detection_method}]" if spike.detection_method != "threshold" else ""
             lines.append(
-                f"  {i}. {method_tag}\"{spike_text}\" "
+                f"  {i}. \"{spike_text}\" "
                 f"(len: {spike.length}, avg: {spike.avg_confidence:.2%}, intensity: {spike.intensity_score:.2%})"
             )
         if len(result.spikes) > 5:
@@ -848,7 +843,6 @@ def generate_confidence_visualization_data(result: ConfidenceAnalysisResult) -> 
             "start": spike.start_index,
             "end": spike.end_index,
             "avg_confidence": spike.avg_confidence,
-            "method": spike.detection_method,
         })
     
     return {

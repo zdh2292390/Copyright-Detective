@@ -2175,28 +2175,6 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                             high_ratio = conf_result.get('high_confidence_ratio', 0)
                             num_spikes = conf_result.get('num_spikes', 0)
                             
-                            st.markdown("**Core Metrics:**")
-                            st.markdown(f'''
-                            <div class="blackbox-metrics-grid">
-                                <div class="blackbox-metric-card">
-                                    <div class="blackbox-metric-label">Memorization Score</div>
-                                    <div class="blackbox-metric-value">{mem_score:.1%}</div>
-                                </div>
-                                <div class="blackbox-metric-card">
-                                    <div class="blackbox-metric-label">Avg Confidence</div>
-                                    <div class="blackbox-metric-value">{avg_conf:.1%}</div>
-                                </div>
-                                <div class="blackbox-metric-card">
-                                    <div class="blackbox-metric-label">High Conf Ratio (&gt;90%)</div>
-                                    <div class="blackbox-metric-value">{high_ratio:.1%}</div>
-                                </div>
-                                <div class="blackbox-metric-card">
-                                    <div class="blackbox-metric-label">Spikes Detected</div>
-                                    <div class="blackbox-metric-value">{num_spikes}</div>
-                                </div>
-                            </div>
-                            ''', unsafe_allow_html=True)
-                            
                             # Advanced metrics row
                             avg_entropy = conf_result.get('avg_entropy', 0)
                             perplexity = conf_result.get('perplexity', 0)
@@ -2205,37 +2183,50 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                             spike_coverage = conf_result.get('spike_coverage', 0)
                             longest_spike = conf_result.get('longest_spike_length', 0)
                             
-                            st.markdown("**Advanced Analysis:**")
+                            # Compact metrics display
                             st.markdown(f'''
-                            <div class="blackbox-metrics-grid">
-                                <div class="blackbox-metric-card">
-                                    <div class="blackbox-metric-label">Avg Entropy</div>
-                                    <div class="blackbox-metric-value">{avg_entropy:.4f} bits</div>
+                            <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-bottom: 12px;">
+                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                    <div style="font-size: 0.75rem; color: #888;">Mem Score</div>
+                                    <div style="font-size: 1.1rem; font-weight: 600;">{mem_score:.1%}</div>
                                 </div>
-                                <div class="blackbox-metric-card">
-                                    <div class="blackbox-metric-label">Perplexity</div>
-                                    <div class="blackbox-metric-value">{perplexity:.2f}</div>
+                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                    <div style="font-size: 0.75rem; color: #888;">Avg Conf</div>
+                                    <div style="font-size: 1.1rem; font-weight: 600;">{avg_conf:.1%}</div>
                                 </div>
-                                <div class="blackbox-metric-card">
-                                    <div class="blackbox-metric-label">Rare Token Conf</div>
-                                    <div class="blackbox-metric-value">{rare_conf:.1%}</div>
+                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                    <div style="font-size: 0.75rem; color: #888;">High Conf &gt;90%</div>
+                                    <div style="font-size: 1.1rem; font-weight: 600;">{high_ratio:.1%}</div>
                                 </div>
-                                <div class="blackbox-metric-card">
-                                    <div class="blackbox-metric-label">Z-Score Outliers</div>
-                                    <div class="blackbox-metric-value">{zscore_outliers}</div>
+                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                    <div style="font-size: 0.75rem; color: #888;">Spikes</div>
+                                    <div style="font-size: 1.1rem; font-weight: 600;">{num_spikes}</div>
+                                </div>
+                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                    <div style="font-size: 0.75rem; color: #888;">Coverage</div>
+                                    <div style="font-size: 1.1rem; font-weight: 600;">{spike_coverage:.1%}</div>
                                 </div>
                             </div>
-                            ''', unsafe_allow_html=True)
-                            
-                            st.markdown(f'''
-                            <div class="blackbox-metrics-grid">
-                                <div class="blackbox-metric-card">
-                                    <div class="blackbox-metric-label">Spike Coverage</div>
-                                    <div class="blackbox-metric-value">{spike_coverage:.1%}</div>
+                            <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px;">
+                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                    <div style="font-size: 0.75rem; color: #888;">Entropy</div>
+                                    <div style="font-size: 1.1rem; font-weight: 600;">{avg_entropy:.4f}</div>
                                 </div>
-                                <div class="blackbox-metric-card">
-                                    <div class="blackbox-metric-label">Longest Spike</div>
-                                    <div class="blackbox-metric-value">{longest_spike} tokens</div>
+                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                    <div style="font-size: 0.75rem; color: #888;">Perplexity</div>
+                                    <div style="font-size: 1.1rem; font-weight: 600;">{perplexity:.2f}</div>
+                                </div>
+                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                    <div style="font-size: 0.75rem; color: #888;">Rare Token</div>
+                                    <div style="font-size: 1.1rem; font-weight: 600;">{rare_conf:.1%}</div>
+                                </div>
+                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                    <div style="font-size: 0.75rem; color: #888;">Z-Outliers</div>
+                                    <div style="font-size: 1.1rem; font-weight: 600;">{zscore_outliers}</div>
+                                </div>
+                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                    <div style="font-size: 0.75rem; color: #888;">Max Spike</div>
+                                    <div style="font-size: 1.1rem; font-weight: 600;">{longest_spike} tok</div>
                                 </div>
                             </div>
                             ''', unsafe_allow_html=True)
@@ -2253,20 +2244,17 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                             spikes = conf_result.get('spikes', [])
                             if spikes:
                                 with st.expander("📈 Detected Confidence Spikes", expanded=False):
+                                    st.caption("**Avg Conf**: Average confidence of all tokens in the spike (higher = more certain). **Intensity**: Ratio of tokens with >95% confidence (higher = stronger memorization signal).")
                                     spike_data = []
                                     for i, spike in enumerate(spikes[:10], 1):  # Show top 10
                                         spike_text = spike.get('text', '')
-                                        detection_method = spike.get('detection_method', 'threshold')
                                         intensity = spike.get('intensity_score', 0)
-                                        rare_ratio = spike.get('rare_token_ratio', 0)
                                         spike_data.append({
                                             "#": i,
                                             "Text": spike_text,
                                             "Length": spike.get('length', 0),
-                                            "Method": detection_method,
                                             "Avg Conf": f"{spike.get('avg_confidence', 0):.1%}",
                                             "Intensity": f"{intensity:.1%}",
-                                            "Rare Ratio": f"{rare_ratio:.1%}",
                                         })
                                     st.dataframe(pd.DataFrame(spike_data), width='stretch', hide_index=True)
                             

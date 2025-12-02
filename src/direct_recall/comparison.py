@@ -431,6 +431,43 @@ def _extract_logprobs_from_response(response) -> Optional[List[Dict[str, Any]]]:
         return None
 
 
+def _truncate_logprobs_to_text(
+    logprobs_data: List[Dict[str, Any]], 
+    target_text: str
+) -> List[Dict[str, Any]]:
+    """Truncate logprobs data to match the truncated generated text.
+    
+    This ensures that the logprobs data corresponds exactly to the text
+    that is displayed to the user after any truncation operations.
+    
+    Args:
+        logprobs_data: List of dicts with 'token', 'logprob', and 'linear_prob' keys.
+        target_text: The truncated/processed text to match.
+    
+    Returns:
+        Truncated logprobs data that matches the target text.
+    """
+    if not logprobs_data or not target_text:
+        return logprobs_data
+    
+    # Reconstruct text from tokens and find where to truncate
+    reconstructed = ""
+    truncate_index = len(logprobs_data)
+    
+    for i, token_data in enumerate(logprobs_data):
+        token = token_data.get("token", "")
+        reconstructed += token
+        
+        # Check if we've reached or exceeded the target text length
+        # We need to normalize both to handle whitespace differences
+        normalized_reconstructed = _normalize_spaces(reconstructed)
+        if len(normalized_reconstructed) >= len(target_text):
+            truncate_index = i + 1
+            break
+    
+    return logprobs_data[:truncate_index]
+
+
 def calculate_rouge_score(text1, text2):
     """
     Calculates the ROUGE-L score between two texts.
@@ -601,6 +638,10 @@ def compare_texts(
         generated_text,
         target_word_count,
     )
+
+    # Truncate logprobs to match the truncated generated_text
+    if logprobs_data and generated_text:
+        logprobs_data = _truncate_logprobs_to_text(logprobs_data, generated_text)
 
     # If a reference/target text is provided, compute similarity metrics; otherwise return zeros.
     metrics = (
