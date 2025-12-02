@@ -5199,6 +5199,9 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         if records:
             ranked_rows: List[Dict[str, Any]] = []
             stored_panels: List[Dict[str, Any]] = []
+            
+            # Group entries by (strategy, strategy_attempt, mutated_text) to combine prompt attempts
+            grouped_entries: Dict[str, List[Dict[str, Any]]] = {}
 
             for entry in records:
                 serialised = entry.get("data") or {}
@@ -5248,7 +5251,8 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     "judge_status": f"{status_icon} {status_text}",
                 })
 
-                stored_panels.append({
+                # Create a panel entry for this specific prompt attempt
+                panel_entry = {
                     "score": rouge_l,
                     "evaluation": evaluation,
                     "metrics": metrics,
@@ -5261,6 +5265,30 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     "status_text": status_text,
                     "judged": judged_flag,
                     "confidence_result": confidence_result,
+                }
+                
+                # Group by strategy + strategy_attempt + mutated_text
+                group_key = f"{evaluation.mutation.strategy}|{evaluation.attempt}|{mutated_text}"
+                if group_key not in grouped_entries:
+                    grouped_entries[group_key] = []
+                grouped_entries[group_key].append(panel_entry)
+
+            # Build stored_panels from grouped entries
+            for group_key, group_items in grouped_entries.items():
+                # Sort by prompt_attempt within the group
+                group_items.sort(key=lambda x: x.get("prompt_attempt", 1))
+                
+                # Use the first item's basic info for the group header
+                first_item = group_items[0]
+                
+                # Calculate aggregated metrics (average across attempts)
+                avg_rouge = sum(item["metrics"].rouge_l for item in group_items if item["metrics"]) / len(group_items) if group_items else 0
+                
+                stored_panels.append({
+                    "score": avg_rouge,
+                    "group_items": group_items,  # All prompt attempts for this mutation
+                    "evaluation": first_item["evaluation"],
+                    "num_attempts": len(group_items),
                 })
 
             ranked_rows.sort(key=lambda item: item["score"], reverse=True)
@@ -5272,185 +5300,214 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
 
             for idx, panel_payload in enumerate(stored_panels, start=1):
                 evaluation = panel_payload["evaluation"]
-                metrics = panel_payload.get("metrics")
+                group_items = panel_payload.get("group_items", [])
+                num_attempts = panel_payload.get("num_attempts", 1)
                 parsed = evaluation.parsed
                 mutated_text = parsed.mutated_text.strip() if parsed and parsed.mutated_text else ""
-                rouge_score = metrics.rouge_l if metrics else 0.0
-                jaccard_value = metrics.jaccard if metrics else 0.0
-                levenshtein_value = metrics.levenshtein if metrics else None
-                status_icon = panel_payload["status_icon"]
-                status_text = panel_payload["status_text"]
-                judged_flag = panel_payload["judged"]
-                judge_meta = panel_payload.get("judge_meta") or {}
-                judge_result = panel_payload.get("judge")
-                llm_response = panel_payload.get("llm_response") or ""
+                
+                # Calculate average metrics across all attempts
+                avg_rouge = sum(item["metrics"].rouge_l for item in group_items if item["metrics"]) / len(group_items) if group_items else 0
+                avg_jaccard = sum(item["metrics"].jaccard for item in group_items if item["metrics"]) / len(group_items) if group_items else 0
+                
+                # Get overall judge status from first judged item
+                first_judged = next((item for item in group_items if item.get("judged")), group_items[0] if group_items else None)
+                if first_judged:
+                    status_icon = first_judged.get("status_icon", "⏳")
+                    status_text = first_judged.get("status_text", "Pending")
+                else:
+                    status_icon = "⏳"
+                    status_text = "Pending"
 
                 # Build meta string with metrics
                 meta_parts = [f"{status_icon.strip()} {status_text.strip()}"]
-                if metrics:
-                    levenshtein_display = (
-                        str(levenshtein_value)
-                        if levenshtein_value is not None
-                        else "N/A"
-                    )
-                    meta_parts.append(f"ROUGE-L {rouge_score:.4f}")
-                    meta_parts.append(f"Jaccard {jaccard_value:.4f}")
-                    meta_parts.append(f"Levenshtein {levenshtein_display}")
+                meta_parts.append(f"Avg ROUGE-L {avg_rouge:.4f}")
+                meta_parts.append(f"{num_attempts} attempt{'s' if num_attempts > 1 else ''}")
                 meta_text = " | ".join(meta_parts)
 
-                # Use Streamlit's native accordion (expander) for each mutation
+                # Use Streamlit's native accordion (expander) for each mutation group
                 with st.expander(f"Mutation #{idx} — {evaluation.mutation.strategy} | {meta_text}", expanded=False):
-                    # Summary and Metrics in compact format
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.caption(f"**Strategy:** {evaluation.mutation.strategy} | **Strategy Attempt:** {evaluation.attempt} | **Prompt Attempt:** {panel_payload.get('prompt_attempt', 1)}")
-                    with col2:
-                        if metrics:
-                            st.caption(f"**ROUGE-L:** {rouge_score:.4f} | **Jaccard:** {jaccard_value:.4f} | **Levenshtein:** {levenshtein_value}")
+                    # Summary info
+                    st.caption(f"**Strategy:** {evaluation.mutation.strategy} | **Strategy Attempt:** {evaluation.attempt} | **Prompt Attempts:** {num_attempts}")
                     
-                    # Mutated prompt
+                    # Mutated prompt (same for all attempts)
                     st.markdown("**📝 Mutated Prompt**")
                     st.text(mutated_text)
                     
-                    # Ground truth comparison - moved inside accordion
-                    if llm_response:
-                        reference_text = stage1_reference_map.get(selected_prompt, '')
-                        if reference_text:
-                            st.markdown("**🧠 Ground Truth Comparison**")
-                            render_direct_recall_diff(
-                                reference_text,
-                                llm_response,
-                                title="Generated Text vs. Reference Text",
-                                metrics=metrics,
-                            )
+                    # Display each attempt's results
+                    for attempt_item in group_items:
+                        attempt_num = attempt_item.get("prompt_attempt", 1)
+                        llm_response = attempt_item.get("llm_response", "")
+                        metrics = attempt_item.get("metrics")
+                        judged_flag = attempt_item.get("judged", False)
+                        judge_meta = attempt_item.get("judge_meta") or {}
+                        judge_result = attempt_item.get("judge")
+                        item_status_icon = attempt_item.get("status_icon", "⏳")
+                        item_status_text = attempt_item.get("status_text", "Pending")
+                        
+                        attempt_label = f"**Attempt {attempt_num}/{num_attempts}**" if num_attempts > 1 else "**Generation Result**"
+                        st.markdown(f"---\n{attempt_label}")
+                        
+                        if metrics:
+                            st.caption(f"ROUGE-L: {metrics.rouge_l:.4f} | Jaccard: {metrics.jaccard:.4f} | Levenshtein: {metrics.levenshtein}")
+                        
+                        # Ground truth comparison
+                        if llm_response:
+                            reference_text = stage1_reference_map.get(selected_prompt, '')
+                            if reference_text:
+                                render_direct_recall_diff(
+                                    reference_text,
+                                    llm_response,
+                                    title="Generated Text vs. Reference Text",
+                                    metrics=metrics,
+                                )
+                        
+                        # Intention judging results for this attempt
+                        if judged_flag:
+                            st.markdown(f"**🎯 Judge Result:** {item_status_icon} {item_status_text}")
                     
-                    # Confidence Anomaly Detection Results
-                    conf_result = panel_payload.get("confidence_result")
-                    if conf_result and conf_result.get('analysis_available', False):
-                        with st.expander("📊 Confidence Anomaly Detection Results", expanded=False):
-                            # Core metrics
-                            mem_score = conf_result.get('memorization_score', 0)
-                            avg_conf = conf_result.get('overall_avg_confidence', 0)
-                            high_ratio = conf_result.get('high_confidence_ratio', 0)
-                            num_spikes = conf_result.get('num_spikes', 0)
-                            avg_entropy = conf_result.get('avg_entropy', 0)
-                            perplexity = conf_result.get('perplexity', 0)
-                            rare_conf = conf_result.get('rare_token_confidence', 0)
-                            zscore_outliers = conf_result.get('zscore_outliers', 0)
-                            spike_coverage = conf_result.get('spike_coverage', 0)
-                            longest_spike = conf_result.get('longest_spike_length', 0)
-                            
-                            # Compact metrics display
-                            st.markdown(f'''
-                            <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-bottom: 12px;">
-                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
-                                    <div style="font-size: 0.75rem; color: #888;">Mem Score</div>
-                                    <div style="font-size: 1.1rem; font-weight: 600;">{mem_score:.1%}</div>
+                    # Aggregated Confidence Anomaly Detection (only if multiple attempts)
+                    if num_attempts > 1:
+                        # Collect all confidence results from attempts
+                        conf_results = [item.get("confidence_result") for item in group_items if item.get("confidence_result") and item["confidence_result"].get("analysis_available", False)]
+                        
+                        if conf_results:
+                            with st.expander("📊 Confidence Anomaly Detection Results", expanded=True):
+                                st.caption(f"Aggregated from {len(conf_results)} generation attempts")
+                                
+                                # Calculate aggregated metrics (average across attempts)
+                                avg_mem_score = sum(cr.get('memorization_score', 0) for cr in conf_results) / len(conf_results)
+                                avg_conf = sum(cr.get('overall_avg_confidence', 0) for cr in conf_results) / len(conf_results)
+                                avg_high_ratio = sum(cr.get('high_confidence_ratio', 0) for cr in conf_results) / len(conf_results)
+                                total_spikes = sum(cr.get('num_spikes', 0) for cr in conf_results)
+                                avg_entropy = sum(cr.get('avg_entropy', 0) for cr in conf_results) / len(conf_results)
+                                avg_perplexity = sum(cr.get('perplexity', 0) for cr in conf_results) / len(conf_results)
+                                avg_rare_conf = sum(cr.get('rare_token_confidence', 0) for cr in conf_results) / len(conf_results)
+                                total_zscore = sum(cr.get('zscore_outliers', 0) for cr in conf_results)
+                                avg_coverage = sum(cr.get('spike_coverage', 0) for cr in conf_results) / len(conf_results)
+                                max_spike = max(cr.get('longest_spike_length', 0) for cr in conf_results)
+                                
+                                # Compact metrics display (same as Text Memorization Detection)
+                                st.markdown(f'''
+                                <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-bottom: 12px;">
+                                    <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                        <div style="font-size: 0.75rem; color: #888;">Mem Score</div>
+                                        <div style="font-size: 1.1rem; font-weight: 600;">{avg_mem_score:.1%}</div>
+                                    </div>
+                                    <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                        <div style="font-size: 0.75rem; color: #888;">Avg Conf</div>
+                                        <div style="font-size: 1.1rem; font-weight: 600;">{avg_conf:.1%}</div>
+                                    </div>
+                                    <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                        <div style="font-size: 0.75rem; color: #888;">High Conf &gt;90%</div>
+                                        <div style="font-size: 1.1rem; font-weight: 600;">{avg_high_ratio:.1%}</div>
+                                    </div>
+                                    <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                        <div style="font-size: 0.75rem; color: #888;">Spikes</div>
+                                        <div style="font-size: 1.1rem; font-weight: 600;">{total_spikes}</div>
+                                    </div>
+                                    <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                        <div style="font-size: 0.75rem; color: #888;">Coverage</div>
+                                        <div style="font-size: 1.1rem; font-weight: 600;">{avg_coverage:.1%}</div>
+                                    </div>
                                 </div>
-                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
-                                    <div style="font-size: 0.75rem; color: #888;">Avg Conf</div>
-                                    <div style="font-size: 1.1rem; font-weight: 600;">{avg_conf:.1%}</div>
+                                <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px;">
+                                    <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                        <div style="font-size: 0.75rem; color: #888;">Entropy</div>
+                                        <div style="font-size: 1.1rem; font-weight: 600;">{avg_entropy:.4f}</div>
+                                    </div>
+                                    <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                        <div style="font-size: 0.75rem; color: #888;">Perplexity</div>
+                                        <div style="font-size: 1.1rem; font-weight: 600;">{avg_perplexity:.2f}</div>
+                                    </div>
+                                    <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                        <div style="font-size: 0.75rem; color: #888;">Rare Token</div>
+                                        <div style="font-size: 1.1rem; font-weight: 600;">{avg_rare_conf:.1%}</div>
+                                    </div>
+                                    <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                        <div style="font-size: 0.75rem; color: #888;">Z-Outliers</div>
+                                        <div style="font-size: 1.1rem; font-weight: 600;">{total_zscore}</div>
+                                    </div>
+                                    <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                        <div style="font-size: 0.75rem; color: #888;">Max Spike</div>
+                                        <div style="font-size: 1.1rem; font-weight: 600;">{max_spike} tok</div>
+                                    </div>
                                 </div>
-                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
-                                    <div style="font-size: 0.75rem; color: #888;">High Conf &gt;90%</div>
-                                    <div style="font-size: 1.1rem; font-weight: 600;">{high_ratio:.1%}</div>
-                                </div>
-                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
-                                    <div style="font-size: 0.75rem; color: #888;">Spikes</div>
-                                    <div style="font-size: 1.1rem; font-weight: 600;">{num_spikes}</div>
-                                </div>
-                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
-                                    <div style="font-size: 0.75rem; color: #888;">Coverage</div>
-                                    <div style="font-size: 1.1rem; font-weight: 600;">{spike_coverage:.1%}</div>
-                                </div>
-                            </div>
-                            <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px;">
-                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
-                                    <div style="font-size: 0.75rem; color: #888;">Entropy</div>
-                                    <div style="font-size: 1.1rem; font-weight: 600;">{avg_entropy:.4f}</div>
-                                </div>
-                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
-                                    <div style="font-size: 0.75rem; color: #888;">Perplexity</div>
-                                    <div style="font-size: 1.1rem; font-weight: 600;">{perplexity:.2f}</div>
-                                </div>
-                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
-                                    <div style="font-size: 0.75rem; color: #888;">Rare Token</div>
-                                    <div style="font-size: 1.1rem; font-weight: 600;">{rare_conf:.1%}</div>
-                                </div>
-                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
-                                    <div style="font-size: 0.75rem; color: #888;">Z-Outliers</div>
-                                    <div style="font-size: 1.1rem; font-weight: 600;">{zscore_outliers}</div>
-                                </div>
-                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
-                                    <div style="font-size: 0.75rem; color: #888;">Max Spike</div>
-                                    <div style="font-size: 1.1rem; font-weight: 600;">{longest_spike} tok</div>
-                                </div>
-                            </div>
-                            ''', unsafe_allow_html=True)
-                            
-                            # Interpretation
-                            if mem_score > 0.7:
-                                st.error("🚨 **High memorization likelihood detected!**")
-                            elif mem_score > 0.4:
-                                st.warning("⚠️ **Moderate memorization signals.**")
-                            else:
-                                st.success("✅ **Low memorization likelihood.**")
-                            
-                            # Spike details
-                            spikes = conf_result.get('spikes', [])
-                            if spikes:
-                                with st.expander("📈 Detected Confidence Spikes", expanded=False):
-                                    st.caption("**Avg Conf**: Average confidence of all tokens in the spike. **Intensity**: Ratio of tokens with >95% confidence.")
-                                    spike_data = []
-                                    for i, spike in enumerate(spikes[:10], 1):
-                                        spike_text = spike.get('text', '')
-                                        intensity = spike.get('intensity_score', 0)
-                                        spike_data.append({
-                                            "#": i,
-                                            "Text": spike_text,
-                                            "Length": spike.get('length', 0),
-                                            "Avg Conf": f"{spike.get('avg_confidence', 0):.1%}",
-                                            "Intensity": f"{intensity:.1%}",
+                                ''', unsafe_allow_html=True)
+                                
+                                # Interpretation based on average memorization score
+                                if avg_mem_score > 0.7:
+                                    st.error("🚨 **High memorization likelihood detected!** The model shows strong confidence patterns consistent with verbatim memorization. Multiple long high-confidence sequences and high confidence on rare tokens suggest trained content.")
+                                elif avg_mem_score > 0.4:
+                                    st.warning("⚠️ **Moderate memorization signals.** Some confidence patterns suggest potential memorization. Consider comparing with other analysis methods.")
+                                else:
+                                    st.success("✅ **Low memorization likelihood.** Confidence patterns appear normal for generated content. Natural variation in confidence levels observed.")
+                                
+                                # Collect all spikes from all attempts
+                                all_spikes = []
+                                for attempt_idx, cr in enumerate(conf_results, 1):
+                                    for spike in cr.get('spikes', []):
+                                        spike_copy = spike.copy()
+                                        spike_copy['attempt'] = attempt_idx
+                                        all_spikes.append(spike_copy)
+                                
+                                # 📈 Detected Confidence Spikes (same as Text Memorization Detection)
+                                if all_spikes:
+                                    with st.expander("📈 Detected Confidence Spikes", expanded=False):
+                                        st.caption("**Avg Conf**: Average confidence of all tokens in the spike (higher = more certain). **Intensity**: Ratio of tokens with >95% confidence (higher = stronger memorization signal).")
+                                        spike_data = []
+                                        for i, spike in enumerate(all_spikes[:15], 1):  # Show top 15
+                                            spike_text = spike.get('text', '')
+                                            intensity = spike.get('intensity_score', 0)
+                                            spike_data.append({
+                                                "#": i,
+                                                "Attempt": spike.get('attempt', 1),
+                                                "Text": spike_text[:80] + "..." if len(spike_text) > 80 else spike_text,
+                                                "Length": spike.get('length', 0),
+                                                "Avg Conf": f"{spike.get('avg_confidence', 0):.1%}",
+                                                "Intensity": f"{intensity:.1%}",
+                                            })
+                                        st.dataframe(pd.DataFrame(spike_data), width='stretch', hide_index=True)
+                                
+                                # 📉 Confidence Timeline visualization (same as Text Memorization Detection)
+                                timelines_available = [cr.get('confidence_timeline', []) for cr in conf_results if cr.get('confidence_timeline')]
+                                if timelines_available:
+                                    with st.expander("📉 Confidence Timeline", expanded=False):
+                                        fig, ax = plt.subplots(figsize=(12, 4))
+                                        
+                                        # Plot each attempt's timeline with different colors
+                                        colors = ['steelblue', 'darkorange', 'forestgreen', 'crimson', 'purple']
+                                        for attempt_idx, timeline in enumerate(timelines_available):
+                                            color = colors[attempt_idx % len(colors)]
+                                            ax.plot(timeline, color=color, linewidth=1, alpha=0.7, 
+                                                   label=f'Attempt {attempt_idx + 1}')
+                                        
+                                        ax.axhline(y=0.85, color='red', linestyle='--', linewidth=1, alpha=0.7, label='Threshold (85%)')
+                                        ax.axhline(y=avg_conf, color='green', linestyle=':', linewidth=1, alpha=0.7, label=f'Mean ({avg_conf:.1%})')
+                                        
+                                        ax.set_xlabel('Token Index')
+                                        ax.set_ylabel('Confidence')
+                                        ax.set_ylim(0, 1)
+                                        ax.set_title('Token Confidence Timeline (All Attempts)')
+                                        ax.legend(loc='lower right', fontsize='small')
+                                        ax.grid(True, alpha=0.3)
+                                        st.pyplot(fig)
+                                        plt.close(fig)
+                                
+                                # Per-attempt breakdown table
+                                with st.expander("� Per-Attempt Metrics Breakdown", expanded=False):
+                                    breakdown_data = []
+                                    for i, cr in enumerate(conf_results, 1):
+                                        breakdown_data.append({
+                                            "Attempt": i,
+                                            "Mem Score": f"{cr.get('memorization_score', 0):.1%}",
+                                            "Avg Conf": f"{cr.get('overall_avg_confidence', 0):.1%}",
+                                            "High Conf": f"{cr.get('high_confidence_ratio', 0):.1%}",
+                                            "Spikes": cr.get('num_spikes', 0),
+                                            "Coverage": f"{cr.get('spike_coverage', 0):.1%}",
+                                            "Entropy": f"{cr.get('avg_entropy', 0):.4f}",
+                                            "Perplexity": f"{cr.get('perplexity', 0):.2f}",
                                         })
-                                    st.dataframe(pd.DataFrame(spike_data), width='stretch', hide_index=True)
-                    
-                    # Intention judging results
-                    if judged_flag:
-                        st.markdown("**🧠 Primary Intention Assessment**")
-                        primary_error = judge_meta.get("primary_error")
-                        if primary_error:
-                            st.caption(f"Error: {primary_error}")
-                        else:
-                            core_intention = judge_meta.get("core_intention")
-                            restated_mutated_text = judge_meta.get("restated_mutated_text")
-                            bits = []
-                            if core_intention:
-                                bits.append(f"**Core Intention:** {core_intention}")
-                            if restated_mutated_text:
-                                bits.append(f"**Restated:** {restated_mutated_text}")
-                            if bits:
-                                st.markdown("\n\n".join(bits))
-                            else:
-                                st.caption("No assessment data available")
-                        
-                        col3, col4 = st.columns(2)
-                        with col3:
-                            st.markdown("**🗳️ Judge Raw Response**")
-                            judge_response = judge_result.response if judge_result else ""
-                            if judge_response:
-                                st.text(judge_response)
-                            else:
-                                st.caption("No response available")
-                        
-                        with col4:
-                            st.markdown("**⚖️ Secondary Validation**")
-                            secondary_error = judge_meta.get("secondary_error")
-                            if secondary_error:
-                                st.caption(f"Error: {secondary_error}")
-                            else:
-                                st.markdown(f"{status_icon} {status_text}")
-                    else:
-                        st.caption("⏳ **Primary Intention Assessment & Secondary Validation:** Pending — judge not run yet.")
+                                    st.dataframe(pd.DataFrame(breakdown_data), width='stretch', hide_index=True)
 
             # 📚 Generation Results Library (wrapped in accordion)
             st.markdown("---")
