@@ -4979,14 +4979,37 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         progress_bar.progress((eval_count + 1) / total_evaluations, text=f"🔄 Evaluating mutation {eval_count + 1}/{total_evaluations}")
                         
                         try:
-                            llm_response = get_llm_completion(
+                            # Request logprobs for confidence analysis (OpenAI/OpenRouter only)
+                            result = get_llm_completion(
                                 mutated_text,
                                 api_key,
                                 model_choice,
                                 provider=provider,
-                                temperature=0.7,  # Deterministic for evaluation
+                                temperature=0.7,
                                 top_p=0.9,
+                                return_logprobs=True,
                             )
+                            
+                            # Handle return value based on whether logprobs were requested
+                            if isinstance(result, tuple):
+                                llm_response, logprobs_data = result
+                            else:
+                                llm_response = result
+                                logprobs_data = None
+                            
+                            # Run confidence analysis if logprobs available
+                            confidence_result = None
+                            if logprobs_data and provider in ("OpenAI", "OpenRouter"):
+                                try:
+                                    conf_analysis = analyze_logprobs_for_confidence(
+                                        logprobs_data=logprobs_data,
+                                        generated_text=llm_response,
+                                        confidence_threshold=0.85,
+                                        min_spike_length=3,
+                                    )
+                                    confidence_result = conf_analysis.to_dict()
+                                except Exception:
+                                    confidence_result = None
                             
                             # Calculate similarity metrics
                             rouge_score = calculate_rouge_score(llm_response, reference_text.strip())
@@ -5014,6 +5037,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 'jaccard': jaccard,
                                 'levenshtein': levenshtein,
                                 'prompt_attempt': prompt_attempt,
+                                'confidence_result': confidence_result,
                             })
                             
                         except Exception as e:
@@ -5076,6 +5100,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 "data": serialised_entry,
                                 "llm_response": llm_response,
                                 "prompt_attempt": prompt_attempt,
+                                "confidence_result": eval_item.get("confidence_result"),
                             })
                             successful_count += 1
                     
@@ -5182,6 +5207,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                 config = entry.get("config") or []
                 judged_flag = bool(config[1]) if len(config) > 1 else False
                 prompt_attempt = entry.get("prompt_attempt", 1)
+                confidence_result = entry.get("confidence_result")
 
                 deserialised = deserialise_mutation_with_judge(serialised)
                 evaluation = deserialised.evaluation
@@ -5234,6 +5260,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     "status_icon": status_icon,
                     "status_text": status_text,
                     "judged": judged_flag,
+                    "confidence_result": confidence_result,
                 })
 
             ranked_rows.sort(key=lambda item: item["score"], reverse=True)
@@ -5296,6 +5323,96 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 title="Generated Text vs. Reference Text",
                                 metrics=metrics,
                             )
+                    
+                    # Confidence Anomaly Detection Results
+                    conf_result = panel_payload.get("confidence_result")
+                    if conf_result and conf_result.get('analysis_available', False):
+                        with st.expander("📊 Confidence Anomaly Detection Results", expanded=False):
+                            # Core metrics
+                            mem_score = conf_result.get('memorization_score', 0)
+                            avg_conf = conf_result.get('overall_avg_confidence', 0)
+                            high_ratio = conf_result.get('high_confidence_ratio', 0)
+                            num_spikes = conf_result.get('num_spikes', 0)
+                            avg_entropy = conf_result.get('avg_entropy', 0)
+                            perplexity = conf_result.get('perplexity', 0)
+                            rare_conf = conf_result.get('rare_token_confidence', 0)
+                            zscore_outliers = conf_result.get('zscore_outliers', 0)
+                            spike_coverage = conf_result.get('spike_coverage', 0)
+                            longest_spike = conf_result.get('longest_spike_length', 0)
+                            
+                            # Compact metrics display
+                            st.markdown(f'''
+                            <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-bottom: 12px;">
+                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                    <div style="font-size: 0.75rem; color: #888;">Mem Score</div>
+                                    <div style="font-size: 1.1rem; font-weight: 600;">{mem_score:.1%}</div>
+                                </div>
+                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                    <div style="font-size: 0.75rem; color: #888;">Avg Conf</div>
+                                    <div style="font-size: 1.1rem; font-weight: 600;">{avg_conf:.1%}</div>
+                                </div>
+                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                    <div style="font-size: 0.75rem; color: #888;">High Conf &gt;90%</div>
+                                    <div style="font-size: 1.1rem; font-weight: 600;">{high_ratio:.1%}</div>
+                                </div>
+                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                    <div style="font-size: 0.75rem; color: #888;">Spikes</div>
+                                    <div style="font-size: 1.1rem; font-weight: 600;">{num_spikes}</div>
+                                </div>
+                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                    <div style="font-size: 0.75rem; color: #888;">Coverage</div>
+                                    <div style="font-size: 1.1rem; font-weight: 600;">{spike_coverage:.1%}</div>
+                                </div>
+                            </div>
+                            <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px;">
+                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                    <div style="font-size: 0.75rem; color: #888;">Entropy</div>
+                                    <div style="font-size: 1.1rem; font-weight: 600;">{avg_entropy:.4f}</div>
+                                </div>
+                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                    <div style="font-size: 0.75rem; color: #888;">Perplexity</div>
+                                    <div style="font-size: 1.1rem; font-weight: 600;">{perplexity:.2f}</div>
+                                </div>
+                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                    <div style="font-size: 0.75rem; color: #888;">Rare Token</div>
+                                    <div style="font-size: 1.1rem; font-weight: 600;">{rare_conf:.1%}</div>
+                                </div>
+                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                    <div style="font-size: 0.75rem; color: #888;">Z-Outliers</div>
+                                    <div style="font-size: 1.1rem; font-weight: 600;">{zscore_outliers}</div>
+                                </div>
+                                <div style="text-align: center; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                    <div style="font-size: 0.75rem; color: #888;">Max Spike</div>
+                                    <div style="font-size: 1.1rem; font-weight: 600;">{longest_spike} tok</div>
+                                </div>
+                            </div>
+                            ''', unsafe_allow_html=True)
+                            
+                            # Interpretation
+                            if mem_score > 0.7:
+                                st.error("🚨 **High memorization likelihood detected!**")
+                            elif mem_score > 0.4:
+                                st.warning("⚠️ **Moderate memorization signals.**")
+                            else:
+                                st.success("✅ **Low memorization likelihood.**")
+                            
+                            # Spike details
+                            spikes = conf_result.get('spikes', [])
+                            if spikes:
+                                with st.expander("📈 Detected Confidence Spikes", expanded=False):
+                                    st.caption("**Avg Conf**: Average confidence of all tokens in the spike. **Intensity**: Ratio of tokens with >95% confidence.")
+                                    spike_data = []
+                                    for i, spike in enumerate(spikes[:10], 1):
+                                        spike_text = spike.get('text', '')
+                                        intensity = spike.get('intensity_score', 0)
+                                        spike_data.append({
+                                            "#": i,
+                                            "Text": spike_text,
+                                            "Length": spike.get('length', 0),
+                                            "Avg Conf": f"{spike.get('avg_confidence', 0):.1%}",
+                                            "Intensity": f"{intensity:.1%}",
+                                        })
+                                    st.dataframe(pd.DataFrame(spike_data), width='stretch', hide_index=True)
                     
                     # Intention judging results
                     if judged_flag:
