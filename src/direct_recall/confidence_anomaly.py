@@ -94,12 +94,8 @@ class ConfidenceSpike:
     max_confidence: float
     text: str
     
-    # Detection method that found this spike
-    detection_method: str = "threshold"  # "threshold", "zscore", "window", "combined"
-    
     # Spike quality metrics
     intensity_score: float = 0.0  # How "intense" the spike is (based on confidence levels)
-    rare_token_ratio: float = 0.0  # Ratio of non-common tokens (more indicative of memorization)
     
     @property
     def length(self) -> int:
@@ -127,7 +123,7 @@ class ConfidenceAnalysisResult:
     generated_text: str
     analysis_available: bool  # Whether logprobs were available
     error_message: Optional[str] = None
-    
+
     # Statistics
     high_confidence_ratio: float = 0.0  # Ratio of tokens with >90% confidence
     spike_coverage: float = 0.0  # Ratio of text covered by spikes
@@ -171,9 +167,7 @@ class ConfidenceAnalysisResult:
                     "avg_confidence": spike.avg_confidence,
                     "max_confidence": spike.max_confidence,
                     "text": spike.text,
-                    "detection_method": spike.detection_method,
                     "intensity_score": spike.intensity_score,
-                    "rare_token_ratio": spike.rare_token_ratio,
                 }
                 for spike in self.spikes
             ],
@@ -406,16 +400,11 @@ def _detect_confidence_spikes(
             detection_method="threshold",
         )
         spike.intensity_score = spike.calculate_intensity()
-        # Calculate rare token ratio
-        non_common = sum(1 for t in current_spike_tokens if not t.is_common_word and not t.is_punctuation and not t.is_whitespace)
-        spike.rare_token_ratio = non_common / len(current_spike_tokens) if current_spike_tokens else 0.0
         spikes.append(spike)
     
-    # Calculate intensity and rare token ratio for all spikes
+    # Calculate intensity for all spikes
     for spike in spikes:
         spike.intensity_score = spike.calculate_intensity()
-        non_common = sum(1 for t in spike.tokens if not t.is_common_word and not t.is_punctuation and not t.is_whitespace)
-        spike.rare_token_ratio = non_common / len(spike.tokens) if spike.tokens else 0.0
     
     return spikes
 
@@ -446,7 +435,6 @@ def _merge_overlapping_spikes(spikes: List[ConfidenceSpike]) -> List[ConfidenceS
                 text="".join(t.token for t in all_tokens),
                 detection_method="combined",
                 intensity_score=current.intensity_score,
-                rare_token_ratio=current.rare_token_ratio,
             )
         else:
             merged.append(current)
@@ -871,3 +859,109 @@ def generate_confidence_visualization_data(result: ConfidenceAnalysisResult) -> 
         "total_tokens": len(result.tokens),
         "memorization_score": result.memorization_score,
     }
+
+
+def analyze_logprobs_for_confidence(
+    logprobs_data: List[Dict[str, Any]],
+    generated_text: str,
+    confidence_threshold: float = 0.85,
+    min_spike_length: int = 3,
+) -> ConfidenceAnalysisResult:
+    """Analyze pre-existing logprobs data for confidence anomalies.
+    
+    This function allows analyzing logprobs that were already obtained from an LLM call,
+    avoiding the need for a separate API call.
+    
+    Args:
+        logprobs_data: List of dicts with 'token', 'logprob', and 'linear_prob' keys.
+        generated_text: The generated text corresponding to the logprobs.
+        confidence_threshold: Threshold for detecting high confidence tokens.
+        min_spike_length: Minimum consecutive high-confidence tokens for a spike.
+    
+    Returns:
+        ConfidenceAnalysisResult with analysis details.
+    """
+    if not logprobs_data:
+        return ConfidenceAnalysisResult(
+            tokens=[],
+            spikes=[],
+            overall_avg_confidence=0.0,
+            overall_std_confidence=0.0,
+            memorization_score=0.0,
+            generated_text=generated_text,
+            analysis_available=False,
+            error_message="No logprobs data available. This may be due to model limitations or API settings.",
+        )
+    
+    # Convert logprobs data to TokenLogprob objects
+    tokens: List[TokenLogprob] = []
+    for item in logprobs_data:
+        token = TokenLogprob(
+            token=item.get("token", ""),
+            logprob=item.get("logprob", 0.0),
+            linear_prob=item.get("linear_prob", 0.0),
+        )
+        _classify_token(token)
+        tokens.append(token)
+    
+    # Calculate overall statistics
+    linear_probs = [t.linear_prob for t in tokens]
+    overall_avg = statistics.mean(linear_probs) if linear_probs else 0.0
+    overall_std = statistics.stdev(linear_probs) if len(linear_probs) > 1 else 0.0
+    
+    # Calculate entropy and perplexity
+    avg_entropy = _calculate_entropy(tokens)
+    perplexity = _calculate_perplexity(tokens)
+    
+    # Build confidence timeline
+    confidence_timeline = [t.linear_prob for t in tokens]
+    
+    # Detect spikes using multiple methods
+    threshold_spikes = _detect_confidence_spikes(tokens, confidence_threshold, min_spike_length)
+    window_spikes = _sliding_window_spike_detection(tokens)
+    
+    # Merge all spikes
+    all_spikes = threshold_spikes + window_spikes
+    merged_spikes = _merge_overlapping_spikes(all_spikes)
+    
+    # Detect z-score outliers
+    zscore_outlier_indices = _detect_zscore_outliers(tokens)
+    
+    # Calculate rare token confidence (non-common words)
+    rare_tokens = [t for t in tokens if not t.is_common_word and not t.is_punctuation and not t.is_whitespace]
+    rare_token_confidence = statistics.mean(t.linear_prob for t in rare_tokens) if rare_tokens else 0.0
+    
+    # Calculate consecutive spike bonus
+    consecutive_spike_bonus = 0.0
+    if len(merged_spikes) >= 2:
+        # Check for consecutive spikes (close together)
+        consecutive_count = 0
+        for i in range(len(merged_spikes) - 1):
+            gap = merged_spikes[i + 1].start_index - merged_spikes[i].end_index
+            if gap <= 5:  # Within 5 tokens
+                consecutive_count += 1
+        consecutive_spike_bonus = min(consecutive_count * 0.1, 0.3)  # Cap at 0.3
+    
+    # Calculate memorization score
+    memorization_score, high_conf_ratio, spike_coverage, longest_spike = _calculate_memorization_score(
+        tokens, merged_spikes, rare_token_confidence, consecutive_spike_bonus
+    )
+    
+    return ConfidenceAnalysisResult(
+        tokens=tokens,
+        spikes=merged_spikes,
+        overall_avg_confidence=overall_avg,
+        overall_std_confidence=overall_std,
+        memorization_score=memorization_score,
+        generated_text=generated_text,
+        analysis_available=True,
+        high_confidence_ratio=high_conf_ratio,
+        spike_coverage=spike_coverage,
+        longest_spike_length=longest_spike,
+        avg_entropy=avg_entropy,
+        perplexity=perplexity,
+        rare_token_confidence=rare_token_confidence,
+        zscore_outliers=len(zscore_outlier_indices),
+        consecutive_spike_bonus=consecutive_spike_bonus,
+        confidence_timeline=confidence_timeline,
+    )

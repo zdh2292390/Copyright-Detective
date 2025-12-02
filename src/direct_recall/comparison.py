@@ -1,10 +1,11 @@
 import hashlib
+import math
 import openai
 import random
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import anthropic
 import google.generativeai as genai
@@ -241,14 +242,33 @@ def get_llm_completion(
     progress_message: Optional[str] = None,
     max_output_tokens: Optional[int] = None,
     stop_sequences: Optional[List[str]] = None,
-):
+    return_logprobs: bool = False,
+) -> Any:
     """
     Gets a completion from the specified LLM.
+    
+    Args:
+        prompt: The prompt to send to the LLM.
+        api_key: API key for the provider.
+        model_name: Name of the model to use.
+        provider: LLM provider ("OpenAI", "OpenRouter", "Anthropic", "Google Gemini").
+        temperature: Sampling temperature.
+        top_p: Top-p sampling parameter.
+        progress_message: Optional progress message.
+        max_output_tokens: Maximum tokens to generate.
+        stop_sequences: Stop sequences.
+        return_logprobs: If True, return (text, logprobs_data) tuple. Only works for OpenAI/OpenRouter.
+    
+    Returns:
+        If return_logprobs is False: str (generated text or error message)
+        If return_logprobs is True: Tuple[str, Optional[List[Dict]]] (text, logprobs data)
     """
     label_placeholder, bar_placeholder, progress_bar = start_llm_progress(
         progress_message or f"Calling {provider} · {model_name}"
     )
     update_llm_progress(progress_bar, value=15)
+    
+    logprobs_data: Optional[List[Dict[str, Any]]] = None
 
     try:
         if provider == "OpenAI":
@@ -267,8 +287,16 @@ def get_llm_completion(
                 request_kwargs["max_tokens"] = max_output_tokens
             if stop_sequences:
                 request_kwargs["stop"] = stop_sequences
+            # Request logprobs if needed
+            if return_logprobs:
+                request_kwargs["logprobs"] = True
+                request_kwargs["top_logprobs"] = 5
             response = client.chat.completions.create(**request_kwargs)
             result_text = response.choices[0].message.content.strip()
+            
+            # Extract logprobs if requested
+            if return_logprobs:
+                logprobs_data = _extract_logprobs_from_response(response)
         
         elif provider == "OpenRouter":
             client = openai.OpenAI(
@@ -293,8 +321,16 @@ def get_llm_completion(
                 request_kwargs["max_tokens"] = max_output_tokens
             if stop_sequences:
                 request_kwargs["stop"] = stop_sequences
+            # Request logprobs if needed
+            if return_logprobs:
+                request_kwargs["logprobs"] = True
+                request_kwargs["top_logprobs"] = 5
             response = client.chat.completions.create(**request_kwargs)
             result_text = response.choices[0].message.content.strip()
+            
+            # Extract logprobs if requested
+            if return_logprobs:
+                logprobs_data = _extract_logprobs_from_response(response)
         
         elif provider == "Anthropic":
             client = anthropic.Anthropic(api_key=api_key)
@@ -311,6 +347,7 @@ def get_llm_completion(
                 request_kwargs["stop_sequences"] = stop_sequences
             response = client.messages.create(**request_kwargs)
             result_text = response.content[0].text.strip()
+            # Anthropic doesn't support logprobs in the same way
         
         elif provider == "Google Gemini":
             genai.configure(api_key=api_key)
@@ -326,6 +363,7 @@ def get_llm_completion(
             generation_config = genai.types.GenerationConfig(**generation_config_kwargs)
             response = model.generate_content(prompt, generation_config=generation_config)
             result_text = response.text.strip()
+            # Google Gemini doesn't support logprobs in the same way
         
         else:
             error_message = f"Error: Unsupported provider {provider}"
@@ -337,6 +375,8 @@ def get_llm_completion(
                 success=False,
                 linger=0.5,
             )
+            if return_logprobs:
+                return error_message, None
             return error_message
     
     except Exception as e:
@@ -348,7 +388,10 @@ def get_llm_completion(
             success=False,
             linger=0.6,
         )
-        return f"Error calling API: {e}"
+        error_msg = f"Error calling API: {e}"
+        if return_logprobs:
+            return error_msg, None
+        return error_msg
 
     update_llm_progress(progress_bar, value=80)
     complete_llm_progress(
@@ -358,7 +401,35 @@ def get_llm_completion(
         final_message=f"LLM request completed ({provider} · {model_name})",
         success=True,
     )
+    
+    if return_logprobs:
+        return result_text, logprobs_data
     return result_text
+
+
+def _extract_logprobs_from_response(response) -> Optional[List[Dict[str, Any]]]:
+    """Extract logprobs data from OpenAI-compatible API response.
+    
+    Returns a list of dicts with 'token', 'logprob', and 'linear_prob' keys.
+    """
+    try:
+        logprobs_content = response.choices[0].logprobs
+        if not logprobs_content or not hasattr(logprobs_content, 'content') or not logprobs_content.content:
+            return None
+        
+        result = []
+        for token_info in logprobs_content.content:
+            logprob = token_info.logprob
+            linear_prob = math.exp(logprob) if logprob > -100 else 0.0
+            result.append({
+                "token": token_info.token,
+                "logprob": logprob,
+                "linear_prob": linear_prob,
+            })
+        return result
+    except Exception:
+        return None
+
 
 def calculate_rouge_score(text1, text2):
     """
@@ -431,19 +502,27 @@ def compare_texts(
     mode: str = "Zero-Shot",
     target_word_count: Optional[int] = None,
     extra_prompt_instructions: Optional[str] = None,
+    return_logprobs: bool = False,
 ):
     """
     Generates text based on the input_text according to prompt_type and compares it to reference_text.
+    
+    Args:
         prompt_type choices:
-      - "Next-Passage Prediction": continue from the given prefix (input_text)
-      - "Prior-Context Reconstruction": infer the preceding sentence given a continuation (input_text)
-      - "Title Prediction": infer a likely title/attribution from the snippet (input_text)
+          - "Next-Passage Prediction": continue from the given prefix (input_text)
+          - "Prior-Context Reconstruction": infer the preceding sentence given a continuation (input_text)
+          - "Title Prediction": infer a likely title/attribution from the snippet (input_text)
         continuation_method selects the strategy template for reconstruction prompts.
+        return_logprobs: If True, also return logprobs data (only works for OpenAI/OpenRouter).
 
-        Returns a tuple ``(generated_text, metrics)`` where ``metrics`` is a dictionary containing
-        ROUGE-1, ROUGE-L, character/word LCS (length + ratio), ACS (word), Levenshtein distance,
-        semantic similarity, MinHash similarity, and the Jaccard index. If no reference text is
-        supplied the metrics entry is ``None``.
+    Returns:
+        If return_logprobs is False:
+            Tuple ``(generated_text, metrics)`` where ``metrics`` is a dictionary containing
+            ROUGE-1, ROUGE-L, character/word LCS (length + ratio), ACS (word), Levenshtein distance,
+            semantic similarity, MinHash similarity, and the Jaccard index.
+        If return_logprobs is True:
+            Tuple ``(generated_text, metrics, logprobs_data)`` where logprobs_data is a list of
+            dicts with 'token', 'logprob', and 'linear_prob' keys, or None if unavailable.
     """
     # Determine target length for generation
     if reference_text and prompt_type != "Title Prediction":
@@ -488,9 +567,28 @@ def compare_texts(
     if extra_prompt_instructions:
         prompt = f"{prompt}\n\n{extra_prompt_instructions.strip()}"
 
-    generated_text = get_llm_completion(prompt, api_key, model_name, provider, temperature=temperature, top_p=top_p)
+    # Call LLM with optional logprobs
+    logprobs_data = None
+    if return_logprobs:
+        result = get_llm_completion(
+            prompt, api_key, model_name, provider, 
+            temperature=temperature, top_p=top_p,
+            return_logprobs=True
+        )
+        if isinstance(result, tuple):
+            generated_text, logprobs_data = result
+        else:
+            generated_text = result
+    else:
+        generated_text = get_llm_completion(
+            prompt, api_key, model_name, provider, 
+            temperature=temperature, top_p=top_p
+        )
+    
     # Return early if API error to avoid post-processing masking the error message
     if isinstance(generated_text, str) and generated_text.startswith("Error"):
+        if return_logprobs:
+            return generated_text, None, None
         return generated_text, None
 
     # Enforce exact character length to match the ground truth
@@ -511,4 +609,6 @@ def compare_texts(
         else None
     )
 
+    if return_logprobs:
+        return generated_text, metrics, logprobs_data
     return generated_text, metrics
