@@ -5493,22 +5493,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                         st.pyplot(fig)
                                         plt.close(fig)
                                 
-                                # Per-attempt breakdown table
-                                with st.expander("� Per-Attempt Metrics Breakdown", expanded=False):
-                                    breakdown_data = []
-                                    for i, cr in enumerate(conf_results, 1):
-                                        breakdown_data.append({
-                                            "Attempt": i,
-                                            "Mem Score": f"{cr.get('memorization_score', 0):.1%}",
-                                            "Avg Conf": f"{cr.get('overall_avg_confidence', 0):.1%}",
-                                            "High Conf": f"{cr.get('high_confidence_ratio', 0):.1%}",
-                                            "Spikes": cr.get('num_spikes', 0),
-                                            "Coverage": f"{cr.get('spike_coverage', 0):.1%}",
-                                            "Entropy": f"{cr.get('avg_entropy', 0):.4f}",
-                                            "Perplexity": f"{cr.get('perplexity', 0):.2f}",
-                                        })
-                                    st.dataframe(pd.DataFrame(breakdown_data), width='stretch', hide_index=True)
-
+                      
             # 📚 Generation Results Library (wrapped in accordion)
             st.markdown("---")
             with render_streamlit_accordion(
