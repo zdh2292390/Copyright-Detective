@@ -3103,7 +3103,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                     "Temperature",
                     min_value=0.0,
                     max_value=1.2,
-                    value=st.session_state.get('sleek_eval_temperature', 0.0),
+                    value=st.session_state.get('sleek_eval_temperature', 0.7),
                     step=0.05,
                     help="Controls randomness in answering. 0 = deterministic.",
                     key="sleek_eval_temperature"
