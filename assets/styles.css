@@ -925,6 +925,59 @@ p { line-height: 1.7; color: #334155; }
     margin: 0.5rem 0 0.1rem;
 }
 
+/* Black-Box Memorization Analysis metrics - custom grid layout */
+.blackbox-metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.8rem;
+    margin: 0.5rem 0 1rem 0;
+}
+
+.blackbox-metric-card {
+    background: linear-gradient(135deg, rgba(255,255,255,0.95), rgba(248,250,252,0.9));
+    border: 1px solid rgba(226, 232, 240, 0.8);
+    border-radius: 8px;
+    padding: 0.6rem 0.8rem;
+    text-align: center;
+}
+
+.blackbox-metric-label {
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 0.25rem;
+}
+
+.blackbox-metric-value {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #1e40af;
+}
+
+/* Fallback for st.metric if still used */
+.blackbox-analysis-metrics [data-testid="stMetricValue"] {
+    font-size: 0.95rem !important;
+    font-weight: 600 !important;
+    color: var(--primary-800) !important;
+}
+
+.blackbox-analysis-metrics [data-testid="stMetricLabel"] {
+    font-size: 0.65rem !important;
+    letter-spacing: 0.3px !important;
+    color: #475569 !important;
+    text-transform: uppercase !important;
+}
+
+.blackbox-analysis-metrics [data-testid="stMetricDelta"] {
+    font-size: 0.7rem !important;
+}
+
+.blackbox-analysis-metrics [data-testid="metric-container"] {
+    padding: 0.3rem 0 !important;
+}
+
 /* Footer */
 .app-footer { margin-top: 2rem; padding: 1rem 0; border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; color: #64748b; font-size: 0.9rem; }
 .app-footer a { color: var(--primary-700); text-decoration: none; font-weight: 600; }

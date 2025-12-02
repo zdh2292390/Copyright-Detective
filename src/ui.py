@@ -36,6 +36,11 @@ from src.direct_recall import (
     get_predefined_examples_index,
 )
 from src.direct_recall.sleek_attack import run_sleek_evaluation
+from src.direct_recall.confidence_anomaly import (
+    run_confidence_anomaly_detection,
+    format_confidence_analysis_summary,
+    ConfidenceAnalysisResult,
+)
 from src.config import DEFAULT_OPENROUTER_KEY
 
 import matplotlib.pyplot as plt
@@ -285,6 +290,116 @@ Keep your analysis professional, objective, and focused on copyright detection i
         return f"Error generating LLM analysis: {str(e)}"
 
 
+def _add_blackbox_analysis_to_pdf(pdf, sanitize_text) -> None:
+    """Add black-box memorization analysis results to PDF report.
+    
+    Args:
+        pdf: FPDF object to add content to.
+        sanitize_text: Function to sanitize text for PDF output.
+    """
+    # Add a new page for black-box analysis
+    pdf.add_page()
+    
+    pdf.set_font("Arial", style='B', size=14)
+    pdf.cell(200, 10, txt="Black-Box Memorization Analysis", ln=True)
+    pdf.ln(5)
+    
+    pdf.set_font("Arial", size=10)
+    pdf.multi_cell(0, 5, txt=sanitize_text(
+        "Advanced black-box detection methods analyze LLM behavior patterns to identify potential memorization "
+        "without requiring access to training data."
+    ))
+    pdf.ln(5)
+    
+    # Confidence Anomaly Detection Results
+    conf_result = st.session_state.get('confidence_analysis_result', {})
+    
+    pdf.set_font("Arial", style='B', size=12)
+    pdf.cell(200, 10, txt="1. Confidence Anomaly Detection", ln=True)
+    pdf.ln(3)
+    
+    pdf.set_font("Arial", size=10)
+    pdf.multi_cell(0, 5, txt=sanitize_text(
+        "This method analyzes logprobs during text generation to detect abnormal confidence spikes. "
+        "High consecutive confidence often indicates verbatim memorization of training data."
+    ))
+    pdf.ln(3)
+    
+    if not conf_result.get('analysis_available', False):
+        pdf.set_font("Arial", style='I', size=10)
+        error_msg = conf_result.get('error_message', 'Analysis not available')
+        pdf.multi_cell(0, 5, txt=sanitize_text(f"Note: {error_msg}"))
+    else:
+        pdf.set_font("Arial", size=10)
+        mem_score = conf_result.get('memorization_score', 0)
+        avg_conf = conf_result.get('overall_avg_confidence', 0)
+        high_ratio = conf_result.get('high_confidence_ratio', 0)
+        num_spikes = conf_result.get('num_spikes', 0)
+        spike_coverage = conf_result.get('spike_coverage', 0)
+        longest_spike = conf_result.get('longest_spike_length', 0)
+        
+        pdf.cell(200, 6, txt=f"Memorization Score: {mem_score:.1%}", ln=True)
+        pdf.cell(200, 6, txt=f"Average Confidence: {avg_conf:.1%}", ln=True)
+        pdf.cell(200, 6, txt=f"High Confidence Token Ratio (>90%): {high_ratio:.1%}", ln=True)
+        pdf.cell(200, 6, txt=f"Spike Coverage: {spike_coverage:.1%}", ln=True)
+        pdf.cell(200, 6, txt=f"Number of Spikes Detected: {num_spikes}", ln=True)
+        pdf.cell(200, 6, txt=f"Longest Spike Length: {longest_spike} tokens", ln=True)
+        pdf.ln(3)
+        
+        # Interpretation
+        pdf.set_font("Arial", style='B', size=10)
+        pdf.cell(200, 6, txt="Interpretation:", ln=True)
+        pdf.set_font("Arial", size=10)
+        if mem_score > 0.7:
+            interpretation = "HIGH MEMORIZATION LIKELIHOOD - The model shows strong confidence patterns consistent with verbatim memorization."
+        elif mem_score > 0.4:
+            interpretation = "MODERATE MEMORIZATION SIGNALS - Some confidence patterns suggest potential memorization."
+        else:
+            interpretation = "LOW MEMORIZATION LIKELIHOOD - Confidence patterns appear normal for generated content."
+        pdf.multi_cell(0, 5, txt=sanitize_text(interpretation))
+        
+        # Spike details
+        spikes = conf_result.get('spikes', [])
+        if spikes:
+            pdf.ln(3)
+            pdf.set_font("Arial", style='B', size=10)
+            pdf.cell(200, 6, txt="Detected Confidence Spikes:", ln=True)
+            pdf.set_font("Arial", size=9)
+            for i, spike in enumerate(spikes[:5], 1):  # Show top 5
+                spike_text = spike.get('text', '')[:40]
+                if len(spike.get('text', '')) > 40:
+                    spike_text += "..."
+                avg_conf_spike = spike.get('avg_confidence', 0)
+                length = spike.get('length', 0)
+                pdf.cell(200, 5, txt=sanitize_text(f"  {i}. \"{spike_text}\" (len={length}, conf={avg_conf_spike:.1%})"), ln=True)
+    
+    # Combined Assessment
+    pdf.ln(8)
+    pdf.set_font("Arial", style='B', size=12)
+    pdf.cell(200, 10, txt="Combined Black-Box Assessment", ln=True)
+    pdf.ln(3)
+    
+    conf_mem_score = conf_result.get('memorization_score', 0) if conf_result.get('analysis_available', False) else None
+    
+    pdf.set_font("Arial", size=10)
+    if conf_mem_score is not None:
+        pdf.cell(200, 6, txt=f"Memorization Score: {conf_mem_score:.1%}", ln=True)
+        pdf.ln(3)
+        
+        if conf_mem_score > 0.6:
+            assessment = "STRONG EVIDENCE OF MEMORIZATION - Confidence analysis indicates high likelihood of verbatim memorization. The model appears to have mechanically memorized the source text."
+        elif conf_mem_score > 0.4:
+            assessment = "MODERATE EVIDENCE OF MEMORIZATION - Analysis suggests partial memorization. The model may have learned specific patterns or phrases from the source material."
+        else:
+            assessment = "LOW EVIDENCE OF MEMORIZATION - Analysis suggests the model is generating content based on learned patterns rather than memorized text."
+        pdf.multi_cell(0, 5, txt=sanitize_text(assessment))
+    else:
+        pdf.multi_cell(0, 5, txt=sanitize_text(
+            "Black-box analysis was not available. "
+            "This may be due to API limitations or errors during analysis."
+        ))
+
+
 def generate_text_memorization_pdf_report(results_data: Dict[str, Any], prompt_type: str, model_choice: str, api_key: str = None, provider: str = None) -> bytes:
     """Generate a PDF report for text memorization detection results."""
     
@@ -420,6 +535,9 @@ def generate_text_memorization_pdf_report(results_data: Dict[str, Any], prompt_t
             pdf.set_font("Arial", style='I', size=10)
             pdf.cell(200, 10, txt="Note: AI analysis not available (API key required)", ln=True)
 
+        # Black-Box Memorization Analysis Results
+        _add_blackbox_analysis_to_pdf(pdf, sanitize_text)
+
     elif results_data['type'] == 'multiple':
         # User Input Texts for multiple runs
         if user_inputs:
@@ -482,6 +600,9 @@ def generate_text_memorization_pdf_report(results_data: Dict[str, Any], prompt_t
             pdf.ln(10)
             pdf.set_font("Arial", style='I', size=10)
             pdf.cell(200, 10, txt="Note: AI analysis not available (API key required)", ln=True)
+
+        # Black-Box Memorization Analysis Results
+        _add_blackbox_analysis_to_pdf(pdf, sanitize_text)
 
     return pdf.output(dest='S').encode('latin-1', errors='replace')
 
@@ -1161,6 +1282,57 @@ def render_snippet_to_document_page(api_key, model_choice, provider):
         render_knowledge_memorization_page(api_key, model_choice, provider)
 
 
+def _run_blackbox_analysis_auto(
+    input_text: str,
+    api_key: str,
+    model_choice: str,
+    provider: str,
+    temperature: float,
+    top_p: float,
+    prompt_type: str,
+) -> None:
+    """Run black-box memorization analysis automatically after main analysis.
+    
+    This function runs confidence anomaly detection and stores results in session state.
+    """
+    # Build the prompt based on the current prompt type
+    if prompt_type == "Next-Passage Prediction":
+        analysis_prompt = f"Continue the following text:\n\n{input_text}\n\nContinuation:"
+        prompt_template = "Continue the following text:\n\n{input}\n\nContinuation:"
+    elif prompt_type == "Prior-Context Reconstruction":
+        analysis_prompt = f"What text would precede the following passage?\n\n{input_text}\n\nPreceding text:"
+        prompt_template = "What text would precede the following passage?\n\n{input}\n\nPreceding text:"
+    else:
+        analysis_prompt = f"Continue:\n\n{input_text}"
+        prompt_template = "Continue:\n\n{input}"
+    
+    # Run Confidence Anomaly Detection (only for OpenAI/OpenRouter)
+    if provider in ("OpenAI", "OpenRouter"):
+        try:
+            confidence_result = run_confidence_anomaly_detection(
+                prompt=analysis_prompt,
+                api_key=api_key,
+                model_name=model_choice,
+                provider=provider,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=500,
+                confidence_threshold=0.85,
+                min_spike_length=3,
+            )
+            st.session_state['confidence_analysis_result'] = confidence_result.to_dict()
+        except Exception as e:
+            st.session_state['confidence_analysis_result'] = {
+                'analysis_available': False,
+                'error_message': f"Confidence analysis failed: {str(e)}"
+            }
+    else:
+        st.session_state['confidence_analysis_result'] = {
+            'analysis_available': False,
+            'error_message': f"Confidence analysis requires logprobs, which are not available for {provider}. This feature works with OpenAI and OpenRouter providers."
+        }
+
+
 def render_text_analysis_page(api_key, model_choice, provider, *, show_page_header: bool = True):
     """Render the text memorization detection workflow."""
     
@@ -1683,6 +1855,12 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                             }
                         }
                         
+                        # Run black-box memorization analysis automatically
+                        _run_blackbox_analysis_auto(
+                            text1, api_key, model_choice, provider, 
+                            temperature, top_p, prompt_type
+                        )
+                        
                         # Generate and cache PDF report
                         pdf_bytes = generate_text_memorization_pdf_report(
                             st.session_state['text_analysis_results'], 
@@ -1790,6 +1968,12 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                             'run_timestamp': pd.Timestamp.now().isoformat()
                         }
                     }
+                    
+                    # Run black-box memorization analysis automatically
+                    _run_blackbox_analysis_auto(
+                        text1, api_key, model_choice, provider, 
+                        temperature, top_p, prompt_type
+                    )
                     
                     # Generate and cache PDF report
                     pdf_bytes = generate_text_memorization_pdf_report(
@@ -1952,6 +2136,139 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     
                     plt.tight_layout()
                     st.pyplot(fig)
+
+                # Display confidence analysis results (auto-run during main analysis)
+                if 'confidence_analysis_result' in st.session_state:
+                    conf_result = st.session_state['confidence_analysis_result']
+                    
+                    with st.expander("📊 Confidence Anomaly Detection Results", expanded=True):
+                        if not conf_result.get('analysis_available', False):
+                            st.warning(f"⚠️ {conf_result.get('error_message', 'Analysis not available')}")
+                        else:
+                            # Core metrics row
+                            mem_score = conf_result.get('memorization_score', 0)
+                            avg_conf = conf_result.get('overall_avg_confidence', 0)
+                            high_ratio = conf_result.get('high_confidence_ratio', 0)
+                            num_spikes = conf_result.get('num_spikes', 0)
+                            
+                            st.markdown("**Core Metrics:**")
+                            st.markdown(f'''
+                            <div class="blackbox-metrics-grid">
+                                <div class="blackbox-metric-card">
+                                    <div class="blackbox-metric-label">Memorization Score</div>
+                                    <div class="blackbox-metric-value">{mem_score:.1%}</div>
+                                </div>
+                                <div class="blackbox-metric-card">
+                                    <div class="blackbox-metric-label">Avg Confidence</div>
+                                    <div class="blackbox-metric-value">{avg_conf:.1%}</div>
+                                </div>
+                                <div class="blackbox-metric-card">
+                                    <div class="blackbox-metric-label">High Conf Ratio (&gt;90%)</div>
+                                    <div class="blackbox-metric-value">{high_ratio:.1%}</div>
+                                </div>
+                                <div class="blackbox-metric-card">
+                                    <div class="blackbox-metric-label">Spikes Detected</div>
+                                    <div class="blackbox-metric-value">{num_spikes}</div>
+                                </div>
+                            </div>
+                            ''', unsafe_allow_html=True)
+                            
+                            # Advanced metrics row
+                            avg_entropy = conf_result.get('avg_entropy', 0)
+                            perplexity = conf_result.get('perplexity', 0)
+                            rare_conf = conf_result.get('rare_token_confidence', 0)
+                            zscore_outliers = conf_result.get('zscore_outliers', 0)
+                            spike_coverage = conf_result.get('spike_coverage', 0)
+                            longest_spike = conf_result.get('longest_spike_length', 0)
+                            
+                            st.markdown("**Advanced Analysis:**")
+                            st.markdown(f'''
+                            <div class="blackbox-metrics-grid">
+                                <div class="blackbox-metric-card">
+                                    <div class="blackbox-metric-label">Avg Entropy</div>
+                                    <div class="blackbox-metric-value">{avg_entropy:.4f} bits</div>
+                                </div>
+                                <div class="blackbox-metric-card">
+                                    <div class="blackbox-metric-label">Perplexity</div>
+                                    <div class="blackbox-metric-value">{perplexity:.2f}</div>
+                                </div>
+                                <div class="blackbox-metric-card">
+                                    <div class="blackbox-metric-label">Rare Token Conf</div>
+                                    <div class="blackbox-metric-value">{rare_conf:.1%}</div>
+                                </div>
+                                <div class="blackbox-metric-card">
+                                    <div class="blackbox-metric-label">Z-Score Outliers</div>
+                                    <div class="blackbox-metric-value">{zscore_outliers}</div>
+                                </div>
+                            </div>
+                            ''', unsafe_allow_html=True)
+                            
+                            st.markdown(f'''
+                            <div class="blackbox-metrics-grid">
+                                <div class="blackbox-metric-card">
+                                    <div class="blackbox-metric-label">Spike Coverage</div>
+                                    <div class="blackbox-metric-value">{spike_coverage:.1%}</div>
+                                </div>
+                                <div class="blackbox-metric-card">
+                                    <div class="blackbox-metric-label">Longest Spike</div>
+                                    <div class="blackbox-metric-value">{longest_spike} tokens</div>
+                                </div>
+                            </div>
+                            ''', unsafe_allow_html=True)
+                            
+                            # Interpretation
+                            mem_score = conf_result.get('memorization_score', 0)
+                            if mem_score > 0.7:
+                                st.error("🚨 **High memorization likelihood detected!** The model shows strong confidence patterns consistent with verbatim memorization. Multiple long high-confidence sequences and high confidence on rare tokens suggest trained content.")
+                            elif mem_score > 0.4:
+                                st.warning("⚠️ **Moderate memorization signals.** Some confidence patterns suggest potential memorization. Consider comparing with other analysis methods.")
+                            else:
+                                st.success("✅ **Low memorization likelihood.** Confidence patterns appear normal for generated content. Natural variation in confidence levels observed.")
+                            
+                            # Spike details
+                            spikes = conf_result.get('spikes', [])
+                            if spikes:
+                                with st.expander("📈 Detected Confidence Spikes", expanded=False):
+                                    spike_data = []
+                                    for i, spike in enumerate(spikes[:10], 1):  # Show top 10
+                                        spike_text = spike.get('text', '')
+                                        detection_method = spike.get('detection_method', 'threshold')
+                                        intensity = spike.get('intensity_score', 0)
+                                        rare_ratio = spike.get('rare_token_ratio', 0)
+                                        spike_data.append({
+                                            "#": i,
+                                            "Text": spike_text,
+                                            "Length": spike.get('length', 0),
+                                            "Method": detection_method,
+                                            "Avg Conf": f"{spike.get('avg_confidence', 0):.1%}",
+                                            "Intensity": f"{intensity:.1%}",
+                                            "Rare Ratio": f"{rare_ratio:.1%}",
+                                        })
+                                    st.dataframe(pd.DataFrame(spike_data), width='stretch', hide_index=True)
+                            
+                            # Confidence timeline visualization
+                            conf_timeline = conf_result.get('confidence_timeline', [])
+                            if conf_timeline:
+                                with st.expander("📉 Confidence Timeline", expanded=False):
+                                    fig, ax = plt.subplots(figsize=(12, 4))
+                                    ax.plot(conf_timeline, color='steelblue', linewidth=1, alpha=0.8)
+                                    ax.axhline(y=0.85, color='red', linestyle='--', linewidth=1, alpha=0.7, label='Threshold (85%)')
+                                    ax.axhline(y=avg_conf, color='green', linestyle=':', linewidth=1, alpha=0.7, label=f'Mean ({avg_conf:.1%})')
+                                    
+                                    # Highlight spike regions
+                                    for spike in spikes:
+                                        ax.axvspan(spike.get('start_index', 0), spike.get('end_index', 0), 
+                                                  alpha=0.2, color='orange')
+                                    
+                                    ax.set_xlabel('Token Index')
+                                    ax.set_ylabel('Confidence')
+                                    ax.set_ylim(0, 1)
+                                    ax.set_title('Token Confidence Timeline')
+                                    ax.legend(loc='lower right')
+                                    ax.grid(True, alpha=0.3)
+                                    st.pyplot(fig)
+                                    plt.close(fig)
+
 
         # PDF Report Generation
         st.markdown("---")

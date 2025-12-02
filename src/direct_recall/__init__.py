@@ -26,6 +26,14 @@ from .single_choice import (
     summarize_single_choice_results,
     get_predefined_examples_index,
 )
+from .confidence_anomaly import (
+    run_confidence_anomaly_detection,
+    format_confidence_analysis_summary,
+    generate_confidence_visualization_data,
+    ConfidenceAnalysisResult,
+    TokenLogprob,
+    ConfidenceSpike,
+)
 from .decop_analysis import get_available_datasets
 # Import persuasion functions from the independent adversarial_persuasion_detection module
 # These are still used in content recall test for persuasion strategies
@@ -61,6 +69,13 @@ __all__ = [
     "run_single_choice_evaluation",
     "summarize_single_choice_results",
     "get_predefined_examples_index",
+    # confidence_anomaly - black-box logits-based memorization detection
+    "run_confidence_anomaly_detection",
+    "format_confidence_analysis_summary",
+    "generate_confidence_visualization_data",
+    "ConfidenceAnalysisResult",
+    "TokenLogprob",
+    "ConfidenceSpike",
     # dataset management
     "get_available_datasets",
     # persuasion functions (imported from adversarial_persuasion_detection for backward compatibility)
