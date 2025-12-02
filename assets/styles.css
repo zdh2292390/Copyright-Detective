@@ -699,6 +699,150 @@ section[data-testid="stSidebar"][aria-expanded="true"] {
     width: 18rem !important; 
 }
 
+/* ========================================
+   Sidebar Detection Mode Radio Buttons
+   ======================================== */
+[data-testid="stSidebar"] [data-testid="stRadio"] > div {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+[data-testid="stSidebar"] [data-testid="stRadio"] > div > label {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    padding: 0.7rem 0.9rem;
+    border-radius: 12px;
+    border: 1.5px solid rgba(203, 213, 225, 0.6);
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(248, 250, 252, 0.9));
+    cursor: pointer;
+    transition: all 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
+    position: relative;
+    overflow: hidden;
+}
+
+[data-testid="stSidebar"] [data-testid="stRadio"] > div > label::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, rgba(37, 99, 235, 0.08), rgba(99, 102, 241, 0.06));
+    opacity: 0;
+    transition: opacity 0.22s ease;
+}
+
+[data-testid="stSidebar"] [data-testid="stRadio"] > div > label:hover {
+    border-color: rgba(99, 102, 241, 0.45);
+    background: linear-gradient(135deg, rgba(255, 255, 255, 1), rgba(243, 244, 255, 0.95));
+    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.12);
+    transform: translateY(-1px);
+}
+
+[data-testid="stSidebar"] [data-testid="stRadio"] > div > label:hover::before {
+    opacity: 1;
+}
+
+/* Selected state styling */
+[data-testid="stSidebar"] [data-testid="stRadio"] > div > label[data-checked="true"],
+[data-testid="stSidebar"] [data-testid="stRadio"] > div > label:has(input:checked) {
+    border-color: var(--primary);
+    background: linear-gradient(135deg, rgba(239, 246, 255, 0.98), rgba(224, 231, 255, 0.95));
+    box-shadow: 0 4px 14px rgba(37, 99, 235, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+[data-testid="stSidebar"] [data-testid="stRadio"] > div > label[data-checked="true"]::before,
+[data-testid="stSidebar"] [data-testid="stRadio"] > div > label:has(input:checked)::before {
+    opacity: 1;
+    background: linear-gradient(135deg, rgba(37, 99, 235, 0.12), rgba(99, 102, 241, 0.08));
+}
+
+/* Custom radio indicator */
+[data-testid="stSidebar"] [data-testid="stRadio"] > div > label > div:first-child {
+    width: 18px;
+    height: 18px;
+    min-width: 18px;
+    border-radius: 50%;
+    border: 2px solid rgba(148, 163, 184, 0.6);
+    background: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+[data-testid="stSidebar"] [data-testid="stRadio"] > div > label[data-checked="true"] > div:first-child,
+[data-testid="stSidebar"] [data-testid="stRadio"] > div > label:has(input:checked) > div:first-child {
+    border-color: var(--primary);
+    background: var(--primary);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2), inset 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+[data-testid="stSidebar"] [data-testid="stRadio"] > div > label[data-checked="true"] > div:first-child::after,
+[data-testid="stSidebar"] [data-testid="stRadio"] > div > label:has(input:checked) > div:first-child::after {
+    content: "";
+    width: 6px;
+    height: 6px;
+    background: #fff;
+    border-radius: 50%;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+/* Label text styling */
+[data-testid="stSidebar"] [data-testid="stRadio"] > div > label > div:last-child,
+[data-testid="stSidebar"] [data-testid="stRadio"] > div > label p {
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: #334155;
+    letter-spacing: 0.2px;
+    line-height: 1.4;
+    transition: color 0.2s ease;
+    margin: 0;
+}
+
+[data-testid="stSidebar"] [data-testid="stRadio"] > div > label[data-checked="true"] > div:last-child,
+[data-testid="stSidebar"] [data-testid="stRadio"] > div > label:has(input:checked) > div:last-child,
+[data-testid="stSidebar"] [data-testid="stRadio"] > div > label[data-checked="true"] p,
+[data-testid="stSidebar"] [data-testid="stRadio"] > div > label:has(input:checked) p {
+    color: var(--primary-800);
+    font-weight: 700;
+}
+
+/* Hide default radio input (visually) */
+[data-testid="stSidebar"] [data-testid="stRadio"] input[type="radio"] {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* Detection Mode expander styling */
+[data-testid="stSidebar"] [data-testid="stExpander"] {
+    border: 1px solid rgba(203, 213, 225, 0.5);
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 255, 0.95));
+    box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
+    margin: 0.5rem 0;
+    overflow: hidden;
+}
+
+[data-testid="stSidebar"] [data-testid="stExpander"] summary {
+    font-weight: 700;
+    font-size: 0.95rem;
+    color: #0f172a;
+    padding: 0.85rem 1rem;
+    background: linear-gradient(135deg, rgba(248, 250, 252, 0.9), rgba(241, 245, 249, 0.85));
+    border-bottom: 1px solid rgba(226, 232, 240, 0.5);
+}
+
+[data-testid="stSidebar"] [data-testid="stExpander"][open] summary {
+    border-bottom-color: rgba(99, 102, 241, 0.2);
+}
+
+[data-testid="stSidebar"] [data-testid="stExpander"] > div {
+    padding: 0.75rem 0.85rem 0.9rem;
+}
+
 /* Main content area adjusts automatically based on sidebar state */
 [data-testid="stAppViewContainer"] > .main { 
     padding-left: 1rem; 
