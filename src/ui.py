@@ -1185,8 +1185,16 @@ def render_header():
 def render_sidebar():
     """Render the sidebar with API configuration, model selection, and navigation."""
     with st.sidebar:
+        # Sidebar branding header
+        st.markdown('''
+        <div class="sidebar-brand">
+            <div class="sidebar-brand__icon">🔍</div>
+            <div class="sidebar-brand__text">Copyright Detective</div>
+        </div>
+        ''', unsafe_allow_html=True)
+        
         # API Configuration Accordion
-        with st.expander("🔑 API Configuration", expanded=True):
+        with st.expander("🔑 API Configuration", expanded=False):
             st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
             openai_api_key = st.text_input("OpenAI API Key", type="password", help="Enter your OpenAI API key", key="sidebar_openai_api_key")
             openrouter_api_key = st.text_input(
@@ -1201,7 +1209,7 @@ def render_sidebar():
             st.markdown('</div>', unsafe_allow_html=True)
 
         # Model Selection Accordion
-        with st.expander("👾 Model Selection", expanded=True):
+        with st.expander("✨ Model Selection", expanded=True):
             st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
             provider = st.selectbox("Select provider", ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"], help="Choose your AI provider", key="sidebar_provider_selectbox")
 
@@ -1257,6 +1265,15 @@ def render_sidebar():
                 label_visibility="collapsed",
             )
             st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Sidebar footer
+        st.markdown('''
+        <div class="sidebar-footer">
+            <div class="sidebar-footer__text">
+                Built for copyright research 🛡️
+            </div>
+        </div>
+        ''', unsafe_allow_html=True)
 
     return api_key, model_choice, provider, page
 

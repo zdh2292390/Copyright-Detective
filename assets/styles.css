@@ -680,23 +680,177 @@ body, input, button, select, textarea {
     white-space: pre-wrap;
 }
 
-/* Sidebar polish */
+/* ========================================
+   Sidebar - Complete Redesign
+   ======================================== */
+
+/* Sidebar container with gradient background */
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #f8faff 0%, #eef2ff 50%, #f1f5f9 100%);
+}
+
 [data-testid="stSidebar"] > div {
     position: relative;
-    background: #ffffff;
-    border-right: 1px solid rgba(209, 213, 255, 0.6);
+    background: transparent;
+    border-right: none;
     box-shadow: none;
-    backdrop-filter: none;
+    padding: 0 !important;
 }
+
 [data-testid="stSidebar"] > div::before {
-    content: none;
+    content: "";
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 1px;
+    height: 100%;
+    background: linear-gradient(180deg, rgba(99, 102, 241, 0.15) 0%, rgba(37, 99, 235, 0.25) 50%, rgba(99, 102, 241, 0.1) 100%);
+}
+
+/* Inner sidebar content padding */
+[data-testid="stSidebar"] > div > div {
+    padding: 1.25rem 1rem 2rem !important;
+}
+
+/* Sidebar header / branding area (if you add a title) */
+.sidebar-brand {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    padding: 1rem 0.75rem 1.25rem;
+    margin-bottom: 0.75rem;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.sidebar-brand__icon {
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, var(--primary) 0%, #4f46e5 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.25rem;
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
+}
+
+.sidebar-brand__text {
+    font-size: 1.1rem;
+    font-weight: 800;
+    background: linear-gradient(135deg, #0f172a 0%, var(--primary-800) 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    letter-spacing: -0.02em;
+}
+
+/* Sidebar section styling */
+.sidebar-section {
+    padding: 0.5rem 0;
+    margin-bottom: 0.25rem;
+}
+
+.sidebar-section h3 {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: #64748b;
+    margin-bottom: 0.65rem;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+/* Sidebar input fields */
+[data-testid="stSidebar"] [data-testid="stTextInput"] > div > div > input {
+    background: rgba(255, 255, 255, 0.9);
+    border: 1.5px solid rgba(203, 213, 225, 0.7);
+    border-radius: 10px;
+    padding: 0.6rem 0.85rem;
+    font-size: 0.88rem;
+    color: #1e293b;
+    transition: all 0.2s ease;
+    box-shadow: 0 2px 4px rgba(15, 23, 42, 0.04);
+}
+
+[data-testid="stSidebar"] [data-testid="stTextInput"] > div > div > input:focus {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12), 0 2px 8px rgba(37, 99, 235, 0.08);
+    background: #fff;
+}
+
+[data-testid="stSidebar"] [data-testid="stTextInput"] > div > div > input::placeholder {
+    color: #94a3b8;
+    font-size: 0.82rem;
+}
+
+[data-testid="stSidebar"] [data-testid="stTextInput"] label {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: #475569;
+    margin-bottom: 0.35rem;
+}
+
+/* Sidebar selectbox styling */
+[data-testid="stSidebar"] [data-testid="stSelectbox"] > div > div {
+    background: rgba(255, 255, 255, 0.9);
+    border: 1.5px solid rgba(203, 213, 225, 0.7);
+    border-radius: 10px;
+    transition: all 0.2s ease;
+    box-shadow: 0 2px 4px rgba(15, 23, 42, 0.04);
+}
+
+[data-testid="stSidebar"] [data-testid="stSelectbox"] > div > div:hover {
+    border-color: rgba(99, 102, 241, 0.5);
+    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.1);
+}
+
+[data-testid="stSidebar"] [data-testid="stSelectbox"] label {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: #475569;
+    margin-bottom: 0.35rem;
+}
+
+/* Sidebar divider */
+.sidebar-divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent 0%, rgba(148, 163, 184, 0.3) 20%, rgba(148, 163, 184, 0.3) 80%, transparent 100%);
+    margin: 1rem 0;
+}
+
+/* Sidebar footer */
+.sidebar-footer {
+    margin-top: auto;
+    padding: 1rem 0.5rem 0.5rem;
+    border-top: 1px solid rgba(148, 163, 184, 0.2);
+    text-align: center;
+}
+
+.sidebar-footer__text {
+    font-size: 0.72rem;
+    color: #94a3b8;
+    letter-spacing: 0.02em;
+}
+
+.sidebar-footer__link {
+    color: var(--primary);
+    text-decoration: none;
+    font-weight: 600;
+    transition: color 0.2s ease;
+}
+
+.sidebar-footer__link:hover {
+    color: var(--primary-800);
+    text-decoration: underline;
 }
 
 /* Sidebar configuration - using Streamlit's native toggle button */
 /* When expanded, sidebar has default width; when collapsed, main content fills the space */
 section[data-testid="stSidebar"][aria-expanded="true"] { 
-    min-width: 18rem !important; 
-    width: 18rem !important; 
+    min-width: 19rem !important; 
+    width: 19rem !important; 
 }
 
 /* ========================================
@@ -818,29 +972,47 @@ section[data-testid="stSidebar"][aria-expanded="true"] {
 
 /* Detection Mode expander styling */
 [data-testid="stSidebar"] [data-testid="stExpander"] {
-    border: 1px solid rgba(203, 213, 225, 0.5);
-    border-radius: 14px;
-    background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 255, 0.95));
-    box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
-    margin: 0.5rem 0;
+    border: none;
+    border-radius: 16px;
+    background: linear-gradient(145deg, rgba(255, 255, 255, 0.95), rgba(241, 245, 255, 0.9));
+    box-shadow: 0 4px 20px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.04);
+    margin: 0.65rem 0;
     overflow: hidden;
+    transition: all 0.25s ease;
+}
+
+[data-testid="stSidebar"] [data-testid="stExpander"]:hover {
+    box-shadow: 0 6px 24px rgba(15, 23, 42, 0.08), 0 2px 6px rgba(15, 23, 42, 0.04);
 }
 
 [data-testid="stSidebar"] [data-testid="stExpander"] summary {
     font-weight: 700;
-    font-size: 0.95rem;
-    color: #0f172a;
-    padding: 0.85rem 1rem;
-    background: linear-gradient(135deg, rgba(248, 250, 252, 0.9), rgba(241, 245, 249, 0.85));
-    border-bottom: 1px solid rgba(226, 232, 240, 0.5);
+    font-size: 0.9rem;
+    color: #1e293b;
+    padding: 0.9rem 1.1rem;
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 255, 0.95));
+    border-bottom: 1px solid rgba(226, 232, 240, 0.6);
+    transition: all 0.2s ease;
+    letter-spacing: 0.01em;
+}
+
+[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover {
+    background: linear-gradient(135deg, rgba(248, 250, 255, 1), rgba(239, 246, 255, 0.98));
+}
+
+[data-testid="stSidebar"] [data-testid="stExpander"][open] {
+    box-shadow: 0 8px 28px rgba(37, 99, 235, 0.1), 0 2px 8px rgba(15, 23, 42, 0.05);
 }
 
 [data-testid="stSidebar"] [data-testid="stExpander"][open] summary {
-    border-bottom-color: rgba(99, 102, 241, 0.2);
+    border-bottom-color: rgba(99, 102, 241, 0.25);
+    background: linear-gradient(135deg, rgba(239, 246, 255, 0.98), rgba(224, 231, 255, 0.92));
+    color: var(--primary-800);
 }
 
 [data-testid="stSidebar"] [data-testid="stExpander"] > div {
-    padding: 0.75rem 0.85rem 0.9rem;
+    padding: 0.85rem 1rem 1rem;
+    background: rgba(255, 255, 255, 0.5);
 }
 
 /* Main content area adjusts automatically based on sidebar state */
