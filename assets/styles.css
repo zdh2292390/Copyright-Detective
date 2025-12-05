@@ -1059,6 +1059,7 @@ section[data-testid="stSidebar"][aria-expanded="true"] {
 }
 
 [data-testid="stSidebar"] [data-testid="stRadio"] > div > label {
+    width: 100%;
     display: flex;
     align-items: center;
     gap: 0.65rem;
