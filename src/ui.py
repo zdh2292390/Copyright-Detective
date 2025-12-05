@@ -1983,10 +1983,17 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                         # Save first run's logprobs for confidence analysis
                         if i == 0 and logprobs_data:
                             first_run_logprobs = logprobs_data
-                
-                progress_bar.progress(1.0, text="✅ All runs completed!")
+                    
+                    # Update progress after each run completes
+                    progress_bar.progress(
+                        (i + 1) / inference_runs,
+                        text=f"✅ Run {i+1}/{inference_runs} completed",
+                    )
 
                 if similarity_scores:
+                    # Update progress for analysis phase
+                    progress_bar.progress(0.9, text="🔄 Running analysis...")
+                    
                     # Store results in session state
                     st.session_state['text_analysis_results'] = {
                         'type': 'multiple',
@@ -2017,6 +2024,9 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                         logprobs_data=first_run_logprobs,
                     )
                     
+                    # Update progress for PDF generation
+                    progress_bar.progress(0.95, text="🔄 Generating PDF report...")
+                    
                     # Generate and cache PDF report
                     pdf_bytes = generate_text_memorization_pdf_report(
                         st.session_state['text_analysis_results'], 
@@ -2026,6 +2036,9 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                         provider
                     )
                     st.session_state['text_pdf_report'] = pdf_bytes
+                    
+                    # All processing completed
+                    progress_bar.progress(1.0, text="✅ All runs completed!")
 
 
     # Display results section (outside of run_analysis block to preserve results)
@@ -2275,29 +2288,6 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                                             "Intensity": f"{intensity:.1%}",
                                         })
                                     st.dataframe(pd.DataFrame(spike_data), width='stretch', hide_index=True)
-                            
-                            # Confidence timeline visualization
-                            conf_timeline = conf_result.get('confidence_timeline', [])
-                            if conf_timeline:
-                                with st.expander("📉 Confidence Timeline", expanded=False):
-                                    fig, ax = plt.subplots(figsize=(12, 4))
-                                    ax.plot(conf_timeline, color='steelblue', linewidth=1, alpha=0.8)
-                                    ax.axhline(y=0.85, color='red', linestyle='--', linewidth=1, alpha=0.7, label='Threshold (85%)')
-                                    ax.axhline(y=avg_conf, color='green', linestyle=':', linewidth=1, alpha=0.7, label=f'Mean ({avg_conf:.1%})')
-                                    
-                                    # Highlight spike regions
-                                    for spike in spikes:
-                                        ax.axvspan(spike.get('start_index', 0), spike.get('end_index', 0), 
-                                                  alpha=0.2, color='orange')
-                                    
-                                    ax.set_xlabel('Token Index')
-                                    ax.set_ylabel('Confidence')
-                                    ax.set_ylim(0, 1)
-                                    ax.set_title('Token Confidence Timeline')
-                                    ax.legend(loc='lower right')
-                                    ax.grid(True, alpha=0.3)
-                                    st.pyplot(fig)
-                                    plt.close(fig)
 
 
         # PDF Report Generation
@@ -5486,8 +5476,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                             })
                                         st.dataframe(pd.DataFrame(spike_data), width='stretch', hide_index=True)
                                 
-                                # 📉 Confidence Timeline visualization (same as Text Memorization Detection)
-                                timelines_available = [cr.get('confidence_timeline', []) for cr in conf_results if cr.get('confidence_timeline')]
                                 if timelines_available:
                                     with st.expander("📉 Confidence Timeline", expanded=False):
                                         fig, ax = plt.subplots(figsize=(12, 4))
