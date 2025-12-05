@@ -1231,14 +1231,15 @@ def render_sidebar():
                 model_choice = st.selectbox(
                     "Choose a model",
                     [
-                        "meta-llama/llama-3.3-70b-instruct:free",
-                                                "mistralai/mistral-7b-instruct:free",
-                        "nousresearch/hermes-3-llama-3.1-405b:free",
-                        "google/gemini-2.0-flash-exp:free",
-                        "deepseek/deepseek-r1-distill-llama-70b:free",
-                        "mistralai/mistral-small-3.1-24b-instruct:free",
+                        "alibaba/tongyi-deepresearch-30b-a3b:free",
+                        "openai/gpt-oss-20b:free",
+                        "z-ai/glm-4.5-air:free",
+                        "moonshotai/kimi-k2:free",
                         "qwen/qwen3-235b-a22b:free",
-                        "x-ai/grok-4.1-fast:free"
+                        "mistralai/mistral-small-3.1-24b-instruct:free",
+                        "google/gemini-2.0-flash-exp:free",
+                        "meta-llama/llama-3.3-70b-instruct:free",
+                        "nousresearch/hermes-3-llama-3.1-405b:free"
                     ],
                     key="sidebar_openrouter_model_selectbox",
                 )
