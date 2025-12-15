@@ -5882,21 +5882,11 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                                     sections.append(("Full Diagnostics", err_text, None))
                             else:
                                 sections.append(("Full Diagnostics", err_text, None))
-                            # Add slider for panel height
-                            panel_max_height = st.slider(
-                                "Panel Display Height (pixels)",
-                                min_value=200,
-                                max_value=1200,
-                                value=600,
-                                step=50,
-                                help="Adjust the maximum height of the error details panel.",
-                                key="error_panel_height_slider",
-                            )
                             render_collapsible_panel(
                                 title="Representational Analysis Logs and Traceback",
                                 sections=sections,
                                 expanded=False,
-                                max_height=panel_max_height,
+                                max_height=600,
                             )
                             rep_result = None
 
