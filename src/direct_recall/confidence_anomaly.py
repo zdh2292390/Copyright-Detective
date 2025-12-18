@@ -30,7 +30,7 @@ from collections import Counter
 
 import openai
 import anthropic
-import google.generativeai as genai
+import google.genai as genai
 
 from src.common.progress import (
     start_llm_progress,

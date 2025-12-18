@@ -8,7 +8,7 @@ python-Levenshtein
 ghostscript
 requests
 anthropic
-google-generativeai
+google-genai
 matplotlib
 torch>=2.1.0
 transformers>=4.36.0

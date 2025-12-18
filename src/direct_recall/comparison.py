@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
 
 import anthropic
-import google.generativeai as genai
+import google.genai as genai
 from Levenshtein import distance
 from rouge_score import rouge_scorer
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -350,18 +350,21 @@ def get_llm_completion(
             # Anthropic doesn't support logprobs in the same way
         
         elif provider == "Google Gemini":
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel(model_name)
-            generation_config_kwargs = {
-                "temperature": temperature,
-                "top_p": top_p,
-            }
+            client = genai.Client(api_key=api_key)
+            config = {}
+            if temperature is not None:
+                config["temperature"] = temperature
+            if top_p is not None:
+                config["top_p"] = top_p
             if max_output_tokens is not None:
-                generation_config_kwargs["max_output_tokens"] = max_output_tokens
+                config["max_output_tokens"] = max_output_tokens
             if stop_sequences:
-                generation_config_kwargs["stop_sequences"] = stop_sequences
-            generation_config = genai.types.GenerationConfig(**generation_config_kwargs)
-            response = model.generate_content(prompt, generation_config=generation_config)
+                config["stop_sequences"] = stop_sequences
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=config or None
+            )
             result_text = response.text.strip()
             # Google Gemini doesn't support logprobs in the same way
         
