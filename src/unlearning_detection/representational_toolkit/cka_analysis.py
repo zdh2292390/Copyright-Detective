@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from .types import FeatureAnalysisResult, VisualizationItem
 
@@ -77,16 +77,17 @@ def _load_model(
         kwargs = dict(base_kwargs)
         kwargs[dtype_key] = torch_dtype
         for local_only in (False, True):
+            # Fix for "loss_type=None" warning
             try:
-                try:
-                    import accelerate  # type: ignore  # noqa: F401
+                config = AutoConfig.from_pretrained(path, trust_remote_code=True, local_files_only=local_only)
+                if getattr(config, "loss_type", None) is None:
+                    config.loss_type = "ForCausalLMLoss"
+                kwargs["config"] = config
+            except Exception:
+                pass
 
-                    if device.type == "cuda":
-                        kwargs["device_map"] = "auto"
-                    model = AutoModelForCausalLM.from_pretrained(path, **kwargs)
-                except (ImportError, ValueError):
-                    kwargs.pop("device_map", None)
-                    model = AutoModelForCausalLM.from_pretrained(path, **kwargs).to(device)
+            try:
+                model = AutoModelForCausalLM.from_pretrained(path, **kwargs).to(device)
                 if tokenizer_added_pad:
                     with contextlib.suppress(Exception):
                         model.resize_token_embeddings(len(tokenizer))

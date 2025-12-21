@@ -197,17 +197,18 @@ def run_fim_analysis(
             kwargs = dict(base_kwargs)
             if local_only:
                 kwargs["local_files_only"] = True
-                
+            
+            # Fix for "loss_type=None" warning
             try:
-                try:
-                    import accelerate  # type: ignore  # noqa: F401
+                config = AutoConfig.from_pretrained(weights_path, trust_remote_code=True, local_files_only=local_only)
+                if getattr(config, "loss_type", None) is None:
+                    config.loss_type = "ForCausalLMLoss"
+                kwargs["config"] = config
+            except Exception:
+                pass
 
-                    if compute_device.type == "cuda":
-                        kwargs["device_map"] = "auto"
-                    model = AutoModelForCausalLM.from_pretrained(weights_path, **kwargs)
-                except (ImportError, ValueError):
-                    kwargs.pop("device_map", None)
-                    model = AutoModelForCausalLM.from_pretrained(weights_path, **kwargs).to(compute_device)
+            try:
+                model = AutoModelForCausalLM.from_pretrained(weights_path, **kwargs).to(compute_device)
                 if tokenizer_added_pad:
                     with contextlib.suppress(Exception):
                         model.resize_token_embeddings(len(tokenizer))

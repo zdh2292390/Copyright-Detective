@@ -5677,124 +5677,123 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
 
     feature_lookup = {feature.id: feature for feature in features}
 
-    with st.form("representational_analysis_form"):
-        feature_options = [feature.id for feature in features]
-        selected_feature_id = st.selectbox(
-            "Select representational probe",
-            options=feature_options,
-            index=min(st.session_state['unlearn_feature_id_index'], len(feature_options) - 1),
-            format_func=lambda feature_id: f"{feature_lookup[feature_id].name} — {feature_lookup[feature_id].description}",
-            key="representational_feature_selection",
-            help="Maps directly to the `feature` argument of `run_feature_analysis`.",
+    feature_options = [feature.id for feature in features]
+    selected_feature_id = st.selectbox(
+        "Select representational probe",
+        options=feature_options,
+        index=min(st.session_state['unlearn_feature_id_index'], len(feature_options) - 1),
+        format_func=lambda feature_id: f"{feature_lookup[feature_id].name} — {feature_lookup[feature_id].description}",
+        key="representational_feature_selection",
+        help="Maps directly to the `feature` argument of `run_feature_analysis`.",
+    )
+    # Update index in session state
+    if selected_feature_id in feature_options:
+        st.session_state['unlearn_feature_id_index'] = feature_options.index(selected_feature_id)
+
+    selected_feature = feature_lookup[selected_feature_id]
+
+    st.markdown("##### Model checkpoints")
+    st.info("💡 **Model Path Format**: Use Hugging Face model IDs (e.g., 'gpt2', 'microsoft/DialoGPT-medium') or absolute paths to local directories containing `config.json` and model files. Do not use Hugging Face cache paths directly.")
+    col_ref, col_upd = st.columns(2)
+    with col_ref:
+        reference_model_path = st.text_input(
+            "Reference model (baseline)",
+            value=st.session_state['unlearn_reference_model'],
+            placeholder="e.g. gpt2, Qwen/Qwen2.5-7B, or /path/to/local/model",
+            help="Hugging Face model ID (e.g., 'gpt2') or absolute path to local model directory containing config.json",
+            key="representational_reference_model",
         )
-        # Update index in session state
-        if selected_feature_id in feature_options:
-            st.session_state['unlearn_feature_id_index'] = feature_options.index(selected_feature_id)
-
-        selected_feature = feature_lookup[selected_feature_id]
-
-        st.markdown("##### Model checkpoints")
-        st.info("💡 **Model Path Format**: Use Hugging Face model IDs (e.g., 'gpt2', 'microsoft/DialoGPT-medium') or absolute paths to local directories containing `config.json` and model files. Do not use Hugging Face cache paths directly.")
-        col_ref, col_upd = st.columns(2)
-        with col_ref:
-            reference_model_path = st.text_input(
-                "Reference model (baseline)",
-                value=st.session_state['unlearn_reference_model'],
-                placeholder="e.g. gpt2, Qwen/Qwen2.5-7B, or /path/to/local/model",
-                help="Hugging Face model ID (e.g., 'gpt2') or absolute path to local model directory containing config.json",
-                key="representational_reference_model",
-            )
-        with col_upd:
-            st.text_input(
-                "Updated / deployed model",
-                value=st.session_state['unlearn_updated_model'],
-                placeholder="Path or HF repo ID for the model under audit",
-                help="Hugging Face model ID (e.g., 'microsoft/DialoGPT-medium') or absolute path to local model directory",
-                key="representational_updated_model",
-            )
-
-        st.markdown("##### Evaluation prompts")
-        st.text_area(
-            "Evaluation prompts",
-            value=st.session_state['unlearn_query_text'],
-            height=180,
-            placeholder="Enter one query per line that probes the model's behaviour post-unlearning.\n\nExample:\nThe quick brown fox jumps over the lazy dog.\nUnlearning LLMs is an active area of research.\nWhat is the capital of France?",
-            help="Each non-empty line is passed as an element of the `query` list. Enter multiple queries (one per line) to test different prompts.",
-            key="representational_query_text",
+    with col_upd:
+        st.text_input(
+            "Updated / deployed model",
+            value=st.session_state['unlearn_updated_model'],
+            placeholder="Path or HF repo ID for the model under audit",
+            help="Hugging Face model ID (e.g., 'microsoft/DialoGPT-medium') or absolute path to local model directory",
+            key="representational_updated_model",
         )
-        query_preview = [line.strip() for line in st.session_state.get('representational_query_text', '').splitlines() if line.strip()]
 
-        if query_preview:
-            st.caption(f"📝 **{len(query_preview)} query(ies) will be processed:**")
-            for i, query in enumerate(query_preview, 1):
-                st.caption(f"{i}. {query}")
-        else:
-            st.caption("📝 No queries entered yet. Add at least one query above.")
+    st.markdown("##### Evaluation prompts")
+    st.text_area(
+        "Evaluation prompts",
+        value=st.session_state['unlearn_query_text'],
+        height=180,
+        placeholder="Enter one query per line that probes the model's behaviour post-unlearning.\\n\\nExample:\\nThe quick brown fox jumps over the lazy dog.\\nUnlearning LLMs is an active area of research.\\nWhat is the capital of France?",
+        help="Each non-empty line is passed as an element of the `query` list. Enter multiple queries (one per line) to test different prompts.",
+        key="representational_query_text",
+    )
+    query_preview = [line.strip() for line in st.session_state.get('representational_query_text', '').splitlines() if line.strip()]
 
-        st.markdown("##### Runtime parameters")
-        st.caption("Device is set to `cuda` (GPU enabled).")
-        device = "cuda"
+    if query_preview:
+        st.caption(f"📝 **{len(query_preview)} query(ies) will be processed:**")
+        for i, query in enumerate(query_preview, 1):
+            st.caption(f"{i}. {query}")
+    else:
+        st.caption("📝 No queries entered yet. Add at least one query above.")
 
-        col_batch, col_batches, col_length = st.columns([1, 1, 1])
-        with col_batch:
-            st.number_input(
-                "Batch size",
-                min_value=1,
-                max_value=128,
-                value=st.session_state['unlearn_batch_size'],
-                step=1,
-                help="Mini-batch size for analyses that stream batches (FIM, CKA).",
-                key="representational_batch_size",
-            )
-        with col_batches:
-            st.number_input(
-                "Batches",
-                min_value=1,
-                max_value=200,
-                value=st.session_state['unlearn_num_batches'],
-                step=1,
-                help="Number of dataloader batches to use when estimating statistics (FIM, CKA).",
-                key="representational_num_batches",
-            )
-        with col_length:
-            st.number_input(
-                "Max length",
-                min_value=16,
-                max_value=4096,
-                value=st.session_state['unlearn_max_length'],
-                step=16,
-                help="Maximum sequence length for tokenization.",
-                key="representational_max_length",
-            )
+    st.markdown("##### Runtime parameters")
+    st.caption("Device is set to `cuda` (GPU enabled).")
+    device = "cuda"
 
-        st.caption("Preview of the backend call that will be executed with your settings:")
-        query_list_preview = ", ".join(f'"{q}"' for q in query_preview) or '"<enter at least one query>"'
-        reference_model_path = st.session_state.get('representational_reference_model', '')
-        updated_model_path = st.session_state.get('representational_updated_model', '')
-        batch_size = st.session_state.get('representational_batch_size', 4)
-        num_batches = st.session_state.get('representational_num_batches', 10)
-        max_length = st.session_state.get('representational_max_length', 128)
-        call_preview = textwrap.dedent(
-            f"""
-            run_feature_analysis(
-                feature="{selected_feature.id}",
-                model_reference_path="{reference_model_path.strip() or '<reference_model>'}",
-                model_path="{updated_model_path.strip() or '<updated_model>'}",
-                query=[{query_list_preview}],
-                device="{device}",
-                batch_size={int(batch_size)},
-                num_batches={int(num_batches)},
-                max_length={int(max_length)},
-            )
-            """.strip()
+    col_batch, col_batches, col_length = st.columns([1, 1, 1])
+    with col_batch:
+        st.number_input(
+            "Batch size",
+            min_value=1,
+            max_value=128,
+            value=st.session_state['unlearn_batch_size'],
+            step=1,
+            help="Mini-batch size for analyses that stream batches (FIM, CKA).",
+            key="representational_batch_size",
         )
-        st.code(call_preview, language="python")
-
-        submit_run = st.form_submit_button(
-            "🧬 Run Representational Analysis",
-            width='stretch',
-            help="Submit the parameters above and execute the representational probe on the backend.",
+    with col_batches:
+        st.number_input(
+            "Batches",
+            min_value=1,
+            max_value=200,
+            value=st.session_state['unlearn_num_batches'],
+            step=1,
+            help="Number of dataloader batches to use when estimating statistics (FIM, CKA).",
+            key="representational_num_batches",
         )
+    with col_length:
+        st.number_input(
+            "Max length",
+            min_value=16,
+            max_value=4096,
+            value=st.session_state['unlearn_max_length'],
+            step=16,
+            help="Maximum sequence length for tokenization.",
+            key="representational_max_length",
+        )
+
+    st.caption("Preview of the backend call that will be executed with your settings:")
+    query_list_preview = ", ".join(f'"{q}"' for q in query_preview) or '"<enter at least one query>"'
+    reference_model_path = st.session_state.get('representational_reference_model', '')
+    updated_model_path = st.session_state.get('representational_updated_model', '')
+    batch_size = st.session_state.get('representational_batch_size', 4)
+    num_batches = st.session_state.get('representational_num_batches', 10)
+    max_length = st.session_state.get('representational_max_length', 128)
+    call_preview = textwrap.dedent(
+        f"""
+        run_feature_analysis(
+            feature="{selected_feature.id}",
+            model_reference_path="{reference_model_path.strip() or '<reference_model>'}",
+            model_path="{updated_model_path.strip() or '<updated_model>'}",
+            query=[{query_list_preview}],
+            device="{device}",
+            batch_size={int(batch_size)},
+            num_batches={int(num_batches)},
+            max_length={int(max_length)},
+        )
+        """.strip()
+    )
+    st.code(call_preview, language="python")
+
+    submit_run = st.button(
+        "🧬 Run Representational Analysis",
+        width='stretch',
+        help="Submit the parameters above and execute the representational probe on the backend.",
+    )
 
     rep_result = None
     analysis_request = None
