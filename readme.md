@@ -24,6 +24,9 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+> **Note:** Ensure you have valid API keys ready. For GPU-based features, make sure `torch` is installed with CUDA support.
+
+
 
 
 
