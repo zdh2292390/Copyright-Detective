@@ -6,9 +6,7 @@
 
 # How to Run
 
-Analyze potential text copyright infringement in LLM application.
-
-Follow these steps to set up your environment and run the application.
+Analyze potential text copyright infringement in LLM application. Follow these steps to set up your environment and run the application.
 
 ## 🚀 Quick Start
 
@@ -25,6 +23,10 @@ pip install -r requirements.txt
 # Launch the app
 streamlit run app.py
 ```
+
+
+
+
 
 
 ## Text Memorization Detection (Snippet)
