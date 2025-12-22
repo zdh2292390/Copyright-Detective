@@ -1,55 +1,31 @@
+# 🕵️ Copyright Detective
 
-# How to Run Copyright Detective
+**Copyright Detective** is a forensic tool designed to analyze potential copyright infringement in Large Language Models (LLMs). It provides a suite of probes to detect memorization, test robustness against adversarial attacks, and verify unlearning efficacy.
+
+<img width="1323" height="637" alt="overview" src="https://github.com/user-attachments/assets/3164d8da-6f64-47cc-9c81-67e261823909" />
+
+# How to Run
 
 Analyze potential text copyright infringement in LLM application.
 
 Follow these steps to set up your environment and run the application.
 
-## 1. Create a Conda Environment
+## 🚀 Quick Start
 
-It is highly recommended to use a Conda environment to manage project dependencies.
-
-Open your terminal and run the following command in the project's root directory to create a new environment named `copyright-detective`:
+Run the following commands in your terminal to set up the environment and launch the application:
 
 ```bash
-conda create --name copyright-detective python=3.11 -y
-```
-
-This will create a new Conda environment with Python 3.11.
-
-## 2. Activate the Conda Environment
-
-Before you can install packages or run the app, you need to activate the environment.
-
-```bash
+# Create and activate environment
+conda create -n copyright-detective python=3.11 -y
 conda activate copyright-detective
-```
 
-Your terminal prompt should now show `(copyright-detective)` at the beginning, indicating that the environment is active.
-
-## 3. Install Required Packages
-
-With the virtual environment active, install all the necessary libraries from the `requirements.txt` file:
-
-```bash
+# Install dependencies
 pip install -r requirements.txt
-```
 
-This will install the baseline libraries (`streamlit`, `openai`, `PyPDF2`, `rouge-score`, etc.).
-
-> **GPU extras:** The new representational analysis probes rely on deep learning stacks. After the base install, add the optional dependencies with `pip install torch transformers scikit-learn` (or your preferred CUDA build of PyTorch). These are already listed in `requirements.txt`, but you may want to install a hardware-specific wheel manually to ensure GPU acceleration.
-
-## 4. Run the Streamlit Application
-
-Now you are ready to start the application. Run the following command:
-
-```bash
+# Launch the app
 streamlit run app.py
 ```
 
-Streamlit will start a local server and open the application in a new tab in your default web browser.
-
-You can now interact with the "Copyright Detective" tool. Make sure you have a valid API key (OpenAI, OpenRouter, etc.) for any providers you plan to call.
 
 ## Text Memorization Detection (Snippet)
 
