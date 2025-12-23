@@ -2401,6 +2401,8 @@ def render_qa_based_detection(api_key, model_choice, provider):
         st.session_state['qa_generation_mode'] = 'Standard'
     if 'qa_sleek_results' not in st.session_state:
         st.session_state['qa_sleek_results'] = None
+    if 'qa_pairs_source' not in st.session_state:
+        st.session_state['qa_pairs_source'] = None
     
     st.markdown(
         """
@@ -2434,6 +2436,15 @@ def render_qa_based_detection(api_key, model_choice, provider):
     
     # Remove the "(Example)" suffix to get the actual dataset name
     qa_source_mode = qa_source_mode_display.replace(" (Example)", "")
+
+    # If the user switches away from Predefined Examples, clear any preset Q/A pairs
+    if qa_source_mode != "Predefined Examples" and st.session_state.get("qa_pairs_source") == "predefined":
+        st.session_state['qa_generated_qa_pairs'] = []
+        st.session_state['qa_document_text_content'] = ""
+        st.session_state['qa_evaluation_results'] = None
+        st.session_state['qa_sleek_results'] = None
+        st.session_state.pop('qa_pdf_report_bytes', None)
+        st.session_state['qa_pairs_source'] = None
     
     uploaded_document = None
     source_text = ""
@@ -2595,6 +2606,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
         qa_pairs = literature_qa_data[selected_literature]
         st.session_state['qa_generated_qa_pairs'] = qa_pairs
         st.session_state['qa_document_text_content'] = f"Predefined literature example: {selected_literature}"
+        st.session_state['qa_pairs_source'] = "predefined"
         st.success(f"✅ Loaded {len(qa_pairs)} Q/A pairs from {selected_literature}.")
         # 展示Q/A对
         st.markdown("<p class='analysis-step-label'>Predefined Q/A Pairs</p>", unsafe_allow_html=True)
@@ -2798,6 +2810,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                     else:
                         st.session_state['qa_generated_qa_pairs'] = qa_pairs
                         st.session_state['qa_document_text_content'] = document_text
+                        st.session_state['qa_pairs_source'] = qa_source_mode
                         st.success(f"✅ Successfully generated {len(qa_pairs)} Q/A pairs!")
         
         # Display Q/A pairs
