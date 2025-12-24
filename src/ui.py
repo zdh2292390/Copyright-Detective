@@ -1259,6 +1259,7 @@ def render_sidebar():
                 "Go to",
                 [
                     "Content Recall Test",
+                    "Knowledge Memorization Detection",
                     "Persuasive Jailbreak Detection Test",
                     "Unlearning Detection Test",
                     "Legal Cases Display",
@@ -1285,10 +1286,9 @@ def render_snippet_to_document_page(api_key, model_choice, provider):
     st.markdown("### 🔎 Content Recall Test")
 
 
-    snippet_tab, pdf_tab, knowledge_tab = st.tabs([
+    snippet_tab, pdf_tab = st.tabs([
         "Text Memorization Detection",
         "Document Memorization Detection",
-        "Knowledge Memorization Detection",
     ])
 
     with snippet_tab:
@@ -1296,9 +1296,6 @@ def render_snippet_to_document_page(api_key, model_choice, provider):
 
     with pdf_tab:
         render_pdf_analysis_page(api_key, model_choice, provider, show_page_header=True)
-
-    with knowledge_tab:
-        render_knowledge_memorization_page(api_key, model_choice, provider)
 
 
 def _run_blackbox_analysis_auto(

@@ -3,6 +3,7 @@ from src.ui import (
     render_header,
     render_sidebar,
     render_snippet_to_document_page,
+    render_knowledge_memorization_page,
     render_adversarial_persuasion_page,
     render_unlearning_detection_page,
     render_legal_case_display_page,
@@ -39,6 +40,8 @@ api_key, model_choice, provider, page = render_sidebar()
 # Render main content based on selected page
 if page == "Content Recall Test":
     render_snippet_to_document_page(api_key, model_choice, provider)
+elif page == "Knowledge Memorization Detection":
+    render_knowledge_memorization_page(api_key, model_choice, provider)
 elif page == "Persuasive Jailbreak Detection Test":
     render_adversarial_persuasion_page(api_key, model_choice, provider)
 elif page == "Unlearning Detection Test":
