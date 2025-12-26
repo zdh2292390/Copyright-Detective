@@ -38,7 +38,7 @@ render_header()
 api_key, model_choice, provider, page = render_sidebar()
 
 # Render main content based on selected page
-if page == "Content Recall":
+if page == "Content Recall Detection":
     render_snippet_to_document_page(api_key, model_choice, provider)
 elif page == "Knowledge Memorization Detection":
     render_knowledge_memorization_page(api_key, model_choice, provider)
