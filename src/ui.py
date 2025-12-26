@@ -1258,10 +1258,10 @@ def render_sidebar():
             page = st.radio(
                 "Go to",
                 [
-                    "Content Recall Test",
+                    "Content Recall",
                     "Knowledge Memorization Detection",
-                    "Persuasive Jailbreak Detection Test",
-                    "Unlearning Detection Test",
+                    "Persuasive Jailbreak Detection",
+                    "Unlearning Detection",
                     "Legal Cases Display",
                 ],
                 label_visibility="collapsed",
@@ -1283,8 +1283,10 @@ def render_sidebar():
 def render_snippet_to_document_page(api_key, model_choice, provider):
     """Render the combined snippet-to-document analysis workspace."""
 
-    st.markdown("### 🔎 Content Recall Test")
-
+    st.markdown('<h4 class="section-header">🔎 Content Recall</h4>', unsafe_allow_html=True)
+    st.markdown(
+        "Detect potential text memorization by analyzing model outputs against known source materials."
+    )
 
     snippet_tab, pdf_tab = st.tabs([
         "Text Memorization Detection",
@@ -1398,7 +1400,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     st.markdown(
         """
         <div class=\"analysis-callout\">
-            <div class=\"analysis-callout__title\">How the Content Recall Test works</div>
+            <div class=\"analysis-callout__title\">How Content Recall works</div>
             <ul class=\"analysis-callout__list\">
                 <li>Provide an input snippet and the expected ground-truth passage.</li>
                 <li>Select a prompting strategy to probe potential memorization.</li>
@@ -3871,7 +3873,7 @@ def render_sc_detection(api_key, model_choice, provider):
 def render_legal_case_display_page():
     """Showcase real-world lawsuits that underscore memorization risk."""
 
-    st.markdown("### ⚖️ Legal Cases Display")
+    st.markdown('<h4 class="section-header">⚖️ Legal Cases Display</h4>', unsafe_allow_html=True)
     st.markdown(
         "Curated legal milestones that illustrate why Copyright Detective workflows are essential."
     )
@@ -4480,7 +4482,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     # Page header with clear cache button
     header_col, button_col = st.columns([4, 1])
     with header_col:
-        st.markdown('<h4 class="section-header">🔓 Persuasive Jailbreak Detection Test</h4>', unsafe_allow_html=True)
+        st.markdown('<h4 class="section-header">🔓 Persuasive Jailbreak Detection</h4>', unsafe_allow_html=True)
         st.markdown(
             "An evaluation framework that uses persuasion techniques to assess copyright infringement risks in LLMs."
         )
@@ -4534,7 +4536,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
     st.markdown(
         """
         <div class=\"analysis-callout\">
-            <div class=\"analysis-callout__title\">How the Persuasive Jailbreak Detection Test works</div>
+            <div class=\"analysis-callout__title\">How Persuasive Jailbreak Detection works</div>
             <ul class=\"analysis-callout__list\">
                 <li><strong>One-shot mutation</strong> — Generate baseline adversarial prompt variations without examples.</li>
                 <li><strong>Few-shot refinement</strong> — Use predefined examples from few-shot.json to guide stronger mutations.</li>
@@ -6959,9 +6961,9 @@ def main():
     render_header()
     api_key, model_choice, provider, page = render_sidebar()
 
-    if page == "Content Recall Test":
+    if page == "Content Recall":
         render_snippet_to_document_page(api_key, model_choice, provider)
-    elif page == "Unlearning Detection Test":
+    elif page == "Unlearning Detection":
         render_unlearning_detection_page(api_key, model_choice, provider)
     elif page == "Legal Cases Display":
         render_legal_case_display_page()
