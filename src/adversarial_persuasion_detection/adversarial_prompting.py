@@ -18,6 +18,7 @@ from src.direct_recall.comparison import (
     get_llm_completion,
     calculate_jaccard_index,
     calculate_rouge_score,
+    calculate_similarity_metrics,
 )
 
 # Load framework.json for zero-shot templates
@@ -54,8 +55,21 @@ class SimilarityMetrics:
     """Similarity scores comparing a mutated text against a reference."""
 
     rouge_l: float
-    jaccard: float
-    levenshtein: int
+    rouge_1: float
+    jaccard_index: float
+    lcs_char_ratio: float
+    lcs_char_length: float
+    lcs_word_ratio: float
+    lcs_word_length: float
+    acs_word: float
+    semantic_similarity: float
+    minhash_similarity: float
+    levenshtein: float
+    
+    @property
+    def jaccard(self) -> float:
+        """Legacy property for backward compatibility."""
+        return self.jaccard_index
 
 
 @dataclass(frozen=True)
@@ -133,25 +147,31 @@ def _maybe_build_parsed_mutation(payload: Optional[Mapping[str, Any]]) -> Option
 def _maybe_build_metrics(payload: Optional[Mapping[str, Any]]) -> Optional[SimilarityMetrics]:
     if not payload:
         return None
-    rouge_value = payload.get("rouge_l")
-    jaccard_value = payload.get("jaccard")
-    levenshtein_value = payload.get("levenshtein")
-    try:
-        rouge_float = float(rouge_value) if rouge_value is not None else 0.0
-    except (TypeError, ValueError):  # pragma: no cover - defensive
-        rouge_float = 0.0
-    try:
-        jaccard_float = float(jaccard_value) if jaccard_value is not None else 0.0
-    except (TypeError, ValueError):  # pragma: no cover - defensive
-        jaccard_float = 0.0
-    try:
-        levenshtein_int = int(levenshtein_value) if levenshtein_value is not None else 0
-    except (TypeError, ValueError):  # pragma: no cover - defensive
-        levenshtein_int = 0
+    
+    def safe_float(key: str, default: float = 0.0) -> float:
+        value = payload.get(key)
+        try:
+            return float(value) if value is not None else default
+        except (TypeError, ValueError):
+            return default
+    
+    # Support both new field names and legacy field names for backward compatibility
+    jaccard_index_value = payload.get("jaccard_index")
+    jaccard_legacy_value = payload.get("jaccard")
+    jaccard_final = safe_float("jaccard_index") if jaccard_index_value is not None else safe_float("jaccard")
+    
     return SimilarityMetrics(
-        rouge_l=rouge_float,
-        jaccard=jaccard_float,
-        levenshtein=levenshtein_int,
+        rouge_l=safe_float("rouge_l"),
+        rouge_1=safe_float("rouge_1"),
+        jaccard_index=jaccard_final,
+        lcs_char_ratio=safe_float("lcs_char_ratio"),
+        lcs_char_length=safe_float("lcs_char_length"),
+        lcs_word_ratio=safe_float("lcs_word_ratio"),
+        lcs_word_length=safe_float("lcs_word_length"),
+        acs_word=safe_float("acs_word"),
+        semantic_similarity=safe_float("semantic_similarity"),
+        minhash_similarity=safe_float("minhash_similarity"),
+        levenshtein=safe_float("levenshtein"),
     )
 
 
@@ -1064,10 +1084,22 @@ def evaluate_similarity(reference_text: Optional[str], candidate_text: Optional[
     if not reference_text or not candidate_text:
         return None
 
-    rouge_l = calculate_rouge_score(reference_text, candidate_text)
-    jaccard = calculate_jaccard_index(reference_text, candidate_text)
-    lev = distance(reference_text, candidate_text)
-    return SimilarityMetrics(rouge_l=rouge_l, jaccard=jaccard, levenshtein=lev)
+    # Use calculate_similarity_metrics to get all required metrics
+    metrics_dict = calculate_similarity_metrics(reference_text, candidate_text)
+    
+    return SimilarityMetrics(
+        rouge_l=metrics_dict.get("rouge_l", 0.0),
+        rouge_1=metrics_dict.get("rouge_1", 0.0),
+        jaccard_index=metrics_dict.get("jaccard_index", 0.0),
+        lcs_char_ratio=metrics_dict.get("lcs_char_ratio", 0.0),
+        lcs_char_length=metrics_dict.get("lcs_char_length", 0.0),
+        lcs_word_ratio=metrics_dict.get("lcs_word_ratio", 0.0),
+        lcs_word_length=metrics_dict.get("lcs_word_length", 0.0),
+        acs_word=metrics_dict.get("acs_word", 0.0),
+        semantic_similarity=metrics_dict.get("semantic_similarity", 0.0),
+        minhash_similarity=metrics_dict.get("minhash_similarity", 0.0),
+        levenshtein=metrics_dict.get("levenshtein", 0.0),
+    )
 
 
 def mutate_strategies(

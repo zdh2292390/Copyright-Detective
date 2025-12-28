@@ -401,32 +401,86 @@ def render_direct_recall_diff(
             
             # If conversion failed or not a dataclass, try to access common attributes directly
             if not metrics_data:
-                if hasattr(metrics, 'rouge_l'):
-                    metrics_data['rouge_l'] = float(metrics.rouge_l)
-                if hasattr(metrics, 'jaccard'):
-                    metrics_data['jaccard'] = float(metrics.jaccard)
-                if hasattr(metrics, 'levenshtein'):
-                    metrics_data['levenshtein'] = int(metrics.levenshtein)
+                # Extract all SimilarityMetrics fields
+                similarity_fields = [
+                    'rouge_l', 'rouge_1', 'jaccard_index', 'jaccard',  # jaccard for backward compatibility
+                    'lcs_char_ratio', 'lcs_char_length', 'lcs_word_ratio', 'lcs_word_length',
+                    'acs_word', 'semantic_similarity', 'minhash_similarity', 'levenshtein'
+                ]
+                for field in similarity_fields:
+                    if hasattr(metrics, field):
+                        try:
+                            value = getattr(metrics, field)
+                            if value is not None:
+                                if field == 'levenshtein':
+                                    metrics_data[field] = int(value)
+                                else:
+                                    metrics_data[field] = float(value)
+                        except (ValueError, TypeError):
+                            pass
 
     metric_entries: List[str] = []
     
-    # Token-level F1 metrics (primary metrics for Fact Recall evaluation)
+    # Token-level F1 metrics (primary metrics for Fact Recall evaluation - only for knowledge memorization)
     f1_metric_spec = [
         ("f1", "F1 Score", "{:.1%}"),
         ("precision", "Precision", "{:.1%}"),
         ("recall", "Recall", "{:.1%}"),
     ]
     
-    for key, label, fmt in f1_metric_spec:
-        value = metrics_data.get(key)
-        if value is not None:
-            try:
-                formatted_value = fmt.format(value)
-                metric_entries.append(
-                    f'<div class="dr-diff-metric">{label}: <strong>{formatted_value}</strong></div>'
-                )
-            except (ValueError, TypeError):
-                pass
+    has_f1_metrics = any(metrics_data.get(k) for k in ('f1', 'precision', 'recall'))
+    
+    if has_f1_metrics:
+        # For knowledge memorization detection, show F1 metrics
+        for key, label, fmt in f1_metric_spec:
+            value = metrics_data.get(key)
+            if value is not None:
+                try:
+                    formatted_value = fmt.format(value)
+                    metric_entries.append(
+                        f'<div class="dr-diff-metric">{label}: <strong>{formatted_value}</strong></div>'
+                    )
+                except (ValueError, TypeError):
+                    pass
+    else:
+        # For content recall test, show all similarity metrics
+        similarity_metric_spec = [
+            ("rouge_1", "ROUGE-1", "{:.4f}"),
+            ("rouge_l", "ROUGE-L", "{:.4f}"),
+            ("jaccard_index", "Jaccard Index", "{:.4f}"),
+            ("lcs_char_ratio", "LCS (Character Ratio)", "{:.4f}"),
+            ("lcs_char_length", "LCS (Character Length)", "{:.0f}"),
+            ("lcs_word_ratio", "LCS (Word Ratio)", "{:.4f}"),
+            ("lcs_word_length", "LCS (Word Length)", "{:.0f}"),
+            ("acs_word", "ACS (Word)", "{:.4f}"),
+            ("levenshtein", "Levenshtein Distance", "{:.0f}"),
+            ("semantic_similarity", "Semantic Similarity", "{:.4f}"),
+            ("minhash_similarity", "MinHash Similarity", "{:.4f}"),
+        ]
+        
+        # Also support legacy jaccard field name
+        if "jaccard_index" not in metrics_data and "jaccard" in metrics_data:
+            metrics_data["jaccard_index"] = metrics_data["jaccard"]
+        
+        for key, label, fmt in similarity_metric_spec:
+            value = metrics_data.get(key)
+            if value is not None:
+                try:
+                    formatted_value = fmt.format(value)
+                    metric_entries.append(
+                        f'<div class="dr-diff-metric">{label}: <strong>{formatted_value}</strong></div>'
+                    )
+                except (ValueError, TypeError):
+                    pass
+        
+        # If no similarity metrics provided, fall back to token overlap calculation
+        if not metric_entries:
+            metric_entries.append(
+                f'<div class="dr-diff-metric">Recall: <strong>{recall_pct}</strong></div>'
+            )
+            metric_entries.append(
+                f'<div class="dr-diff-metric">Precision: <strong>{precision_pct}</strong></div>'
+            )
     
     # LLM Judge Score (if available)
     llm_judge_score = metrics_data.get("llm_judge_score")
@@ -439,15 +493,6 @@ def render_direct_recall_diff(
             )
         except (ValueError, TypeError):
             pass
-    
-    # If no F1 metrics provided, fall back to token overlap calculation
-    if not any(metrics_data.get(k) for k in ('f1', 'precision', 'recall')):
-        metric_entries.append(
-            f'<div class="dr-diff-metric">Recall: <strong>{recall_pct}</strong></div>'
-        )
-        metric_entries.append(
-            f'<div class="dr-diff-metric">Precision: <strong>{precision_pct}</strong></div>'
-        )
 
     metrics_html = f'<div class="dr-diff-metrics">{"".join(metric_entries)}</div>'
 

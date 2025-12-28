@@ -1222,6 +1222,9 @@ def render_sidebar():
                         "gpt-3.5-turbo-instruct",
                         "gpt-4o",
                         "gpt-4o-mini",
+                        "gpt-5",
+                        "gpt-5.1",
+                        "gpt-5.2",
                     ],
                     help="Select an OpenAI model. Perplexity probes work best with instruct-style or mini models that support logprobs.",
                     key="sidebar_openai_model_selectbox",
@@ -2208,15 +2211,28 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     
                     for i, (key, label) in enumerate(metrics_list):
                         ax = axes[i]
-                        scores = plot_df.get(key, pd.Series([0.0] * len(plot_df))).tolist()
-                        ax.boxplot([scores], labels=[label], patch_artist=True)
+                        if key in plot_df.columns:
+                            scores = plot_df[key].dropna().tolist()
+                        else:
+                            scores = []
+                        
+                        if scores:
+                            box = ax.boxplot([scores], labels=[label], patch_artist=True)
+                            # Customize box colors
+                            for patch in box['boxes']:
+                                patch.set_facecolor(colors[i % len(colors)])
+                                patch.set_edgecolor('black')
+                                patch.set_linewidth(1.5)
+                            # Customize median lines
+                            for median in box['medians']:
+                                median.set(color='red', linewidth=2)
+                        else:
+                            ax.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax.transAxes)
+                            ax.set_ylim(0, 1)
+                        
                         ax.set_title(f'{label} Distribution')
                         ax.set_ylabel('Value')
                         ax.grid(True, alpha=0.3)
-                        for box in ax.patches:
-                            box.set_facecolor(colors[i % len(colors)])
-                            box.set_edgecolor('black')
-                            box.set_linewidth(1.5)
                     
                     plt.tight_layout()
                     st.pyplot(fig)
