@@ -2637,83 +2637,14 @@ def render_qa_based_detection(api_key, model_choice, provider):
     if qa_source_mode != "Predefined Examples":
         st.markdown('<p class="analysis-step-label">Step 3 · Configure Q/A pairs generation</p>', unsafe_allow_html=True)
         st.markdown(
-            '<p class="analysis-step-caption">Select the model provider and configure generation parameters for creating questions/answers.</p>',
+            f'<p class="analysis-step-caption">Using the target model (<strong>{model_choice}</strong>) for Q/A generation. Configure generation parameters below.</p>',
             unsafe_allow_html=True,
         )
         
-        # Provider, model selection, and API key in one row
-        col_provider, col_model, col_api = st.columns(3)
-
-        with col_provider:
-            # Provider selection for first LLM (preserve selection across tabs)
-            provider_options = ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"]
-            qa_gen_provider = st.selectbox(
-                "Select Provider",
-                provider_options,
-                index=st.session_state['qa_gen_provider_index'],
-                help="Choose your AI provider",
-                key="qa_gen_provider"
-            )
-            # Update stored index when selection changes
-            st.session_state['qa_gen_provider_index'] = provider_options.index(qa_gen_provider)
-
-        with col_model:
-            # Model selection based on provider
-            if qa_gen_provider == "OpenAI":
-                qa_gen_model = st.selectbox(
-                    "Choose a model",
-                    [
-                        "gpt-3.5-turbo",
-                        "gpt-3.5-turbo-instruct",
-                        "gpt-4o",
-                        "gpt-4o-mini",
-                    ],
-                    help="Select an OpenAI model. Perplexity probes work best with instruct-style or mini models that support logprobs.",
-                    key="qa_gen_model"
-                )
-            elif qa_gen_provider == "OpenRouter":
-                qa_gen_model = st.selectbox(
-                    "Choose a model",
-                    [
-                        "meta-llama/llama-3.3-70b-instruct:free",
-                        "mistralai/mistral-7b-instruct:free",
-                        "nousresearch/hermes-3-llama-3.1-405b:free",
-                        "google/gemini-2.0-flash-exp:free",
-                        "deepseek/deepseek-r1-distill-llama-70b:free",
-                        "mistralai/mistral-small-3.1-24b-instruct:free",
-                        "qwen/qwen3-235b-a22b:free",
-                        "x-ai/grok-4.1-fast:free"
-                    ],
-                    key="qa_gen_model"
-                )
-            elif qa_gen_provider == "Anthropic":
-                qa_gen_model = st.selectbox(
-                    "Choose a model",
-                               [
-                        "claude-3-haiku-20240307",
-                        "claude-3-sonnet-20240229",
-                        "claude-3-opus-20240229",
-                    ],
-                    key="qa_gen_model"
-                )
-            elif qa_gen_provider == "Google Gemini":
-                qa_gen_model = st.selectbox(
-                    "Choose a model",
-                    ["gemini-1.5-flash", "gemini-1.5-pro"],
-                    key="qa_gen_model"
-                )
-
-        with col_api:
-            qa_gen_api_key = st.text_input(
-                "API Key",
-                type="password",
-                help="Enter API key for the first LLM. Leave blank to use the same key from sidebar.",
-                key="qa_gen_api_key"
-            )
-        
-        # Use sidebar API key if not provided
-        if not qa_gen_api_key:
-            qa_gen_api_key = api_key
+        # Use the target model from sidebar for Q/A generation
+        qa_gen_provider = provider
+        qa_gen_model = model_choice
+        qa_gen_api_key = api_key
         
         col3, col4, col5 = st.columns(3)
         with col3:
@@ -2770,7 +2701,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
             else:
                 from src.direct_recall.knowledge_qa import generate_qa_pairs_from_document, generate_qa_pairs_from_text
                 
-                with st.spinner(f"🔄 Generating {num_qa_pairs} Q/A pairs with {qa_gen_model}..."):
+                with st.spinner(f"🔄 Generating {num_qa_pairs} Q/A pairs with target model ({model_choice})..."):
                     qa_pairs = []
                     document_text = ""
                     
@@ -3072,48 +3003,176 @@ def render_qa_based_detection(api_key, model_choice, provider):
                                     unsafe_allow_html=True,
                                 )
             
-                # Interpretation
-                st.markdown('<h3 class="section-header sm">🔍 Interpretation</h3>', unsafe_allow_html=True)
+                # Interpretation & LLM Judge Assessment in collapsible accordion
                 avg_f1 = agg_metrics.get('avg_f1', 0)
                 avg_llm_judge = agg_metrics.get('avg_llm_judge_score')
                 
-                # F1 Score interpretation
-                if avg_f1 > 0.5:
-                    st.error(
-                        f"⚠️ **High Memorization Detected** (Avg F1: {avg_f1:.1%}): The LLM shows strong token overlap with ground truth answers, "
-                        "suggesting it may have memorized content from the document or similar sources."
-                    )
-                elif avg_f1 > 0.3:
-                    st.warning(
-                        f"⚠️ **Moderate Memorization** (Avg F1: {avg_f1:.1%}): The LLM shows some token overlap with ground truth answers, "
-                        "which could indicate partial memorization or general knowledge overlap."
-                    )
+                # Determine overall assessment status for accordion header
+                if avg_f1 > 0.5 or (avg_llm_judge is not None and avg_llm_judge > 0.7):
+                    overall_status = "⚠️ High Risk"
+                elif avg_f1 > 0.3 or (avg_llm_judge is not None and avg_llm_judge > 0.4):
+                    overall_status = "⚠️ Moderate Risk"
                 else:
-                    st.success(
-                        f"✅ **Low Memorization** (Avg F1: {avg_f1:.1%}): The LLM's answers differ significantly from ground truth, "
-                        "suggesting it is not recalling memorized content from this specific document."
-                    )
+                    overall_status = "✅ Low Risk"
                 
-                # LLM Judge interpretation (if available)
-                if avg_llm_judge is not None:
-                    st.markdown("---")
-                    st.markdown("**🤖 LLM Judge Assessment**")
-                    
-                    if avg_llm_judge > 0.7:
-                        st.error(
-                            f"⚠️ **High Semantic Match** (Avg LLM Judge: {avg_llm_judge:.1%}): The LLM Judge determined that answers closely match "
-                            "the ground truth semantically, suggesting strong knowledge recall."
+                with st.expander(f"📊 **Analysis Summary** — {overall_status}", expanded=True):
+                    # F1 Score interpretation with integrated title
+                    if avg_f1 > 0.5:
+                        st.markdown(
+                            f'''
+                            <div style="
+                                font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+                                background: linear-gradient(135deg, rgba(220, 38, 38, 0.08) 0%, rgba(239, 68, 68, 0.05) 100%);
+                                border-radius: 10px;
+                                padding: 1.1rem 1.35rem;
+                                border-left: 4px solid #dc2626;
+                                margin-bottom: 0.75rem;
+                            ">
+                                <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.6rem; color: #6b7280; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px;">
+                                    <span style="font-size: 0.85rem;">🔍</span>
+                                    <span style="font-weight: 600;">Token-level F1 Interpretation</span>
+                                </div>
+                                <div style="font-size: 1.05rem; font-weight: 600; color: #dc2626; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+                                    <span>⚠️ High Memorization Detected</span>
+                                    <span style="font-size: 0.85rem; font-weight: 500; color: #9ca3af; background: rgba(220, 38, 38, 0.1); padding: 0.15rem 0.5rem; border-radius: 4px;">Avg F1: {avg_f1:.1%}</span>
+                                </div>
+                                <div style="font-size: 0.9rem; color: #4b5563; line-height: 1.6; letter-spacing: 0.01em;">
+                                    The LLM shows strong token overlap with ground truth answers, suggesting it may have memorized content from the document or similar sources.
+                                </div>
+                            </div>
+                            ''',
+                            unsafe_allow_html=True,
                         )
-                    elif avg_llm_judge > 0.4:
-                        st.warning(
-                            f"⚠️ **Moderate Semantic Match** (Avg LLM Judge: {avg_llm_judge:.1%}): The LLM Judge found partial semantic overlap "
-                            "between model answers and ground truth."
+                    elif avg_f1 > 0.3:
+                        st.markdown(
+                            f'''
+                            <div style="
+                                font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+                                background: linear-gradient(135deg, rgba(217, 119, 6, 0.08) 0%, rgba(245, 158, 11, 0.05) 100%);
+                                border-radius: 10px;
+                                padding: 1.1rem 1.35rem;
+                                border-left: 4px solid #d97706;
+                                margin-bottom: 0.75rem;
+                            ">
+                                <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.6rem; color: #6b7280; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px;">
+                                    <span style="font-size: 0.85rem;">🔍</span>
+                                    <span style="font-weight: 600;">Token-level F1 Interpretation</span>
+                                </div>
+                                <div style="font-size: 1.05rem; font-weight: 600; color: #d97706; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+                                    <span>⚠️ Moderate Memorization</span>
+                                    <span style="font-size: 0.85rem; font-weight: 500; color: #9ca3af; background: rgba(217, 119, 6, 0.1); padding: 0.15rem 0.5rem; border-radius: 4px;">Avg F1: {avg_f1:.1%}</span>
+                                </div>
+                                <div style="font-size: 0.9rem; color: #4b5563; line-height: 1.6; letter-spacing: 0.01em;">
+                                    The LLM shows some token overlap with ground truth answers, which could indicate partial memorization or general knowledge overlap.
+                                </div>
+                            </div>
+                            ''',
+                            unsafe_allow_html=True,
                         )
                     else:
-                        st.success(
-                            f"✅ **Low Semantic Match** (Avg LLM Judge: {avg_llm_judge:.1%}): The LLM Judge determined that answers differ "
-                            "semantically from ground truth, suggesting limited knowledge memorization."
+                        st.markdown(
+                            f'''
+                            <div style="
+                                font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+                                background: linear-gradient(135deg, rgba(22, 163, 74, 0.08) 0%, rgba(34, 197, 94, 0.05) 100%);
+                                border-radius: 10px;
+                                padding: 1.1rem 1.35rem;
+                                border-left: 4px solid #16a34a;
+                                margin-bottom: 0.75rem;
+                            ">
+                                <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.6rem; color: #6b7280; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px;">
+                                    <span style="font-size: 0.85rem;">🔍</span>
+                                    <span style="font-weight: 600;">Token-level F1 Interpretation</span>
+                                </div>
+                                <div style="font-size: 1.05rem; font-weight: 600; color: #16a34a; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+                                    <span>✅ Low Memorization</span>
+                                    <span style="font-size: 0.85rem; font-weight: 500; color: #9ca3af; background: rgba(22, 163, 74, 0.1); padding: 0.15rem 0.5rem; border-radius: 4px;">Avg F1: {avg_f1:.1%}</span>
+                                </div>
+                                <div style="font-size: 0.9rem; color: #4b5563; line-height: 1.6; letter-spacing: 0.01em;">
+                                    The LLM's answers differ significantly from ground truth, suggesting it is not recalling memorized content from this specific document.
+                                </div>
+                            </div>
+                            ''',
+                            unsafe_allow_html=True,
                         )
+                    
+                    # LLM Judge interpretation with integrated title (if available)
+                    if avg_llm_judge is not None:
+                        if avg_llm_judge > 0.7:
+                            st.markdown(
+                                f'''
+                                <div style="
+                                    font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+                                    background: linear-gradient(135deg, rgba(220, 38, 38, 0.08) 0%, rgba(239, 68, 68, 0.05) 100%);
+                                    border-radius: 10px;
+                                    padding: 1.1rem 1.35rem;
+                                    border-left: 4px solid #dc2626;
+                                ">
+                                    <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.6rem; color: #6b7280; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px;">
+                                        <span style="font-size: 0.85rem;">🤖</span>
+                                        <span style="font-weight: 600;">LLM Judge Assessment</span>
+                                    </div>
+                                    <div style="font-size: 1.05rem; font-weight: 600; color: #dc2626; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+                                        <span>⚠️ High Semantic Match</span>
+                                        <span style="font-size: 0.85rem; font-weight: 500; color: #9ca3af; background: rgba(220, 38, 38, 0.1); padding: 0.15rem 0.5rem; border-radius: 4px;">Avg Score: {avg_llm_judge:.1%}</span>
+                                    </div>
+                                    <div style="font-size: 0.9rem; color: #4b5563; line-height: 1.6; letter-spacing: 0.01em;">
+                                        The LLM Judge determined that answers closely match the ground truth semantically, suggesting strong knowledge recall.
+                                    </div>
+                                </div>
+                                ''',
+                                unsafe_allow_html=True,
+                            )
+                        elif avg_llm_judge > 0.4:
+                            st.markdown(
+                                f'''
+                                <div style="
+                                    font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+                                    background: linear-gradient(135deg, rgba(217, 119, 6, 0.08) 0%, rgba(245, 158, 11, 0.05) 100%);
+                                    border-radius: 10px;
+                                    padding: 1.1rem 1.35rem;
+                                    border-left: 4px solid #d97706;
+                                ">
+                                    <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.6rem; color: #6b7280; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px;">
+                                        <span style="font-size: 0.85rem;">🤖</span>
+                                        <span style="font-weight: 600;">LLM Judge Assessment</span>
+                                    </div>
+                                    <div style="font-size: 1.05rem; font-weight: 600; color: #d97706; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+                                        <span>⚠️ Moderate Semantic Match</span>
+                                        <span style="font-size: 0.85rem; font-weight: 500; color: #9ca3af; background: rgba(217, 119, 6, 0.1); padding: 0.15rem 0.5rem; border-radius: 4px;">Avg Score: {avg_llm_judge:.1%}</span>
+                                    </div>
+                                    <div style="font-size: 0.9rem; color: #4b5563; line-height: 1.6; letter-spacing: 0.01em;">
+                                        The LLM Judge found partial semantic overlap between model answers and ground truth.
+                                    </div>
+                                </div>
+                                ''',
+                                unsafe_allow_html=True,
+                            )
+                        else:
+                            st.markdown(
+                                f'''
+                                <div style="
+                                    font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+                                    background: linear-gradient(135deg, rgba(22, 163, 74, 0.08) 0%, rgba(34, 197, 94, 0.05) 100%);
+                                    border-radius: 10px;
+                                    padding: 1.1rem 1.35rem;
+                                    border-left: 4px solid #16a34a;
+                                ">
+                                    <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.6rem; color: #6b7280; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px;">
+                                        <span style="font-size: 0.85rem;">🤖</span>
+                                        <span style="font-weight: 600;">LLM Judge Assessment</span>
+                                    </div>
+                                    <div style="font-size: 1.05rem; font-weight: 600; color: #16a34a; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+                                        <span>✅ Low Semantic Match</span>
+                                        <span style="font-size: 0.85rem; font-weight: 500; color: #9ca3af; background: rgba(22, 163, 74, 0.1); padding: 0.15rem 0.5rem; border-radius: 4px;">Avg Score: {avg_llm_judge:.1%}</span>
+                                    </div>
+                                    <div style="font-size: 0.9rem; color: #4b5563; line-height: 1.6; letter-spacing: 0.01em;">
+                                        The LLM Judge determined that answers differ semantically from ground truth, suggesting limited knowledge memorization.
+                                    </div>
+                                </div>
+                                ''',
+                                unsafe_allow_html=True,
+                            )
 
                 # PDF Report Generation
                 st.markdown("---")
@@ -3355,12 +3414,12 @@ def render_sc_detection(api_key, model_choice, provider):
         'sc_input_text': '',
         'sc_dataset_document': None,
         'sc_num_questions': 5,
-        'sc_gen_temperature': 0.4,
-        'sc_gen_top_p': 0.85,
+        'sc_gen_temperature': 0.7,
+        'sc_gen_top_p': 0.9,
         'sc_gen_provider_index': 0,
         'sc_evaluation_results': None,
         'sc_eval_runs': 1,
-        'sc_eval_temperature': 0.0,
+        'sc_eval_temperature': 0.7,
         'sc_eval_top_p': 0.9,
     }
     for key, value in default_state.items():
@@ -3385,8 +3444,8 @@ def render_sc_detection(api_key, model_choice, provider):
         unsafe_allow_html=True,
     )
 
-    # Step 1: Provide source content
-    st.markdown('<p class="analysis-step-label">Step 1 · Provide source content</p>', unsafe_allow_html=True)
+    # Step 2: Provide source content
+    st.markdown('<p class="analysis-step-label">Step 2 · Provide source content</p>', unsafe_allow_html=True)
     
     # Create options for custom input or predefined examples
     custom_options = ["Input Text", "Upload Document", "Predefined Examples"]
@@ -3516,67 +3575,18 @@ def render_sc_detection(api_key, model_choice, provider):
             except Exception as exc:
                 st.error(f"❌ Failed to load predefined examples: {exc}")
 
-    # Step 2: Configure generation model and parameters (only for custom input)
+    # Step 3: Configure generation model and parameters (only for custom input)
     if source_mode in ["Input Text", "Upload Document"]:
-        st.markdown('<p class="analysis-step-label">Step 2 · Configure text fragment extraction and distractor generation</p>', unsafe_allow_html=True)
+        st.markdown('<p class="analysis-step-label">Step 3 · Configure text fragment extraction and distractor generation</p>', unsafe_allow_html=True)
         st.markdown(
-            '<p class="analysis-step-caption">Extract text fragments and use a generator LLM to create distractor options.</p>',
+            f'<p class="analysis-step-caption">Using the target model (<strong>{model_choice}</strong>) for text fragment extraction and distractor generation. Configure generation parameters below.</p>',
             unsafe_allow_html=True,
         )
-
-        col_provider, col_model, col_api = st.columns(3)
-        provider_options = ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"]
-
-        with col_provider:
-            generation_provider = st.selectbox(
-                "Generation provider",
-                provider_options,
-                index=min(st.session_state['sc_gen_provider_index'], len(provider_options) - 1),
-                key="sc_gen_provider",
-            )
-            st.session_state['sc_gen_provider_index'] = provider_options.index(generation_provider)
-
-        def _provider_models(provider_name: str) -> List[str]:
-            if provider_name == "OpenAI":
-                return [
-                    "gpt-3.5-turbo",
-                    "gpt-3.5-turbo-instruct",
-                    "gpt-4o",
-                    "gpt-4o-mini",
-                ]
-            if provider_name == "OpenRouter":
-                return [
-                    "moonshotai/kimi-k2:free",
-                    "meta-llama/llama-3.1-405b-instruct:free",
-                    "qwen/qwen3-235b-a22b:free",
-                    "meta-llama/llama-3.3-70b-instruct:free",
-                    "mistralai/mistral-small-24b-instruct-2501:free",
-                    "qwen/qwen-2.5-72b-instruct:free",
-                ]
-            if provider_name == "Anthropic":
-                return [
-                    "claude-3-haiku-20240307",
-                    "claude-3-sonnet-20240229",
-                    "claude-3-opus-20240229",
-                ]
-            if provider_name == "Google Gemini":
-                return ["gemini-1.5-flash", "gemini-1.5-pro"]
-            return ["custom-model"]
-
-        with col_model:
-            generation_model = st.selectbox(
-                "Generation model",
-                _provider_models(generation_provider),
-                key="sc_gen_model",
-            )
-
-        with col_api:
-            generation_api_key = st.text_input(
-                "Generation API key",
-                type="password",
-                help="Leave blank to reuse the sidebar API key.",
-                key="sc_gen_api_key",
-            )
+        
+        # Use the target model from sidebar for generation
+        generation_provider = provider
+        generation_model = model_choice
+        generation_api_key = api_key
 
         col_qty, col_dist, col_temp, col_top_p = st.columns(4)
         with col_qty:
@@ -3598,17 +3608,19 @@ def render_sc_detection(api_key, model_choice, provider):
             )
         with col_temp:
             st.slider(
-                "Generation temperature",
+                "Temperature",
                 min_value=0.0,
                 max_value=1.2,
+                value=st.session_state['sc_gen_temperature'],
                 step=0.05,
                 key="sc_gen_temperature",
             )
         with col_top_p:
             st.slider(
-                "Generation Top-P",
+                "Top-P",
                 min_value=0.0,
                 max_value=1.0,
+                value=st.session_state['sc_gen_top_p'],
                 step=0.05,
                 key="sc_gen_top_p",
             )
@@ -3625,14 +3637,14 @@ def render_sc_detection(api_key, model_choice, provider):
     if generate_questions:
         effective_api_key = generation_api_key or api_key
         if not effective_api_key:
-            st.error("⚠️ Provide an API key for the generation model or reuse the sidebar key.")
+            st.error("⚠️ Please provide an API key for question generation.")
         else:
             # Calculate total operations for progress bar
             num_questions = st.session_state['sc_num_questions']
             num_distractors = st.session_state['sc_num_distractors']
             total_operations = num_questions * (num_distractors + 1)  # +1 for question creation
             
-            progress_bar = st.progress(0, text="🔄 Starting question generation...")
+            progress_bar = st.progress(0, text=f"🔄 Starting question generation with target model ({model_choice})...")
             
             def update_generation_progress(current, total, question_num):
                 pct = current / total if total else 0
@@ -3719,8 +3731,8 @@ def render_sc_detection(api_key, model_choice, provider):
                     original_id = mcq.get('original_id', '')
                     st.caption(f"Label: {mcq['label']} - {label_text}" + (f" | Original ID: {original_id}" if original_id else ""))
 
-    # Step 3: Evaluate with target model
-    step_label = "Step 3" if source_mode in ["Input Text", "Upload Document"] else "Step 2"
+    # Step 4: Evaluate with target model
+    step_label = "Step 4" if source_mode in ["Input Text", "Upload Document"] else "Step 3"
     st.markdown(f'<p class="analysis-step-label">{step_label} · Evaluate target model</p>', unsafe_allow_html=True)
     st.markdown(
         '<p class="analysis-step-caption">Run the model configured in the sidebar and look for biased option selections.</p>',
@@ -3737,17 +3749,19 @@ def render_sc_detection(api_key, model_choice, provider):
         )
     with eval_cols[1]:
         st.slider(
-            "Evaluation temperature",
+            "Temperature",
             min_value=0.0,
             max_value=1.2,
+            value=st.session_state['sc_eval_temperature'],
             step=0.05,
             key="sc_eval_temperature",
         )
     with eval_cols[2]:
         st.slider(
-            "Evaluation Top-P",
+            "Top-P",
             min_value=0.0,
             max_value=1.0,
+            value=st.session_state['sc_eval_top_p'],
             step=0.05,
             key="sc_eval_top_p",
         )
