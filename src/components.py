@@ -379,10 +379,34 @@ def render_direct_recall_diff(
 
     metrics_data: Dict[str, float] = {}
     if metrics:
-        # Handle metrics dict - copy all numeric values
-        for key, value in metrics.items():
-            if isinstance(value, (int, float)):
-                metrics_data[key] = float(value)
+        # Handle metrics - support both dict and SimilarityMetrics object
+        if hasattr(metrics, 'items'):
+            # It's a dict-like object
+            for key, value in metrics.items():
+                if isinstance(value, (int, float)):
+                    metrics_data[key] = float(value)
+        else:
+            # It's likely a dataclass/object (e.g., SimilarityMetrics)
+            # Try to convert to dict first
+            try:
+                from dataclasses import asdict
+                if hasattr(metrics, '__dataclass_fields__'):
+                    # It's a dataclass, convert to dict
+                    metrics_dict = asdict(metrics)
+                    for key, value in metrics_dict.items():
+                        if isinstance(value, (int, float)):
+                            metrics_data[key] = float(value)
+            except (ImportError, AttributeError, TypeError):
+                pass
+            
+            # If conversion failed or not a dataclass, try to access common attributes directly
+            if not metrics_data:
+                if hasattr(metrics, 'rouge_l'):
+                    metrics_data['rouge_l'] = float(metrics.rouge_l)
+                if hasattr(metrics, 'jaccard'):
+                    metrics_data['jaccard'] = float(metrics.jaccard)
+                if hasattr(metrics, 'levenshtein'):
+                    metrics_data['levenshtein'] = int(metrics.levenshtein)
 
     metric_entries: List[str] = []
     
