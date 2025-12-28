@@ -1,10 +1,12 @@
 import hashlib
+import json
 import math
 import openai
 import random
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import anthropic
@@ -550,9 +552,8 @@ def compare_texts(
     Args:
         prompt_type choices:
           - "Next-Passage Prediction": continue from the given prefix (input_text)
-          - "Prior-Context Reconstruction": infer the preceding sentence given a continuation (input_text)
           - "Title Prediction": infer a likely title/attribution from the snippet (input_text)
-        continuation_method selects the strategy template for reconstruction prompts.
+        continuation_method selects the strategy template for prompts.
         return_logprobs: If True, also return logprobs data (only works for OpenAI/OpenRouter).
 
     Returns:
@@ -581,20 +582,6 @@ def compare_texts(
             char_count=target_char_count,
             custom_template=custom_template,
             mode=mode,
-        )
-    elif prompt_type == "Prior-Context Reconstruction":
-        word_target = (
-            chunk_size
-            if chunk_size is not None
-            else (len(reference_text.split()) if reference_text else None)
-        )
-        prompt = get_full_prompt(
-            prompt_type,
-            input_text,
-            chunk_size=word_target,
-            continuation_method=continuation_method,
-            char_count=target_char_count,
-            custom_template=custom_template,
         )
     elif prompt_type == "User-Defined Evaluation":
         # For user-defined evaluation, use the custom template directly as the prompt
@@ -656,3 +643,94 @@ def compare_texts(
     if return_logprobs:
         return generated_text, metrics, logprobs_data
     return generated_text, metrics
+
+
+def load_literal_examples(indices: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+    """Load predefined text examples from data.literal.json for Next-Passage Prediction.
+    
+    Args:
+        indices: Optional list of example indices to load (0-based). If None, load all.
+        
+    Returns:
+        List of dictionaries with 'id', 'title', 'input', and 'reference' keys
+    """
+    # Get the path to data.literal.json relative to this file
+    current_dir = Path(__file__).parent
+    json_path = current_dir / "data.literal.json"
+    
+    if not json_path.exists():
+        raise FileNotFoundError(f"Dataset file not found: {json_path}")
+    
+    with open(json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    
+    examples = []
+    for idx, item in enumerate(data):
+        # Skip if indices specified and current index not in the list
+        if indices is not None and idx not in indices:
+            continue
+        
+        example = {
+            "id": item.get("id", ""),
+            "title": item.get("title", ""),
+            "input": item.get("input", ""),
+            "reference": item.get("reference", ""),
+            "index": idx + 1  # 1-based indexing for display
+        }
+        examples.append(example)
+    
+    return examples
+
+
+def parse_example_indices(indices_str: str) -> List[int]:
+    """Parse example indices string into a list of integers.
+    
+    Supports formats like:
+    - "1,5,10" (individual indices)
+    - "10-15" (ranges)
+    - "1,5,10-15,20" (mixed)
+    
+    Args:
+        indices_str: String containing indices specification
+        
+    Returns:
+        List of 0-based indices
+        
+    Raises:
+        ValueError: If the format is invalid
+    """
+    indices = []
+    parts = indices_str.split(',')
+    
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+            
+        if '-' in part:
+            # Handle range
+            range_parts = part.split('-')
+            if len(range_parts) != 2:
+                raise ValueError(f"Invalid range format: {part}")
+            
+            try:
+                start = int(range_parts[0].strip())
+                end = int(range_parts[1].strip())
+                if start > end:
+                    raise ValueError(f"Range start ({start}) must be <= end ({end})")
+                # Convert to 0-based indices
+                indices.extend(range(start - 1, end))
+            except ValueError as e:
+                raise ValueError(f"Invalid range values in '{part}': {e}")
+        else:
+            # Handle single index
+            try:
+                idx = int(part)
+                if idx < 1:
+                    raise ValueError(f"Index must be >= 1, got {idx}")
+                # Convert to 0-based index
+                indices.append(idx - 1)
+            except ValueError as e:
+                raise ValueError(f"Invalid index '{part}': {e}")
+    
+    return sorted(set(indices))  # Remove duplicates and sort

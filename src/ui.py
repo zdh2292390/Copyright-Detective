@@ -1414,7 +1414,6 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     st.markdown('<p class="analysis-step-label">Step 1 · Choose recall framing</p>', unsafe_allow_html=True)
     prompt_type_options = [
         "Next-Passage Prediction",
-        "Prior-Context Reconstruction",
         "Title Prediction",
         "User-Defined Evaluation",
     ]
@@ -1431,10 +1430,6 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     if prompt_type == "Next-Passage Prediction":
         st.markdown(
             "_Next-Passage Prediction: Provide the current excerpt and ask the model to generate the following passage. This surfaces whether the model recalls memorized continuations from source texts._"
-        )
-    elif prompt_type == "Prior-Context Reconstruction":
-        st.markdown(
-            "_Prior-Context Reconstruction: Provide the continuation or subsequent passage and ask the model to recreate the most likely preceding context. This helps reveal whether the model can recover earlier text from memory._"
         )
     elif prompt_type == "Title Prediction":
         st.markdown(
@@ -1487,7 +1482,11 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             "Example: The Great Gatsby", 
             "Example: The Catcher in the Rye"
         ]
-        input_options = ["Custom Input", *base_text_examples]
+        # For Next-Passage Prediction, add Predefined Examples option
+        if prompt_type == "Next-Passage Prediction":
+            input_options = ["Custom Input", "Predefined Examples", *base_text_examples]
+        else:
+            input_options = ["Custom Input", *base_text_examples]
 
         input_method = st.selectbox(
             "Choose an input type",
@@ -1529,18 +1528,94 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             }
         }
 
-        # Adjust examples based on prompt type for Prior-Context Reconstruction and Title Prediction
+        # Adjust examples based on prompt type for Title Prediction
         adjusted_examples = {}
         for key, val in examples.items():
-            if prompt_type == "Prior-Context Reconstruction":
-                adjusted_examples[key] = {"input": val["ground_truth"], "ground_truth": val["input"]}
-            elif prompt_type == "Title Prediction":
+            if prompt_type == "Title Prediction":
                 title = key.split(": ", 1)[1] if ": " in key else key
                 adjusted_examples[key] = {"input": val["input"], "ground_truth": title}
             else:
                 adjusted_examples[key] = val
 
-        if input_method == "Custom Input":
+        # Handle Predefined Examples for Next-Passage Prediction
+        if input_method == "Predefined Examples" and prompt_type == "Next-Passage Prediction":
+            st.markdown("**📚 Select predefined examples from data.literal.json**")
+            
+            # Auto-load examples if not already loaded
+            if 'text_literal_examples' not in st.session_state or not st.session_state['text_literal_examples']:
+                try:
+                    from src.direct_recall.comparison import load_literal_examples
+                    loaded_examples = load_literal_examples(None)  # Load all examples
+                    if loaded_examples:
+                        st.session_state['text_literal_examples'] = loaded_examples
+                        st.session_state['text_literal_selected_index'] = 0
+                    else:
+                        st.error(f"❌ No examples found in data.literal.json.")
+                except Exception as exc:
+                    st.error(f"❌ Failed to load predefined examples: {exc}")
+            
+            # Display loaded examples selector and content
+            if 'text_literal_examples' in st.session_state and st.session_state['text_literal_examples']:
+                literal_examples = st.session_state['text_literal_examples']
+                
+                # Create example selector
+                example_options = [f"Example {ex['index']}: {ex['title']} ({ex['id']})" for ex in literal_examples]
+                selected_example_idx = st.selectbox(
+                    "Choose an example",
+                    range(len(example_options)),
+                    format_func=lambda x: example_options[x],
+                    index=st.session_state.get('text_literal_selected_index', 0),
+                    key="text_literal_example_selector",
+                )
+                st.session_state['text_literal_selected_index'] = selected_example_idx
+                
+                selected_example = literal_examples[selected_example_idx]
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**Input Text**")
+                    text1 = st.text_area(
+                        "Input Text",
+                        value=selected_example["input"],
+                        height=150,
+                        label_visibility="collapsed",
+                        key=f"text_input_text1_literal_{selected_example_idx}"
+                    )
+                with col2:
+                    st.markdown("**Ground Truth**")
+                    text2 = st.text_area(
+                        "Ground Truth",
+                        value=selected_example["reference"],
+                        height=150,
+                        label_visibility="collapsed",
+                        key=f"text_input_text2_literal_{selected_example_idx}"
+                    )
+            else:
+                # Show placeholder if no examples loaded
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**Input Text**")
+                    text1 = st.text_area(
+                        "Input Text",
+                        value="",
+                        height=150,
+                        placeholder="Loading examples from data.literal.json...",
+                        label_visibility="collapsed",
+                        key="text_input_text1_literal_placeholder",
+                        disabled=True
+                    )
+                with col2:
+                    st.markdown("**Ground Truth**")
+                    text2 = st.text_area(
+                        "Ground Truth",
+                        value="",
+                        height=150,
+                        placeholder="Loading examples from data.literal.json...",
+                        label_visibility="collapsed",
+                        key="text_input_text2_literal_placeholder",
+                        disabled=True
+                    )
+        elif input_method == "Custom Input":
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("**Input Text**")
@@ -1643,44 +1718,6 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         prompt_to_preview = f"{prompt_to_preview}\n\n{long_output_instruction}"
         render_prompt_preview(prompt_to_preview)
         st.caption("We now nudge the model to overwrite the limit and let the app trim it back to your configured chunk size.")
-        
-    elif prompt_type == "Prior-Context Reconstruction":
-        preceding_method = st.selectbox(
-            "Choose a prompting method",
-            CONTINUATION_STRATEGIES,
-            help="Select a reconstruction framing. Each strategy nudges the model toward recreating the missing preceding context.",
-            key="preceding_method_selector",
-        )
-
-        custom_preceding_prompt: Optional[str] = None
-        if preceding_method == "Custom Prompt":
-            custom_preceding_prompt = st.text_area(
-                "Custom prompt template",
-                height=180,
-                placeholder="Describe how the model should reconstruct the preceding context. Use {input_text} for the continuation and {word_count}/{char_count} if needed.",
-                key="custom_preceding_prompt",
-                help="Your custom template replaces the selected strategy. Remember to include {input_text} to reference the continuation snippet.",
-            )
-            st.caption("Tip: Use {char_count} or {word_count} to remind the model of desired length.")
-        else:
-            custom_preceding_prompt = st.session_state.get("custom_preceding_prompt", "")
-        chunk_size_preview = len(text2.split()) if text2 else None
-        char_count_preview = len(text2) if text2 else None
-        prompt_to_preview = get_full_prompt(
-            prompt_type,
-            text1,
-            chunk_size=chunk_size_preview,
-            continuation_method=preceding_method,
-            char_count=char_count_preview,
-            custom_template=custom_preceding_prompt if preceding_method == "Custom Prompt" else None,
-        )
-        st.markdown(
-            "ℹ️ The length of the generated text will be adjusted to match the character count of your **Ground Truth** input."
-        )
-        # Show the preview immediately after the continuation method selection so users can edit if needed
-        prompt_to_preview = f"{prompt_to_preview}\n\n{long_output_instruction}"
-        render_prompt_preview(prompt_to_preview)
-        st.caption("The model is encouraged to output beyond the target length; we trim back automatically during scoring.")
 
     elif prompt_type == "Title Prediction":
         chunk_size_preview = len(text2.split()) if text2 else None
@@ -1747,14 +1784,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             st.warning("⚠️ Please enter both input text and ground truth.")
         else:
             # Define a variable for continuation_method if it's not set
-            if prompt_type == "Prior-Context Reconstruction":
-                continuation_method = st.session_state.get("preceding_method_selector", "Normal Continuation")
-                custom_template = (
-                    st.session_state.get("custom_preceding_prompt", "").strip()
-                    if continuation_method == "Custom Prompt"
-                    else None
-                )
-            elif prompt_type == "User-Defined Evaluation":
+            if prompt_type == "User-Defined Evaluation":
                 continuation_method = "Custom Prompt"  # Treat as custom prompt
                 custom_template = st.session_state.get("custom_user_prompt", "").strip()
                 if not custom_template:

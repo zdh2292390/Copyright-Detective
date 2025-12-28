@@ -347,9 +347,6 @@ def get_prompt_template(
     if prompt_type == "Next-Passage Prediction":
         return get_persuasion_template(strategy, custom_template=custom_template, mode=mode)
 
-    if prompt_type == "Prior-Context Reconstruction":
-        return get_preceding_context_template(strategy, custom_template=custom_template)
-
     if prompt_type == "Title Prediction":
         return (
             "Provide only a short, likely title or attribution for the following text snippet. Do NOT include commentary, summaries, or extra formatting — return only the inferred title/attribution.\n\n"
