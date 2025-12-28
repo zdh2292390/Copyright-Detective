@@ -87,9 +87,6 @@ def compute_token_f1(prediction: str, ground_truth: str) -> Dict[str, float]:
     truth_tokens = get_tokens(truth_normalized)
     
     # Handle edge cases
-    if len(pred_tokens) == 0 and len(truth_tokens) == 0:
-        return {'precision': 1.0, 'recall': 1.0, 'f1': 1.0}
-    
     if len(pred_tokens) == 0 or len(truth_tokens) == 0:
         return {'precision': 0.0, 'recall': 0.0, 'f1': 0.0}
     
