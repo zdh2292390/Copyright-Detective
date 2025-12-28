@@ -4314,11 +4314,21 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
             max_value=2000,
             value=st.session_state['pdf_chunk_size'],
             step=25,
-            help='Number of words per text chunk',
+            help='Number of words per text chunk (must be between 50 and 2000)',
             key='pdf_chunk_size_input'
         )
-        st.session_state['pdf_chunk_size'] = chunk_size
-        st.caption("Chunk size must be at least 50 words to run document analysis.")
+        # Custom validation with English error message
+        if chunk_size > 2000:
+            st.error("⚠️ Chunk size cannot exceed 2000 words. Please enter a value between 50 and 2000.")
+            chunk_size = 2000
+            st.session_state['pdf_chunk_size'] = 2000
+        elif chunk_size < 50:
+            st.error("⚠️ Chunk size must be at least 50 words. Please enter a value between 50 and 2000.")
+            chunk_size = 50
+            st.session_state['pdf_chunk_size'] = 50
+        else:
+            st.session_state['pdf_chunk_size'] = chunk_size
+        st.caption("Chunk size must be between 50 and 2000 words to run document analysis.")
     with config_col2:
         continuation_method = st.selectbox(
             'Choose a prompting method',
