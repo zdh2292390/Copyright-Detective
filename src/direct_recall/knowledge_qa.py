@@ -4,18 +4,14 @@ Knowledge Memorization Detection Module
 This module implements Q&A-based knowledge memorization detection for LLMs:
 1. Parse PDF documents and generate Q&A pairs using a first LLM
 2. Use a second LLM to answer the questions
-3. Compare answers and evaluate memorization through similarity metrics
+3. Compare answers and evaluate memorization through Token-level F1 Score (Fact Recall)
 """
 
-from typing import List, Dict, Tuple, Optional, Any
+from typing import List, Dict, Tuple, Optional, Any, Callable
 import json
-from src.direct_recall.comparison import (
-    get_llm_completion,
-    calculate_rouge_score,
-    calculate_jaccard_index,
-)
+from src.direct_recall.comparison import get_llm_completion
 from src.direct_recall.pdf_utils import extract_text_from_document
-from Levenshtein import distance
+from src.common.metrics.logger import normalize_answer, get_tokens, compute_token_f1, llm_judge_evaluate
 
 
 def generate_qa_pairs_from_text(
@@ -238,7 +234,12 @@ def evaluate_qa_comparison(
     llm_answer: str,
 ) -> Dict[str, Any]:
     """
-    Evaluate the comparison between ground truth and LLM answer.
+    Evaluate the comparison between ground truth and LLM answer using Token-level F1 Score.
+    
+    This implements the Fact Recall evaluation method:
+    1. Normalize both answers (lowercase, remove punctuation, remove articles, normalize whitespace)
+    2. Tokenize into word lists
+    3. Compute Precision, Recall, and F1 Score based on token overlap
     
     Args:
         question: The question that was asked
@@ -246,30 +247,37 @@ def evaluate_qa_comparison(
         llm_answer: The LLM's answer to the question
         
     Returns:
-        Dictionary with evaluation metrics
+        Dictionary with evaluation metrics (f1, precision, recall, token counts)
     """
     
-    # Truncate LLM answer to match ground truth length if it's longer
-    if len(llm_answer) > len(ground_truth_answer):
-        llm_answer = llm_answer[:len(ground_truth_answer)]
+    # Compute Token-level F1 Score using the shared implementation
+    f1_scores = compute_token_f1(llm_answer, ground_truth_answer)
     
-    # Calculate similarity metrics
-    rouge_score = calculate_rouge_score(llm_answer, ground_truth_answer)
-    jaccard_index = calculate_jaccard_index(llm_answer, ground_truth_answer)
-    levenshtein_dist = distance(llm_answer, ground_truth_answer)
+    # Get token counts for display
+    pred_tokens = get_tokens(normalize_answer(llm_answer))
+    truth_tokens = get_tokens(normalize_answer(ground_truth_answer))
     
-    # Normalize Levenshtein distance
-    max_len = max(len(llm_answer), len(ground_truth_answer))
-    normalized_levenshtein = 1.0 - (levenshtein_dist / max_len) if max_len > 0 else 0.0
+    # Count matches using multiset intersection
+    from collections import Counter
+    pred_counter = Counter(pred_tokens)
+    truth_counter = Counter(truth_tokens)
+    common = pred_counter & truth_counter
+    num_matches = sum(common.values())
     
     return {
         'question': question,
         'ground_truth': ground_truth_answer,
         'llm_answer': llm_answer,
-        'rouge_score': rouge_score,
-        'jaccard_index': jaccard_index,
-        'levenshtein_distance': levenshtein_dist,
-        'normalized_levenshtein': normalized_levenshtein,
+        # Token-level F1 metrics
+        'f1': f1_scores['f1'],
+        'precision': f1_scores['precision'],
+        'recall': f1_scores['recall'],
+        # Token counts for detailed display
+        'num_matches': num_matches,
+        'num_pred_tokens': len(pred_tokens),
+        'num_truth_tokens': len(truth_tokens),
+        'num_missed': len(truth_tokens) - num_matches,
+        'num_extra': len(pred_tokens) - num_matches,
     }
 
 
@@ -282,6 +290,7 @@ def run_knowledge_qa_evaluation(
     temperature: float = 0.7,
     top_p: float = 0.9,
     progress_callback: Optional[callable] = None,
+    llm_judge_fn: Optional[Callable[[str], str]] = None,
 ) -> List[List[Dict[str, Any]]]:
     """
     Run knowledge Q&A evaluation for multiple runs.
@@ -295,6 +304,9 @@ def run_knowledge_qa_evaluation(
         temperature: Sampling temperature for answers
         top_p: Top-p sampling parameter
         progress_callback: Optional callback function(current, total) to report progress
+        llm_judge_fn: Optional callable for LLM-as-a-Judge evaluation.
+                      Should take a prompt string and return the LLM response.
+                      Use an independent model from the one being evaluated.
         
     Returns:
         List of evaluation results for each run
@@ -335,6 +347,17 @@ def run_knowledge_qa_evaluation(
                 llm_answer,
             )
             
+            # LLM Judge evaluation if enabled
+            if llm_judge_fn is not None:
+                judge_result = llm_judge_evaluate(
+                    question=question,
+                    ground_truth=ground_truth,
+                    prediction=llm_answer,
+                    llm_call_fn=llm_judge_fn,
+                )
+                evaluation['llm_judge_score'] = judge_result['score']
+                evaluation['llm_judge_reasoning'] = judge_result['reasoning']
+            
             run_results.append(evaluation)
             
             # Update progress
@@ -351,13 +374,13 @@ def calculate_aggregate_metrics(
     all_results: List[List[Dict[str, Any]]]
 ) -> Dict[str, Any]:
     """
-    Calculate aggregate metrics across all runs.
+    Calculate aggregate metrics across all runs using Token-level F1 Score.
     
     Args:
         all_results: List of evaluation results for each run
         
     Returns:
-        Dictionary with aggregate statistics
+        Dictionary with aggregate statistics (F1, Precision, Recall, and optionally LLM Judge)
     """
     
     if not all_results or not all_results[0]:
@@ -366,25 +389,36 @@ def calculate_aggregate_metrics(
     # Flatten all results
     all_evals = [eval_item for run in all_results for eval_item in run]
     
-    # Calculate averages
-    avg_rouge = sum(e['rouge_score'] for e in all_evals) / len(all_evals)
-    avg_jaccard = sum(e['jaccard_index'] for e in all_evals) / len(all_evals)
-    avg_levenshtein = sum(e['levenshtein_distance'] for e in all_evals) / len(all_evals)
-    avg_norm_levenshtein = sum(e['normalized_levenshtein'] for e in all_evals) / len(all_evals)
+    # Calculate F1, Precision, Recall averages
+    avg_f1 = sum(e['f1'] for e in all_evals) / len(all_evals)
+    avg_precision = sum(e['precision'] for e in all_evals) / len(all_evals)
+    avg_recall = sum(e['recall'] for e in all_evals) / len(all_evals)
     
-    # Calculate min/max
-    rouge_scores = [e['rouge_score'] for e in all_evals]
-    jaccard_scores = [e['jaccard_index'] for e in all_evals]
+    # Calculate min/max for F1
+    f1_scores = [e['f1'] for e in all_evals]
+    precision_scores = [e['precision'] for e in all_evals]
+    recall_scores = [e['recall'] for e in all_evals]
     
-    return {
+    result = {
         'total_runs': len(all_results),
         'total_evaluations': len(all_evals),
-        'avg_rouge_score': avg_rouge,
-        'avg_jaccard_index': avg_jaccard,
-        'avg_levenshtein_distance': avg_levenshtein,
-        'avg_normalized_levenshtein': avg_norm_levenshtein,
-        'min_rouge': min(rouge_scores),
-        'max_rouge': max(rouge_scores),
-        'min_jaccard': min(jaccard_scores),
-        'max_jaccard': max(jaccard_scores),
+        # Token-level F1 metrics
+        'avg_f1': avg_f1,
+        'avg_precision': avg_precision,
+        'avg_recall': avg_recall,
+        'min_f1': min(f1_scores),
+        'max_f1': max(f1_scores),
+        'min_precision': min(precision_scores),
+        'max_precision': max(precision_scores),
+        'min_recall': min(recall_scores),
+        'max_recall': max(recall_scores),
     }
+    
+    # Add LLM Judge metrics if available
+    llm_judge_scores = [e.get('llm_judge_score') for e in all_evals if 'llm_judge_score' in e]
+    if llm_judge_scores:
+        result['avg_llm_judge_score'] = sum(llm_judge_scores) / len(llm_judge_scores)
+        result['min_llm_judge_score'] = min(llm_judge_scores)
+        result['max_llm_judge_score'] = max(llm_judge_scores)
+    
+    return result

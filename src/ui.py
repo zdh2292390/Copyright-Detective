@@ -2883,6 +2883,15 @@ def render_qa_based_detection(api_key, model_choice, provider):
                     key="eval_top_p"
                 )
             
+            # LLM Judge configuration
+            enable_llm_judge = st.checkbox(
+                "🤖 Enable LLM as a Judge",
+                value=st.session_state.get('qa_enable_llm_judge', False),
+                key="enable_llm_judge",
+                help="Use the same LLM to evaluate the semantic correctness of answers by comparing model output with ground truth."
+            )
+            st.session_state['qa_enable_llm_judge'] = enable_llm_judge
+            
             # Button to run evaluation
             run_evaluation = st.button(
                 "🧪 Run: Knowledge Memorization Evaluation",
@@ -2896,6 +2905,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 num_eval_runs = st.session_state.get('num_eval_runs', 1)
                 eval_temperature = st.session_state.get('eval_temperature', 0.7)
                 eval_top_p = st.session_state.get('eval_top_p', 0.9)
+                enable_llm_judge = st.session_state.get('qa_enable_llm_judge', False)
                 
                 if not st.session_state['qa_generated_qa_pairs']:
                     st.warning("⚠️ Please generate Q/A pairs first before running evaluation.")
@@ -2916,6 +2926,20 @@ def render_qa_based_detection(api_key, model_choice, provider):
                         progress = current / total if total > 0 else 0
                         progress_bar.progress(progress, text=f"🔄 Run {run_num}/{num_eval_runs} | Q/A {qa_num}/{qa_total} | Overall: {current}/{total}")
                     
+                    # Create LLM Judge function if enabled (using the same model)
+                    llm_judge_fn = None
+                    if enable_llm_judge:
+                        def llm_judge_fn(prompt: str) -> str:
+                            return get_llm_completion(
+                                prompt,
+                                api_key,
+                                model_choice,
+                                provider,
+                                temperature=0.0,  # Use deterministic output for judge
+                                top_p=1.0,
+                                max_output_tokens=500,
+                            )
+                    
                     try:
                         all_results = run_knowledge_qa_evaluation(
                             st.session_state['qa_generated_qa_pairs'],
@@ -2926,6 +2950,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                             temperature=eval_temperature,
                             top_p=eval_top_p,
                             progress_callback=update_progress,
+                            llm_judge_fn=llm_judge_fn,
                         )
                         
                         progress_bar.progress(1.0, text=f"✅ Completed {num_eval_runs} run(s) × {total_qa_pairs} Q/A pairs = {total_items} evaluations")
@@ -3014,11 +3039,16 @@ def render_qa_based_detection(api_key, model_choice, provider):
                         st.markdown(question_card_html, unsafe_allow_html=True)
 
                         for run_idx, eval_result in run_details:
+                            # Token-level F1 metrics for Fact Recall evaluation
                             metrics_payload = {
-                                "rouge_l": eval_result.get('rouge_score'),
-                                "jaccard_index": eval_result.get('jaccard_index'),
-                                "levenshtein": float(eval_result.get('levenshtein_distance', 0) or 0.0),
+                                "f1": eval_result.get('f1'),
+                                "precision": eval_result.get('precision'),
+                                "recall": eval_result.get('recall'),
                             }
+                            
+                            # Add LLM Judge score if available
+                            if 'llm_judge_score' in eval_result:
+                                metrics_payload['llm_judge_score'] = eval_result['llm_judge_score']
 
                             # Filter out None values to avoid rendering issues
                             metrics_payload = {k: v for k, v in metrics_payload.items() if v is not None}
@@ -3029,27 +3059,61 @@ def render_qa_based_detection(api_key, model_choice, provider):
                                 title=f"Run #{run_idx}",
                                 metrics=metrics_payload,
                             )
+                            
+                            # Show LLM Judge reasoning if available
+                            llm_judge_reasoning = eval_result.get('llm_judge_reasoning')
+                            if llm_judge_reasoning:
+                                st.markdown(
+                                    f'<div style="background: linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%); '
+                                    f'border: 1px solid #c4b5fd; border-radius: 8px; padding: 0.6rem 0.8rem; '
+                                    f'margin: 0.3rem 0 0.8rem 0; font-size: 0.85rem; color: #5b21b6;">'
+                                    f'<strong>🤖 LLM Judge Reasoning:</strong> {html.escape(llm_judge_reasoning)}'
+                                    f'</div>',
+                                    unsafe_allow_html=True,
+                                )
             
                 # Interpretation
                 st.markdown('<h3 class="section-header sm">🔍 Interpretation</h3>', unsafe_allow_html=True)
-                avg_rouge = agg_metrics.get('avg_rouge_score', 0)
-                avg_jaccard = agg_metrics.get('avg_jaccard_index', 0)
+                avg_f1 = agg_metrics.get('avg_f1', 0)
+                avg_llm_judge = agg_metrics.get('avg_llm_judge_score')
                 
-                if avg_rouge > 0.5 or avg_jaccard > 0.5:
+                # F1 Score interpretation
+                if avg_f1 > 0.5:
                     st.error(
-                        "⚠️ **High Memorization Detected**: The LLM shows strong similarity to the ground truth answers, "
+                        f"⚠️ **High Memorization Detected** (Avg F1: {avg_f1:.1%}): The LLM shows strong token overlap with ground truth answers, "
                         "suggesting it may have memorized content from the document or similar sources."
                     )
-                elif avg_rouge > 0.3 or avg_jaccard > 0.3:
+                elif avg_f1 > 0.3:
                     st.warning(
-                        "⚠️ **Moderate Memorization**: The LLM shows some similarity to ground truth answers, "
+                        f"⚠️ **Moderate Memorization** (Avg F1: {avg_f1:.1%}): The LLM shows some token overlap with ground truth answers, "
                         "which could indicate partial memorization or general knowledge overlap."
                     )
                 else:
                     st.success(
-                        "✅ **Low Memorization**: The LLM's answers differ significantly from ground truth, "
+                        f"✅ **Low Memorization** (Avg F1: {avg_f1:.1%}): The LLM's answers differ significantly from ground truth, "
                         "suggesting it is not recalling memorized content from this specific document."
                     )
+                
+                # LLM Judge interpretation (if available)
+                if avg_llm_judge is not None:
+                    st.markdown("---")
+                    st.markdown("**🤖 LLM Judge Assessment**")
+                    
+                    if avg_llm_judge > 0.7:
+                        st.error(
+                            f"⚠️ **High Semantic Match** (Avg LLM Judge: {avg_llm_judge:.1%}): The LLM Judge determined that answers closely match "
+                            "the ground truth semantically, suggesting strong knowledge recall."
+                        )
+                    elif avg_llm_judge > 0.4:
+                        st.warning(
+                            f"⚠️ **Moderate Semantic Match** (Avg LLM Judge: {avg_llm_judge:.1%}): The LLM Judge found partial semantic overlap "
+                            "between model answers and ground truth."
+                        )
+                    else:
+                        st.success(
+                            f"✅ **Low Semantic Match** (Avg LLM Judge: {avg_llm_judge:.1%}): The LLM Judge determined that answers differ "
+                            "semantically from ground truth, suggesting limited knowledge memorization."
+                        )
 
                 # PDF Report Generation
                 st.markdown("---")

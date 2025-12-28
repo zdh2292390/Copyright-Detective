@@ -379,63 +379,51 @@ def render_direct_recall_diff(
 
     metrics_data: Dict[str, float] = {}
     if metrics:
-        # Handle SimilarityMetrics object
-        if hasattr(metrics, 'rouge_l') and getattr(metrics, 'rouge_l') is not None:
-            metrics_data['rouge_l'] = getattr(metrics, 'rouge_l')
-        if hasattr(metrics, 'jaccard') and getattr(metrics, 'jaccard') is not None:
-            metrics_data['jaccard_index'] = getattr(metrics, 'jaccard')
-        if hasattr(metrics, 'levenshtein') and getattr(metrics, 'levenshtein') is not None:
-            metrics_data['levenshtein'] = getattr(metrics, 'levenshtein')
-    elif any(value is not None for value in (rouge_score, jaccard_index, levenshtein_dist)):
-        if rouge_score is not None:
-            metrics_data["rouge_l"] = rouge_score
-        if jaccard_index is not None:
-            metrics_data["jaccard_index"] = jaccard_index
-        if levenshtein_dist is not None:
-            metrics_data["levenshtein"] = float(levenshtein_dist)
-
-    # Ensure numeric conversion for consistent formatting
-    metrics_data = {
-        key: float(value)
-        for key, value in metrics_data.items()
-        if isinstance(value, (int, float))
-    }
+        # Handle metrics dict - copy all numeric values
+        for key, value in metrics.items():
+            if isinstance(value, (int, float)):
+                metrics_data[key] = float(value)
 
     metric_entries: List[str] = []
-    metric_spec = [
-        ("rouge_1", "ROUGE-1", "{:.4f}", None),
-        ("rouge_l", "ROUGE-L", "{:.4f}", None),
-        ("lcs_char_ratio", "LCS (Character)", "{:.4f}", ("lcs_char_length", "len: {:.0f}")),
-        ("lcs_word_ratio", "LCS (Word)", "{:.4f}", ("lcs_word_length", "len: {:.0f}")),
-        ("acs_word", "ACS (Word)", "{:.4f}", None),
-        ("jaccard_index", "Jaccard", "{:.4f}", None),
-        ("levenshtein", "Levenshtein", "{:.0f}", None),
-        ("semantic_similarity", "Semantic Similarity", "{:.4f}", None),
-        ("minhash_similarity", "MinHash Similarity", "{:.4f}", None),
+    
+    # Token-level F1 metrics (primary metrics for Fact Recall evaluation)
+    f1_metric_spec = [
+        ("f1", "F1 Score", "{:.1%}"),
+        ("precision", "Precision", "{:.1%}"),
+        ("recall", "Recall", "{:.1%}"),
     ]
-
-    for key, label, fmt, detail in metric_spec:
+    
+    for key, label, fmt in f1_metric_spec:
         value = metrics_data.get(key)
-        if value is None:
-            continue
+        if value is not None:
+            try:
+                formatted_value = fmt.format(value)
+                metric_entries.append(
+                    f'<div class="dr-diff-metric">{label}: <strong>{formatted_value}</strong></div>'
+                )
+            except (ValueError, TypeError):
+                pass
+    
+    # LLM Judge Score (if available)
+    llm_judge_score = metrics_data.get("llm_judge_score")
+    if llm_judge_score is not None:
         try:
-            formatted_value = fmt.format(value)
+            formatted_judge_score = f"{llm_judge_score:.1%}"
+            metric_entries.append(
+                f'<div class="dr-diff-metric" style="border-left: 3px solid #8b5cf6; padding-left: 8px; margin-left: 8px;">'
+                f'🤖 LLM Judge: <strong>{formatted_judge_score}</strong></div>'
+            )
         except (ValueError, TypeError):
-            continue
-        detail_html = ""
-        if detail and detail[0] in metrics_data:
-            detail_value = metrics_data[detail[0]]
-            detail_html = f'<span class="dr-diff-metric-detail">{detail[1].format(detail_value)}</span>'
+            pass
+    
+    # If no F1 metrics provided, fall back to token overlap calculation
+    if not any(metrics_data.get(k) for k in ('f1', 'precision', 'recall')):
         metric_entries.append(
-            f'<div class="dr-diff-metric">{label}: <strong>{formatted_value}</strong>{detail_html}</div>'
+            f'<div class="dr-diff-metric">Recall: <strong>{recall_pct}</strong></div>'
         )
-
-    metric_entries.append(
-        f'<div class="dr-diff-metric">Recall Coverage: <strong>{recall_pct}</strong></div>'
-    )
-    metric_entries.append(
-        f'<div class="dr-diff-metric">Precision: <strong>{precision_pct}</strong></div>'
-    )
+        metric_entries.append(
+            f'<div class="dr-diff-metric">Precision: <strong>{precision_pct}</strong></div>'
+        )
 
     metrics_html = f'<div class="dr-diff-metrics">{"".join(metric_entries)}</div>'
 
