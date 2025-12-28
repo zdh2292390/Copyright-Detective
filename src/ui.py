@@ -932,19 +932,19 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
 
         summary_metrics = [
             {
-                "label": "Mean ROUGE-1",
-                "value": f"{report.get('mean_rouge1', 0.0) * 100:.2f}%",
-                "detail": "Average unigram overlap",
+                "label": "Mean F1 Score",
+                "value": f"{report.get('mean_f1', 0.0) * 100:.2f}%",
+                "detail": "Token-level F1 (Fact Recall)",
             },
             {
-                "label": "Mean ROUGE-2",
-                "value": f"{report.get('mean_rouge2', 0.0) * 100:.2f}%",
-                "detail": "Average bigram overlap",
+                "label": "Mean Precision",
+                "value": f"{report.get('mean_precision', 0.0) * 100:.2f}%",
+                "detail": "Correct tokens / predicted tokens",
             },
             {
-                "label": "Mean ROUGE-L",
-                "value": f"{report.get('mean_rougeL', 0.0) * 100:.2f}%",
-                "detail": "Longest common subsequence",
+                "label": "Mean Recall",
+                "value": f"{report.get('mean_recall', 0.0) * 100:.2f}%",
+                "detail": "Correct tokens / ground truth tokens",
             },
             {
                 "label": "Evaluated QA Pairs",
@@ -1016,9 +1016,9 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
                 st.write(entry.get('pred', 'N/A'))
                 st.markdown("**Metrics:**")
                 st.json({
-                    'rouge1': entry.get('rouge1', 0),
-                    'rouge2': entry.get('rouge2', 0),
-                    'rougeL': entry.get('rougeL', 0)
+                    'f1': entry.get('f1', 0),
+                    'precision': entry.get('precision', 0),
+                    'recall': entry.get('recall', 0)
                 })
         
     except Exception as e:
