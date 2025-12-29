@@ -1227,7 +1227,6 @@ def render_sidebar():
                         "gpt-3.5-turbo-instruct",
                         "gpt-4o",
                         "gpt-4o-mini",
-                        "gpt-5",
                         "gpt-5.1",
                         "gpt-5.2",
                     ],
