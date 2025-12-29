@@ -5796,6 +5796,12 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                             })
                                         st.dataframe(pd.DataFrame(spike_data), width='stretch', hide_index=True)
                                 
+                                timelines_available = [
+                                    cr.get('confidence_timeline')
+                                    for cr in conf_results
+                                    if cr.get('confidence_timeline')
+                                ]
+                                
                                 if timelines_available:
                                     with st.expander("📉 Confidence Timeline", expanded=False):
                                         fig, ax = plt.subplots(figsize=(12, 4))
