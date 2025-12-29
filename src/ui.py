@@ -83,6 +83,7 @@ from src.components import (
     render_direct_recall_diff,
     render_streamlit_accordion,
 )
+from src.direct_recall.comparison import calculate_similarity_metrics
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -5291,14 +5292,23 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 except Exception:
                                     confidence_result = None
                             
-                            # Calculate similarity metrics
-                            rouge_score = calculate_rouge_score(llm_response, reference_text.strip())
-                            jaccard = calculate_jaccard_index(llm_response, reference_text.strip())
-                            levenshtein = distance(llm_response, reference_text.strip())
+                            # Calculate similarity metrics (full bundle for downstream ranking)
+                            metrics_dict = calculate_similarity_metrics(reference_text.strip(), llm_response)
+                            rouge_score = metrics_dict.get("rouge_l", 0.0)
+                            jaccard = metrics_dict.get("jaccard_index", 0.0)
+                            levenshtein = metrics_dict.get("levenshtein", 0.0)
                             
                             eval_metrics = SimilarityMetrics(
                                 rouge_l=rouge_score,
-                                jaccard=jaccard,
+                                rouge_1=metrics_dict.get("rouge_1", 0.0),
+                                jaccard_index=jaccard,
+                                lcs_char_ratio=metrics_dict.get("lcs_char_ratio", 0.0),
+                                lcs_char_length=metrics_dict.get("lcs_char_length", 0.0),
+                                lcs_word_ratio=metrics_dict.get("lcs_word_ratio", 0.0),
+                                lcs_word_length=metrics_dict.get("lcs_word_length", 0.0),
+                                acs_word=metrics_dict.get("acs_word", 0.0),
+                                semantic_similarity=metrics_dict.get("semantic_similarity", 0.0),
+                                minhash_similarity=metrics_dict.get("minhash_similarity", 0.0),
                                 levenshtein=levenshtein,
                             )
                             
