@@ -2,7 +2,7 @@
 
 **Copyright Detective** is a forensic tool designed to analyze potential copyright infringement in Large Language Models (LLMs). It provides a suite of probes to detect memorization, test robustness against adversarial attacks, and verify unlearning efficacy.
 
-<img width="1323" height="637" alt="overview" src="https://github.com/user-attachments/assets/3164d8da-6f64-47cc-9c81-67e261823909" />
+<img width="3220" height="1840" alt="overview" src="https://github.com/user-attachments/assets/268b5366-d560-4bd8-8047-5613f70a2c2a" />
 
 # How to Run
 
