@@ -66,6 +66,10 @@ from src.adversarial_persuasion_detection import (
     MutationEvaluation,
     SimilarityMetrics,
 )
+from src.adversarial_persuasion_detection.adversarial_prompting import (
+    MutationResult,
+    ParsedMutation,
+)
 from src.unlearning_detection import (
     list_representational_features,
     run_representational_analysis,
@@ -4737,7 +4741,8 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         st.session_state['adv_stage2_top_p'] = 0.95
 
     # Get available strategies and baseline prompts
-    strategies = list_persuasion_strategies()
+    baseline_strategy_label = "Baseline (no strategy)"
+    strategies = [baseline_strategy_label] + list_persuasion_strategies()
     baseline_prompts = list_baseline_prompts()
 
     # Page header with clear cache button
@@ -4873,6 +4878,14 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         help="Enter the baseline prompt to mutate. This will be transformed using persuasion strategies.",
     )
 
+    st.text_area(
+        "Reference text",
+        value=st.session_state.get('adv_reference_excerpt', DEFAULT_HP_REFERENCE_EXCERPT),
+        height=150,
+        key="reference",
+        help="Ground-truth copyrighted text. ROUGE-L measures how well mutations induce the LLM to reproduce this content.",
+    )
+
     st.markdown("**⚙️ Sampling & evaluation parameters**")
     
     col_mode, col_strategies, col_attempts_strategy, col_attempts_prompt = st.columns([1, 2, 1, 1])
@@ -4916,14 +4929,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             key="attempts_per_prompt",
             help="Number of generation attempts for each mutated prompt.",
         )
-
-    st.text_area(
-        "Reference text",
-        value=st.session_state.get('adv_reference_excerpt', DEFAULT_HP_REFERENCE_EXCERPT),
-        height=150,
-        key="reference",
-        help="Ground-truth copyrighted text. ROUGE-L measures how well mutations induce the LLM to reproduce this content.",
-    )
 
     # Prompt Preview Accordion
     with render_streamlit_accordion(
@@ -5188,41 +5193,73 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                 except Exception as e:
                     st.warning(f"⚠️ Could not load few-shot examples: {e}")
             
+            # Prepare strategy list (skip baseline if no prompt)
+            allow_baseline = bool(original_prompt.strip())
+            if (baseline_strategy_label in selected_strategies) and not allow_baseline:
+                st.warning("⚠️ Baseline requires an original prompt; skipping baseline entry.")
+            strategies_to_run = [
+                s for s in selected_strategies
+                if s != baseline_strategy_label or allow_baseline
+            ]
+            
             # Generate mutations for each strategy individually to show progress
             progress_placeholder = st.empty()
-            total_mutations = len(selected_strategies) * attempts
+            total_mutations = len(strategies_to_run) * attempts
             cumulative = 0
-            for strategy_idx, strategy in enumerate(selected_strategies, 1):
+            for strategy_idx, strategy in enumerate(strategies_to_run, 1):
                 # Update progress display
                 progress_text = f"**🔄 Generating mutations ({cumulative + 1}-{cumulative + attempts}/{total_mutations}): {strategy}**"
                 progress_placeholder.markdown(progress_text)
                 generation_progress.progress(strategy_idx / len(selected_strategies))
                 
-                evaluations = mutate_strategies(
-                    api_key,
-                    model_choice,
-                    provider,
-                    [strategy],  # Process one strategy at a time
-                    original_prompt,
-                    reference_text=None,  # Don't calculate ROUGE during generation
-                    few_shot_examples=few_shot_examples,  # Pass examples if Few-Shot
-                    attempts_per_strategy=attempts,
-                    attempts_per_prompt=attempts_per_prompt,
-                    temperature=0.7,  # Higher temperature for diverse mutation generation
-                    top_p=0.9,
-                    dry_run=False,
-                )
-                
-                # Add mode information to evaluations
-                for i, evaluation in enumerate(evaluations):
-                    if evaluation and evaluation.mutation:
-                        evaluations[i] = MutationEvaluation(
-                            mutation=evaluation.mutation,
-                            parsed=evaluation.parsed,
-                            metrics=evaluation.metrics,
-                            attempt=evaluation.attempt,
-                            mode=generation_mode,
+                # Special handling: baseline uses original prompt without mutation
+                if strategy == baseline_strategy_label:
+                    evaluations = []
+                    for attempt_idx in range(1, attempts + 1):
+                        evaluations.append(
+                            MutationEvaluation(
+                                mutation=MutationResult(
+                                    strategy=baseline_strategy_label,
+                                    instruction=original_prompt.strip(),
+                                    response=None,
+                                    error=None,
+                                ),
+                                parsed=ParsedMutation(
+                                    raw_output=original_prompt.strip(),
+                                    core_intention="",
+                                    mutated_text=original_prompt.strip(),
+                                ),
+                                metrics=None,
+                                attempt=attempt_idx,
+                                mode=generation_mode,
+                            )
                         )
+                else:
+                    evaluations = mutate_strategies(
+                        api_key,
+                        model_choice,
+                        provider,
+                        [strategy],  # Process one strategy at a time
+                        original_prompt,
+                        reference_text=None,  # Don't calculate ROUGE during generation
+                        few_shot_examples=few_shot_examples,  # Pass examples if Few-Shot
+                        attempts_per_strategy=attempts,
+                        attempts_per_prompt=attempts_per_prompt,
+                        temperature=0.7,  # Higher temperature for diverse mutation generation
+                        top_p=0.9,
+                        dry_run=False,
+                    )
+                    
+                    # Add mode information to evaluations
+                    for i, evaluation in enumerate(evaluations):
+                        if evaluation and evaluation.mutation:
+                            evaluations[i] = MutationEvaluation(
+                                mutation=evaluation.mutation,
+                                parsed=evaluation.parsed,
+                                metrics=evaluation.metrics,
+                                attempt=evaluation.attempt,
+                                mode=generation_mode,
+                            )
                 
                 all_evaluations.extend(evaluations)
                 cumulative += attempts
@@ -5320,13 +5357,15 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 mode=evaluation.mode,
                             )
                             
+                            unique_prompt_attempt = (evaluation.attempt - 1) * attempts_per_prompt + prompt_attempt
+                            
                             evaluated_mutations.append({
                                 'evaluation': updated_evaluation,
                                 'llm_response': llm_response,
                                 'rouge_l': rouge_score,
                                 'jaccard': jaccard,
                                 'levenshtein': levenshtein,
-                                'prompt_attempt': prompt_attempt,
+                                'prompt_attempt': unique_prompt_attempt,
                                 'confidence_result': confidence_result,
                             })
                             
