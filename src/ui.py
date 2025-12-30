@@ -1,10 +1,13 @@
 import math
 import random
 import textwrap
+import json
+from datetime import datetime
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import streamlit as st
 import pandas as pd
 from Levenshtein import distance
@@ -4922,7 +4925,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         attempts_per_prompt = st.number_input(
             "Attempts per mutated prompt",
             min_value=1,
-            max_value=10,
             value=st.session_state.get('adv_attempts_per_prompt', 1),
             step=1,
             key="attempts_per_prompt",
@@ -5874,21 +5876,23 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             with render_streamlit_accordion(
                 "📦 Distribution Analysis by Strategy",
                 key="distribution_analysis",
-                expanded=False,
+                expanded=True,
             ):
                 st.caption("Boxplots showing the distribution of ROUGE-L scores across different persuasion strategies.")
                 
-                # Prepare data for boxplots
-                strategy_groups = {}
+                # Prepare data for boxplots and binned frequencies
+                strategy_groups: Dict[str, List[float]] = {}
+                all_scores: List[float] = []
                 for row in ranked_rows:
                     strategy = row["strategy"]
-                    try:
-                        rouge_score = float(row["rouge_l"])
-                        if strategy not in strategy_groups:
-                            strategy_groups[strategy] = []
-                        strategy_groups[strategy].append(rouge_score)
-                    except (ValueError, TypeError):
+                    rouge_score = row.get("score")
+                    if not isinstance(rouge_score, (int, float)):
                         continue
+                    rouge_val = float(rouge_score)
+                    all_scores.append(rouge_val)
+                    if strategy not in strategy_groups:
+                        strategy_groups[strategy] = []
+                    strategy_groups[strategy].append(rouge_val)
                 
                 if strategy_groups:
                     fig_box, ax_box = plt.subplots(figsize=(12, 6))
@@ -5922,6 +5926,125 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     st.pyplot(fig_box)
                 else:
                     st.info("No valid ROUGE-L scores available for boxplot analysis.")
+
+                # ROUGE-L frequency by strategy (attempt counts per binned score)
+                if all_scores:
+                    st.markdown("**ROUGE-L attempt frequency by strategy**")
+                    st.caption("ROUGE-L scores are bucketed on the x-axis; the y-axis shows how many generation attempts landed in each bucket for every strategy.")
+                    
+                    bin_width = st.slider(
+                        "ROUGE-L bin width",
+                        min_value=0.01,
+                        max_value=0.2,
+                        value=0.05,
+                        step=0.01,
+                        key="rouge_l_bin_width",
+                        help="Group ROUGE-L scores into ranges when counting attempts.",
+                    )
+                    
+                    # Force coverage over full [0, 1] range even if data is sparse
+                    bin_edges = list(np.arange(0, 1 + 1e-9, bin_width))
+                    if bin_edges[-1] < 1 - 1e-9:
+                        bin_edges.append(1.0)
+                    num_bins = max(1, len(bin_edges) - 1)
+                    # Use discrete bin positions for x-axis; labels show intervals
+                    bin_positions = list(range(num_bins))
+                    bin_labels = [
+                        f"[{bin_edges[i]:.2f}, {bin_edges[i + 1]:.2f}" + (")" if i < num_bins - 1 else "]")
+                        for i in range(num_bins)
+                    ]
+                    
+                    # Count attempts per strategy for each bin
+                    strategy_bin_counts: Dict[str, Counter] = {}
+                    for row in ranked_rows:
+                        strategy = row.get("strategy")
+                        score = row.get("score")
+                        if strategy is None or not isinstance(score, (int, float)):
+                            continue
+                        bin_idx = min(max(int(score / bin_width), 0), num_bins - 1)
+                        strategy_bin_counts.setdefault(strategy, Counter())
+                        strategy_bin_counts[strategy][bin_idx] += 1
+                    
+                    fig_wave, ax_wave = plt.subplots(figsize=(7, 7))
+                    fig_wave.patch.set_facecolor("white")
+                    ax_wave.set_facecolor("white")
+                    color_cycle = ['#1f78b4', '#33a02c', '#e31a1c', '#ff7f00', '#6a3d9a', '#b15928', '#a6cee3']
+                    
+                    # Nature-like aesthetic: clean axes, light grid, no top/right spines
+                    for spine in ["top", "right"]:
+                        ax_wave.spines[spine].set_visible(False)
+                    ax_wave.grid(True, alpha=0.2, linestyle="--", linewidth=0.8)
+                    ax_wave.tick_params(axis='both', which='major', labelsize=10)
+                    
+                    max_count_seen = 0
+                    for idx, (strategy, counter) in enumerate(strategy_bin_counts.items()):
+                        counts = [counter.get(bin_idx, 0) for bin_idx in range(num_bins)]
+                        max_count_seen = max(max_count_seen, max(counts) if counts else 0)
+                        color = color_cycle[idx % len(color_cycle)]
+                        
+                        # Fit waveform close to the actual points (minimal smoothing)
+                        if num_bins > 1:
+                            counts_arr = np.array(counts, dtype=float)
+                            dense_x = np.linspace(0.0, num_bins - 1, 400)
+                            
+                            dense_y = None
+                            try:
+                                from scipy.interpolate import make_interp_spline  # type: ignore
+                                
+                                # Use cubic spline to draw a smooth arc-like curve
+                                x_sorted = np.array(bin_positions, dtype=float)
+                                y_sorted = counts_arr
+                                # Ensure strictly increasing x for spline; add tiny jitter if needed
+                                x_sorted = np.maximum.accumulate(x_sorted + 1e-9 * np.arange(len(x_sorted)))
+                                spline = make_interp_spline(x_sorted, y_sorted, k=3)
+                                dense_y = spline(dense_x)
+                            except Exception:
+                                # Fallback to linear interpolation if spline unavailable
+                                dense_y = np.interp(dense_x, bin_positions, counts_arr)
+                            
+                            dense_y = np.clip(dense_y, 0, None)
+                            
+                            # Scatter markers show bin-centered frequency (counts per ROUGE-L interval)
+                            nz_points = [(x, c) for x, c in zip(bin_positions, counts) if c > 0]
+                            if nz_points:
+                                xs, ys = zip(*nz_points)
+                                ax_wave.scatter(
+                                    xs,
+                                    ys,
+                                    s=36,
+                                    color=color,
+                                    alpha=0.65,
+                                    edgecolor="white",
+                                    linewidth=0.8,
+                                )
+                            
+                            ax_wave.plot(
+                                dense_x,
+                                dense_y,
+                                linestyle='-',
+                                linewidth=2.4,
+                                alpha=0.95,
+                                color=color,
+                                label=strategy,
+                            )
+                    
+                    # Compact ticks over [0,1]
+                    ax_wave.set_xticks(bin_positions)
+                    ax_wave.set_xticklabels(bin_labels, rotation=45, ha='right')
+                    ax_wave.set_xlim(-0.5, num_bins - 0.5)
+                    # Add headroom so curves don't look squashed
+                    ax_wave.set_ylim(0, max(max_count_seen * 1.15 + 1, 1))
+                    ax_wave.set_xlabel('ROUGE-L Score')
+                    ax_wave.set_ylabel('Frequency')
+                    ax_wave.set_title('ROUGE-L attempt distribution by strategy')
+                    ax_wave.legend(loc='upper right', fontsize='small', frameon=False)
+                    ax_wave.grid(True, alpha=0.3)
+                    
+                    plt.tight_layout()
+                    st.pyplot(fig_wave)
+                    plt.close(fig_wave)
+                else:
+                    st.info("No ROUGE-L scores available for attempt frequency analysis.")
 
             # PDF Report Generation
             st.markdown("---")
