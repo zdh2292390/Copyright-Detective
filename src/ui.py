@@ -5942,17 +5942,31 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         help="Group ROUGE-L scores into ranges when counting attempts.",
                     )
                     
-                    # Force coverage over full [0, 1] range even if data is sparse
-                    bin_edges = list(np.arange(0, 1 + 1e-9, bin_width))
-                    if bin_edges[-1] < 1 - 1e-9:
+                    # Find actual data range to determine how many bins we need
+                    valid_scores = [row.get("score") for row in ranked_rows 
+                                   if isinstance(row.get("score"), (int, float))]
+                    if valid_scores:
+                        min_score = min(valid_scores)
+                        max_score = max(valid_scores)
+                    else:
+                        min_score = 0.0
+                        max_score = 1.0
+                    
+                    # Create bins starting from 0, incrementing by bin_width
+                    # Calculate how many bins we need to cover the data range
+                    max_bin_idx = int(np.ceil(max_score / bin_width))
+                    num_bins = max_bin_idx + 1  # +1 to include the bin containing max_score
+                    
+                    # Create bin edges starting from 0
+                    bin_edges = [i * bin_width for i in range(num_bins + 1)]
+                    # Ensure we cover up to 1.0 for ROUGE-L scores
+                    if bin_edges[-1] < 1.0:
                         bin_edges.append(1.0)
-                    num_bins = max(1, len(bin_edges) - 1)
-                    # Use discrete bin positions for x-axis; labels show intervals
-                    bin_positions = list(range(num_bins))
-                    bin_labels = [
-                        f"[{bin_edges[i]:.2f}, {bin_edges[i + 1]:.2f}" + (")" if i < num_bins - 1 else "]")
-                        for i in range(num_bins)
-                    ]
+                        num_bins += 1
+                    
+                    # Calculate bin centers (midpoints) for x-axis
+                    bin_centers = [(bin_edges[i] + bin_edges[i + 1]) / 2.0 for i in range(num_bins)]
+                    bin_positions = bin_centers  # Use actual values instead of indices
                     
                     # Count attempts per strategy for each bin
                     strategy_bin_counts: Dict[str, Counter] = {}
@@ -5961,87 +5975,191 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         score = row.get("score")
                         if strategy is None or not isinstance(score, (int, float)):
                             continue
+                        # Map score to bin index: bin_idx = floor(score / bin_width)
+                        # Clamp to valid range [0, num_bins-1]
                         bin_idx = min(max(int(score / bin_width), 0), num_bins - 1)
                         strategy_bin_counts.setdefault(strategy, Counter())
                         strategy_bin_counts[strategy][bin_idx] += 1
                     
-                    fig_wave, ax_wave = plt.subplots(figsize=(7, 7))
+                    fig_wave, ax_wave = plt.subplots(figsize=(10, 6))
                     fig_wave.patch.set_facecolor("white")
                     ax_wave.set_facecolor("white")
-                    color_cycle = ['#1f78b4', '#33a02c', '#e31a1c', '#ff7f00', '#6a3d9a', '#b15928', '#a6cee3']
                     
-                    # Nature-like aesthetic: clean axes, light grid, no top/right spines
-                    for spine in ["top", "right"]:
-                        ax_wave.spines[spine].set_visible(False)
-                    ax_wave.grid(True, alpha=0.2, linestyle="--", linewidth=0.8)
-                    ax_wave.tick_params(axis='both', which='major', labelsize=10)
+                    # Color palette matching the reference chart style
+                    color_cycle = [
+                        '#1f77b4',  # Blue (similar to reference)
+                        '#ff7f0e',  # Orange
+                        '#2ca02c',  # Green
+                        '#d62728',  # Red
+                        '#9467bd',  # Purple
+                        '#8c564b',  # Brown
+                        '#e377c2',  # Pink
+                        '#7f7f7f',  # Gray
+                    ]
+                    
+                    # Keep all borders visible (top and right included)
+                    for spine in ["top", "right", "left", "bottom"]:
+                        ax_wave.spines[spine].set_color("#000000")
+                        ax_wave.spines[spine].set_linewidth(1.0)
+                    
+                    # Grid style matching reference
+                    ax_wave.grid(True, alpha=0.3, linestyle="--", linewidth=0.8, color="#cccccc")
+                    ax_wave.set_axisbelow(True)
+                    
+                    # Tick styling
+                    ax_wave.tick_params(axis='both', which='major', labelsize=10, colors="#000000")
+                    ax_wave.tick_params(axis='both', which='minor', labelsize=9)
                     
                     max_count_seen = 0
-                    for idx, (strategy, counter) in enumerate(strategy_bin_counts.items()):
+                    strategies_list = list(strategy_bin_counts.keys())
+                    num_strategies = len(strategies_list)
+                    
+                    # Always plot all bins (including zero counts) so bars align exactly to bin edges
+                    num_bins_display = num_bins
+                    all_counts = []
+                    for strategy in strategies_list:
+                        counter = strategy_bin_counts[strategy]
                         counts = [counter.get(bin_idx, 0) for bin_idx in range(num_bins)]
+                        all_counts.append(counts)
                         max_count_seen = max(max_count_seen, max(counts) if counts else 0)
-                        color = color_cycle[idx % len(color_cycle)]
+                    # Bar positions: bin centers (so bar spans the bin with center at (N+0.5)*bin_width)
+                    bin_positions_display = [bin_centers[i] for i in range(num_bins)]
+                    # Labels: bin right edges
+                    if bin_width >= 0.1:
+                        decimal_places = 1
+                    elif bin_width >= 0.01:
+                        decimal_places = 2
+                    else:
+                        decimal_places = 3
+                    bin_labels_display = [f"{bin_edges[i + 1]:.{decimal_places}f}" for i in range(num_bins)]
+                    
+                    # Calculate bar width and positions for overlapping bars
+                    if num_strategies > 0:
+                        # Bar width equals bin_width so bars span the full bin interval
+                        bar_width = bin_width  # Bars span from bin left edge to right edge
+                        # Use bin centers as x positions (so center at (N+0.5)*bin_width)
+                        x_base = np.array(bin_positions_display)
                         
-                        # Fit waveform close to the actual points (minimal smoothing)
-                        if num_bins > 1:
-                            counts_arr = np.array(counts, dtype=float)
-                            dense_x = np.linspace(0.0, num_bins - 1, 400)
+                        # Draw overlapping bars (all strategies at same x positions, spanning full bin width)
+                        for idx, (strategy, counts) in enumerate(zip(strategies_list, all_counts)):
+                            color = color_cycle[idx % len(color_cycle)]
+                            x_pos = x_base
                             
-                            dense_y = None
-                            try:
-                                from scipy.interpolate import make_interp_spline  # type: ignore
-                                
-                                # Use cubic spline to draw a smooth arc-like curve
-                                x_sorted = np.array(bin_positions, dtype=float)
-                                y_sorted = counts_arr
-                                # Ensure strictly increasing x for spline; add tiny jitter if needed
-                                x_sorted = np.maximum.accumulate(x_sorted + 1e-9 * np.arange(len(x_sorted)))
-                                spline = make_interp_spline(x_sorted, y_sorted, k=3)
-                                dense_y = spline(dense_x)
-                            except Exception:
-                                # Fallback to linear interpolation if spline unavailable
-                                dense_y = np.interp(dense_x, bin_positions, counts_arr)
-                            
-                            dense_y = np.clip(dense_y, 0, None)
-                            
-                            # Scatter markers show bin-centered frequency (counts per ROUGE-L interval)
-                            nz_points = [(x, c) for x, c in zip(bin_positions, counts) if c > 0]
-                            if nz_points:
-                                xs, ys = zip(*nz_points)
-                                ax_wave.scatter(
-                                    xs,
-                                    ys,
-                                    s=36,
-                                    color=color,
-                                    alpha=0.65,
-                                    edgecolor="white",
-                                    linewidth=0.8,
-                                )
-                            
-                            ax_wave.plot(
-                                dense_x,
-                                dense_y,
-                                linestyle='-',
-                                linewidth=2.4,
-                                alpha=0.95,
-                                color=color,
+                            # Bars start from bin left edge and span bin_width (center at left+0.5*bin_width)
+                            bars = ax_wave.bar(
+                                x_pos,
+                                counts,
+                                width=bar_width,
                                 label=strategy,
+                                color=color,
+                                alpha=0.6,  # Lower alpha for better visibility when overlapping
+                                edgecolor='none',
+                                linewidth=0,
+                                zorder=5 + idx,  # Different zorder so later strategies appear on top
                             )
+                        
+                        # Draw waveform fitting curves on top of bars
+                        if num_bins_display > 1:
+                            for idx, (strategy, counts) in enumerate(zip(strategies_list, all_counts)):
+                                color = color_cycle[idx % len(color_cycle)]
+                                counts_arr = np.array(counts, dtype=float)
+                                # Use all bin centers for x-axis (curve over all bins)
+                                x_sorted = np.array(bin_centers, dtype=float)
+                                y_sorted = counts_arr
+                                
+                                # Create dense x values for smooth curve
+                                if len(x_sorted) > 1:
+                                    dense_x = np.linspace(x_sorted[0], x_sorted[-1], 400)
+                                else:
+                                    dense_x = x_sorted
+                                
+                                dense_y = None
+                                if len(x_sorted) > 1:
+                                    try:
+                                        from scipy.interpolate import make_interp_spline  # type: ignore
+                                        
+                                        # Use cubic spline to draw a smooth arc-like curve
+                                        # Ensure strictly increasing x for spline; add tiny jitter if needed
+                                        x_sorted_safe = np.maximum.accumulate(x_sorted + 1e-9 * np.arange(len(x_sorted)))
+                                        # k must be between 1 and len(x_sorted)-1
+                                        k_value = min(3, max(1, len(x_sorted) - 1))
+                                        spline = make_interp_spline(x_sorted_safe, y_sorted, k=k_value)
+                                        dense_y = spline(dense_x)
+                                    except Exception:
+                                        # Fallback to linear interpolation if spline unavailable
+                                        dense_y = np.interp(dense_x, x_sorted, y_sorted)
+                                else:
+                                    # Single point: just use constant value
+                                    dense_y = np.full_like(dense_x, y_sorted[0] if len(y_sorted) > 0 else 0)
+                                
+                                dense_y = np.clip(dense_y, 0, None)
+                                
+                                # Draw waveform curve matching reference style
+                                ax_wave.plot(
+                                    dense_x,
+                                    dense_y,
+                                    linestyle='-',
+                                    linewidth=2.0,
+                                    alpha=0.7,
+                                    color=color,
+                                    zorder=10,  # Draw on top of bars
+                                    antialiased=True,
+                                )
                     
-                    # Compact ticks over [0,1]
-                    ax_wave.set_xticks(bin_positions)
-                    ax_wave.set_xticklabels(bin_labels, rotation=45, ha='right')
-                    ax_wave.set_xlim(-0.5, num_bins - 0.5)
-                    # Add headroom so curves don't look squashed
-                    ax_wave.set_ylim(0, max(max_count_seen * 1.15 + 1, 1))
-                    ax_wave.set_xlabel('ROUGE-L Score')
-                    ax_wave.set_ylabel('Frequency')
-                    ax_wave.set_title('ROUGE-L attempt distribution by strategy')
-                    ax_wave.legend(loc='upper right', fontsize='small', frameon=False)
-                    ax_wave.grid(True, alpha=0.3)
+                    # Set ticks starting from 0, showing all bin right edges (0, bin_width, 2*bin_width, ...)
+                    max_bin_idx_needed = max(num_bins - 1, int(np.ceil(1.0 / bin_width)) - 1)
+                    all_bin_positions = [bin_edges[i + 1] for i in range(min(max_bin_idx_needed + 1, len(bin_edges) - 1))]
+                    if bin_width >= 0.1:
+                        decimal_places = 1
+                    elif bin_width >= 0.01:
+                        decimal_places = 2
+                    else:
+                        decimal_places = 3
+                    all_bin_labels = [f"{pos:.{decimal_places}f}" for pos in all_bin_positions]
+                    ax_wave.set_xticks(all_bin_positions)
+                    ax_wave.set_xticklabels(all_bin_labels, rotation=45, ha='right', fontsize=10)
                     
-                    plt.tight_layout()
-                    st.pyplot(fig_wave)
+                    # Set x-axis limits starting from 0
+                    # Determine last bin with any data to set a sensible x-axis max
+                    max_bin_idx_with_data = 0
+                    for i in range(num_bins - 1, -1, -1):
+                        if any(counts[i] > 0 for counts in all_counts):
+                            max_bin_idx_with_data = i
+                            break
+                    # Right edge of last bin + half-bin padding
+                    x_max = bin_edges[max_bin_idx_with_data + 1] + bin_width * 0.5
+                    x_max = min(1.0, x_max)
+                    ax_wave.set_xlim(0.0, x_max)
+                    
+                    # Add headroom so bars don't look squashed
+                    ax_wave.set_ylim(0, max(max_count_seen * 1.12 + 1, 1))
+                    
+                    # Labels and title matching reference style
+                    ax_wave.set_xlabel('ROUGE-L Score', fontsize=11, fontweight='normal', color="#000000", labelpad=8)
+                    ax_wave.set_ylabel('Frequency (Number of Attempts)', fontsize=11, fontweight='normal', color="#000000", labelpad=8)
+                    ax_wave.set_title('ROUGE-L Attempt Distribution by Strategy', 
+                                    fontsize=12, fontweight='normal', color="#000000", pad=12)
+                    
+                    # Legend matching reference style
+                    legend = ax_wave.legend(
+                        loc='upper right', 
+                        fontsize=9,
+                        frameon=True,
+                        fancybox=False,  # No rounded corners
+                        shadow=False,  # No shadow
+                        framealpha=1.0,
+                        edgecolor='#000000',
+                        facecolor='white',
+                        borderpad=0.6,
+                        labelspacing=0.5,
+                        handlelength=1.5,
+                        handletextpad=0.5,
+                    )
+                    legend.get_frame().set_linewidth(1.0)
+                    
+                    # Optimize layout with proper padding
+                    plt.tight_layout(pad=2.5, h_pad=1.5, w_pad=1.5)
+                    st.pyplot(fig_wave, use_container_width=True)
                     plt.close(fig_wave)
                 else:
                     st.info("No ROUGE-L scores available for attempt frequency analysis.")
