@@ -6159,7 +6159,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     
                     # Optimize layout with proper padding
                     plt.tight_layout(pad=2.5, h_pad=1.5, w_pad=1.5)
-                    st.pyplot(fig_wave, use_container_width=True)
+                    st.pyplot(fig_wave, width='stretch')
                     plt.close(fig_wave)
                 else:
                     st.info("No ROUGE-L scores available for attempt frequency analysis.")
