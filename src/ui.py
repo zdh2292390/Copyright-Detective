@@ -5717,9 +5717,22 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                 parsed = evaluation.parsed
                 mutated_text = parsed.mutated_text.strip() if parsed and parsed.mutated_text else ""
                 
-                # Calculate average metrics across all attempts
-                avg_rouge = sum(item["metrics"].rouge_l for item in group_items if item["metrics"]) / len(group_items) if group_items else 0
-                avg_jaccard = sum(item["metrics"].jaccard for item in group_items if item["metrics"]) / len(group_items) if group_items else 0
+                # Calculate average metrics across all attempts (recompute ROUGE-L to ensure per-attempt alignment)
+                reference_text = stage1_reference_map.get(selected_prompt, '')
+                rouge_values: List[float] = []
+                jaccard_values: List[float] = []
+                for attempt_item in group_items:
+                    llm_resp = attempt_item.get("llm_response", "")
+                    metrics_obj = attempt_item.get("metrics")
+                    if reference_text and llm_resp:
+                        m = calculate_similarity_metrics(reference_text.strip(), llm_resp)
+                        rouge_values.append(m.get("rouge_l", 0.0))
+                        jaccard_values.append(m.get("jaccard_index", 0.0))
+                    elif metrics_obj:
+                        rouge_values.append(metrics_obj.rouge_l)
+                        jaccard_values.append(getattr(metrics_obj, "jaccard", getattr(metrics_obj, "jaccard_index", 0.0)))
+                avg_rouge = sum(rouge_values) / len(rouge_values) if rouge_values else 0
+                avg_jaccard = sum(jaccard_values) / len(jaccard_values) if jaccard_values else 0
                 
                 # Get overall judge status from first judged item
                 first_judged = next((item for item in group_items if item.get("judged")), group_items[0] if group_items else None)
@@ -5759,19 +5772,40 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         attempt_label = f"**Attempt {attempt_num}/{num_attempts}**"
                         st.markdown(f"---\n{attempt_label}")
                         
+                        # Recompute metrics with this attempt's response to ensure alignment
+                        reference_text = stage1_reference_map.get(selected_prompt, '')
+                        if reference_text and llm_response:
+                            metrics_dict = calculate_similarity_metrics(reference_text.strip(), llm_response)
+                            metrics = SimilarityMetrics(
+                                rouge_l=metrics_dict.get("rouge_l", 0.0),
+                                rouge_1=metrics_dict.get("rouge_1", 0.0),
+                                jaccard_index=metrics_dict.get("jaccard_index", 0.0),
+                                lcs_char_ratio=metrics_dict.get("lcs_char_ratio", 0.0),
+                                lcs_char_length=metrics_dict.get("lcs_char_length", 0.0),
+                                lcs_word_ratio=metrics_dict.get("lcs_word_ratio", 0.0),
+                                lcs_word_length=metrics_dict.get("lcs_word_length", 0.0),
+                                acs_word=metrics_dict.get("acs_word", 0.0),
+                                semantic_similarity=metrics_dict.get("semantic_similarity", 0.0),
+                                minhash_similarity=metrics_dict.get("minhash_similarity", 0.0),
+                                levenshtein=metrics_dict.get("levenshtein", 0.0),
+                            )
+
                         if metrics:
-                            st.caption(f"ROUGE-L: {metrics.rouge_l:.4f} | Jaccard: {metrics.jaccard:.4f} | Levenshtein: {metrics.levenshtein}")
+                            st.caption(
+                                f"ROUGE-1: {getattr(metrics, 'rouge_1', 0.0):.4f} | "
+                                f"ROUGE-L: {metrics.rouge_l:.4f} | "
+                                f"Jaccard: {getattr(metrics, 'jaccard', getattr(metrics, 'jaccard_index', 0.0)):.4f} | "
+                                f"Levenshtein: {metrics.levenshtein}"
+                            )
                         
                         # Ground truth comparison
-                        if llm_response:
-                            reference_text = stage1_reference_map.get(selected_prompt, '')
-                            if reference_text:
-                                render_direct_recall_diff(
-                                    reference_text,
-                                    llm_response,
-                                    title="Generated Text vs. Reference Text",
-                                    metrics=metrics,
-                                )
+                        if llm_response and reference_text:
+                            render_direct_recall_diff(
+                                reference_text,
+                                llm_response,
+                                title="Generated Text vs. Reference Text",
+                                metrics=metrics,
+                            )
                         
                         # Intention judging results for this attempt
                         if judged_flag:
