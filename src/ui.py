@@ -1241,15 +1241,16 @@ def render_sidebar():
                 model_choice = st.selectbox(
                     "Choose a model",
                     [
-                        "alibaba/tongyi-deepresearch-30b-a3b:free",
-                        "openai/gpt-oss-20b:free",
+                        "allenai/olmo-3.1-32b-think:free",
+                        "allenai/olmo-3-32b-think:free",
+                        "openai/gpt-oss-120b:free",
                         "z-ai/glm-4.5-air:free",
                         "moonshotai/kimi-k2:free",
-                        "qwen/qwen3-235b-a22b:free",
+                        "deepseek/deepseek-r1-0528:free",
                         "mistralai/mistral-small-3.1-24b-instruct:free",
-                        "google/gemini-2.0-flash-exp:free",
                         "meta-llama/llama-3.3-70b-instruct:free",
-                        "nousresearch/hermes-3-llama-3.1-405b:free"
+                        "nousresearch/hermes-3-llama-3.1-405b:free",
+                        "meta-llama/llama-3.1-405b-instruct:free"
                     ],
                     key="sidebar_openrouter_model_selectbox",
                 )
@@ -5315,6 +5316,12 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                             else:
                                 llm_response = result
                                 logprobs_data = None
+                            
+                            # Truncate llm_response to match reference_text length
+                            if reference_text and llm_response:
+                                ref_length = len(reference_text)
+                                if len(llm_response) > ref_length:
+                                    llm_response = llm_response[:ref_length]
                             
                             # Run confidence analysis if logprobs available
                             confidence_result = None
