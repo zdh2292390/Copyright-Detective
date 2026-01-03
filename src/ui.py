@@ -5335,12 +5335,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 llm_response = result
                                 logprobs_data = None
                             
-                            # Truncate llm_response to match reference_text length
-                            if reference_text and llm_response:
-                                ref_length = len(reference_text)
-                                if len(llm_response) > ref_length:
-                                    llm_response = llm_response[:ref_length]
-                            
                             # Run confidence analysis if logprobs available
                             confidence_result = None
                             if logprobs_data and provider in ("OpenAI", "OpenRouter"):
