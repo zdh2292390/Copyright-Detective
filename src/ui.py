@@ -1214,12 +1214,18 @@ def render_sidebar():
             )
             anthropic_api_key = st.text_input("Anthropic API Key", type="password", help="Enter your Anthropic API key", key="sidebar_anthropic_api_key")
             google_api_key = st.text_input("Google Gemini API Key", type="password", help="Enter your Google Gemini API key", key="sidebar_google_api_key")
+            kimi_api_key = st.text_input("Kimi API Key", type="password", help="Enter your Kimi (Moonshot) API key", key="sidebar_kimi_api_key")
             st.markdown('</div>', unsafe_allow_html=True)
 
         # Model Selection Accordion
         with st.expander("✨ Model Selection", expanded=True):
             st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
-            provider = st.selectbox("Select provider", ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini"], help="Choose your AI provider", key="sidebar_provider_selectbox")
+            provider = st.selectbox(
+                "Select provider",
+                ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini", "Kimi"],
+                help="Choose your AI provider",
+                key="sidebar_provider_selectbox",
+            )
 
             model_choice = None
             if provider == "OpenAI":
@@ -1261,6 +1267,18 @@ def render_sidebar():
             elif provider == "Google Gemini":
                 model_choice = st.selectbox("Choose a model", ["gemini-1.5-flash", "gemini-1.5-pro"], key="sidebar_google_model_selectbox")
                 api_key = google_api_key
+            elif provider == "Kimi":
+                model_choice = st.selectbox(
+                    "Choose a model",
+                    [
+                        "kimi-k2-0905-preview",
+                        "kimi-k2-turbo-preview",
+                        "kimi-k2-thinking",
+                        "kimi-k2-thinking-turbo",
+                    ],
+                    key="sidebar_kimi_model_selectbox",
+                )
+                api_key = kimi_api_key
             st.markdown('</div>', unsafe_allow_html=True)
 
         # Detection Mode Accordion
@@ -5446,13 +5464,24 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     st.caption("Assessing whether mutated prompts preserve the original harmful intention...")
                     
                     judging_progress = st.progress(0, text="🔄 Starting intention preservation judging...")
-                    
-                    for judge_idx, eval_item in enumerate(evaluated_mutations):
+
+                    # Only judge each unique mutated prompt once (per strategy + attempt)
+                    unique_mutations: Dict[Tuple[str, int, str], Dict[str, Any]] = {}
+                    for eval_item in evaluated_mutations:
+                        evaluation = eval_item["evaluation"]
+                        mutated_text = evaluation.parsed.mutated_text.strip()
+                        key = (evaluation.mutation.strategy, evaluation.attempt, mutated_text)
+                        if key not in unique_mutations:
+                            unique_mutations[key] = eval_item
+
+                    unique_mutation_items = list(unique_mutations.values())
+
+                    for judge_idx, eval_item in enumerate(unique_mutation_items):
                         evaluation = eval_item["evaluation"]
                         mutated_text = evaluation.parsed.mutated_text.strip()
                         strategy = evaluation.mutation.strategy
                         
-                        judging_progress.progress((judge_idx + 1) / len(evaluated_mutations), text=f"🔄 Judging mutation {judge_idx + 1}/{len(evaluated_mutations)} ({strategy})...")
+                        judging_progress.progress((judge_idx + 1) / len(unique_mutation_items), text=f"🔄 Judging mutation {judge_idx + 1}/{len(unique_mutation_items)} ({strategy})...")
                         with st.spinner(""):
                             try:
                                 assessment = assess_intention_preservation(
@@ -5478,10 +5507,14 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                         stored_eval = stored_data.get("evaluation") or {}
                                         stored_parsed = stored_eval.get("parsed") or {}
                                         stored_mutated_text = stored_parsed.get("mutated_text", "").strip()
-                                        stored_prompt_attempt = stored.get("prompt_attempt", 1)
+                                        stored_attempt_raw = stored_eval.get("attempt")
+                                        try:
+                                            stored_attempt = int(stored_attempt_raw) if stored_attempt_raw is not None else evaluation.attempt
+                                        except (TypeError, ValueError):
+                                            stored_attempt = evaluation.attempt
                                         
-                                        if stored_mutated_text == mutated_text and stored_prompt_attempt == prompt_attempt:
-                                            # Update with judging results
+                                        if stored_mutated_text == mutated_text and stored_attempt == evaluation.attempt:
+                                            # Update with judging results for all matching prompt attempts
                                             judged_entry = MutationWithJudge(
                                                 evaluation=evaluation,
                                                 judge=assessment.secondary,
@@ -5495,7 +5528,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                                 "primary_error": assessment.primary.error,
                                                 "secondary_error": assessment.secondary.error,
                                             }
-                                            break
+                                            # Do not break; apply to all prompt attempts sharing this mutated prompt
                                 
                                 # Store assessment for display
                                 eval_item["assessment"] = assessment
@@ -5504,7 +5537,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 st.warning(f"⚠️ Failed to judge mutation {judge_idx + 1}: {e}")
                                 eval_item["assessment"] = None
                         
-                        judging_progress.progress((judge_idx + 1) / len(evaluated_mutations), text=f"✅ Completed judging mutation {judge_idx + 1}/{len(evaluated_mutations)}")
+                        judging_progress.progress((judge_idx + 1) / len(unique_mutation_items), text=f"✅ Completed judging mutation {judge_idx + 1}/{len(unique_mutation_items)}")
                     
                     judging_progress.empty()
                     
@@ -5579,9 +5612,9 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     "attempt": evaluation.attempt,
                     "prompt_attempt": prompt_attempt,
                     "mutated_text": mutated_text,
-                    "mutated_display": textwrap.shorten(mutated_text, width=120, placeholder="…") if mutated_text else "",
+                    "mutated_display": mutated_text,
                     "llm_response": llm_response or "",
-                    "llm_display": textwrap.shorten(llm_response, width=120, placeholder="…") if llm_response else "",
+                    "llm_display": llm_response,
                     "rouge_l": f"{rouge_l:.4f}" if metrics else "N/A",
                     "jaccard": f"{jaccard:.4f}" if metrics else "N/A",
                     "levenshtein": str(levenshtein) if levenshtein is not None else "N/A",
@@ -5638,7 +5671,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             for idx, panel_payload in enumerate(stored_panels, start=1):
                 evaluation = panel_payload["evaluation"]
                 group_items = panel_payload.get("group_items", [])
-                num_attempts = panel_payload.get("num_attempts", 1)
+                num_attempts = max(len(group_items), panel_payload.get("num_attempts", 1)) or 1
                 parsed = evaluation.parsed
                 mutated_text = parsed.mutated_text.strip() if parsed and parsed.mutated_text else ""
                 
@@ -5670,9 +5703,9 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     st.markdown("**📝 Mutated Prompt**")
                     st.text(mutated_text)
                     
-                    # Display each attempt's results
-                    for attempt_item in group_items:
-                        attempt_num = attempt_item.get("prompt_attempt", 1)
+                    # Display each attempt's results (index within this mutation's attempts)
+                    for attempt_index, attempt_item in enumerate(group_items, start=1):
+                        attempt_num = attempt_index
                         llm_response = attempt_item.get("llm_response", "")
                         metrics = attempt_item.get("metrics")
                         judged_flag = attempt_item.get("judged", False)
@@ -5681,7 +5714,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         item_status_icon = attempt_item.get("status_icon", "⏳")
                         item_status_text = attempt_item.get("status_text", "Pending")
                         
-                        attempt_label = f"**Attempt {attempt_num}/{num_attempts}**" if num_attempts > 1 else "**Generation Result**"
+                        attempt_label = f"**Attempt {attempt_num}/{num_attempts}**"
                         st.markdown(f"---\n{attempt_label}")
                         
                         if metrics:

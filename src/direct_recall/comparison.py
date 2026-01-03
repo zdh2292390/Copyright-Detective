@@ -253,7 +253,7 @@ def get_llm_completion(
         prompt: The prompt to send to the LLM.
         api_key: API key for the provider.
         model_name: Name of the model to use.
-        provider: LLM provider ("OpenAI", "OpenRouter", "Anthropic", "Google Gemini").
+    provider: LLM provider ("OpenAI", "OpenRouter", "Anthropic", "Google Gemini", "Kimi").
         temperature: Sampling temperature.
         top_p: Top-p sampling parameter.
         progress_message: Optional progress message.
@@ -369,6 +369,31 @@ def get_llm_completion(
             )
             result_text = response.text.strip()
             # Google Gemini doesn't support logprobs in the same way
+
+        elif provider == "Kimi":
+            # Kimi (Moonshot) exposes an OpenAI-compatible endpoint
+            client = openai.OpenAI(
+                api_key=api_key,
+                base_url="https://api.moonshot.cn/v1",
+            )
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": prompt},
+            ]
+            request_kwargs = {
+                "model": model_name,
+                "messages": messages,
+                "temperature": temperature,
+                "top_p": top_p,
+            }
+            if max_output_tokens is not None:
+                request_kwargs["max_tokens"] = max_output_tokens
+            if stop_sequences:
+                request_kwargs["stop"] = stop_sequences
+
+            # Kimi currently does not expose logprobs; ignore if requested
+            response = client.chat.completions.create(**request_kwargs)
+            result_text = response.choices[0].message.content.strip()
         
         else:
             error_message = f"Error: Unsupported provider {provider}"
