@@ -5934,10 +5934,10 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                 else:
                     st.info("No valid ROUGE-L scores available for boxplot analysis.")
 
-                # ROUGE-L frequency by strategy (attempt counts per binned score)
+                # ROUGE-L frequency by strategy (attempt proportions per binned score)
                 if all_scores:
                     st.markdown("**ROUGE-L attempt frequency by strategy**")
-                    st.caption("ROUGE-L scores are bucketed on the x-axis; the y-axis shows how many generation attempts landed in each bucket for every strategy.")
+                    st.caption("ROUGE-L scores are bucketed on the x-axis; the y-axis shows the proportion (frequency) of generation attempts in each bucket for every strategy.")
                     
                     bin_width = st.slider(
                         "ROUGE-L bin width",
@@ -6017,7 +6017,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     ax_wave.tick_params(axis='both', which='major', labelsize=10, colors="#000000")
                     ax_wave.tick_params(axis='both', which='minor', labelsize=9)
                     
-                    max_count_seen = 0
+                    max_count_seen = 0.0
                     strategies_list = list(strategy_bin_counts.keys())
                     num_strategies = len(strategies_list)
                     
@@ -6027,8 +6027,11 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     for strategy in strategies_list:
                         counter = strategy_bin_counts[strategy]
                         counts = [counter.get(bin_idx, 0) for bin_idx in range(num_bins)]
+                        total_attempts = sum(counts)
+                        if total_attempts > 0:
+                            counts = [c / total_attempts for c in counts]
                         all_counts.append(counts)
-                        max_count_seen = max(max_count_seen, max(counts) if counts else 0)
+                        max_count_seen = max(max_count_seen, max(counts) if counts else 0.0)
                     # Bar positions: bin centers (so bar spans the bin with center at (N+0.5)*bin_width)
                     bin_positions_display = [bin_centers[i] for i in range(num_bins)]
                     # Labels: bin right edges
@@ -6138,13 +6141,13 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     x_max = min(1.0, x_max)
                     ax_wave.set_xlim(0.0, x_max)
                     
-                    # Add headroom so bars don't look squashed
-                    ax_wave.set_ylim(0, max(max_count_seen * 1.12 + 1, 1))
+                    # Add headroom so bars don't look squashed (frequency in [0,1])
+                    ax_wave.set_ylim(0, max(min(max_count_seen * 1.12 + 0.05, 1.05), 0.1))
                     
                     # Labels and title matching reference style
                     ax_wave.set_xlabel('ROUGE-L Score', fontsize=11, fontweight='normal', color="#000000", labelpad=8)
-                    ax_wave.set_ylabel('Frequency (Number of Attempts)', fontsize=11, fontweight='normal', color="#000000", labelpad=8)
-                    ax_wave.set_title('ROUGE-L Attempt Distribution by Strategy', 
+                    ax_wave.set_ylabel('Frequency', fontsize=11, fontweight='normal', color="#000000", labelpad=8)
+                    ax_wave.set_title('ROUGE-L Attempt Frequency by Strategy', 
                                     fontsize=12, fontweight='normal', color="#000000", pad=12)
                     
                     # Legend matching reference style
