@@ -5014,8 +5014,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             # Load few-shot data once for all previews
             few_shot_data = {}
             try:
-                import json
-                from pathlib import Path
                 few_shot_path = Path(__file__).parent / "adversarial_persuasion_detection" / "few-shot.json"
                 with open(few_shot_path) as f:
                     few_shot_data = json.load(f)
@@ -5213,8 +5211,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             # Load few-shot examples if needed
             few_shot_examples = None
             if generation_mode == "Few-Shot":
-                import json
-                from pathlib import Path
                 few_shot_path = Path(__file__).parent / "adversarial_persuasion_detection" / "few-shot.json"
                 try:
                     with open(few_shot_path) as f:
