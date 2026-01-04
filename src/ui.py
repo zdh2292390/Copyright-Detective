@@ -1215,6 +1215,20 @@ def render_sidebar():
             anthropic_api_key = st.text_input("Anthropic API Key", type="password", help="Enter your Anthropic API key", key="sidebar_anthropic_api_key")
             google_api_key = st.text_input("Google Gemini API Key", type="password", help="Enter your Google Gemini API key", key="sidebar_google_api_key")
             kimi_api_key = st.text_input("Kimi API Key", type="password", help="Enter your Kimi (Moonshot) API key", key="sidebar_kimi_api_key")
+            st.markdown('<div style="margin-top:8px; font-size: 0.9rem; font-weight: 600;">Local vLLM</div>', unsafe_allow_html=True)
+            local_vllm_base_url = st.text_input(
+                "Base URL",
+                value=st.session_state.get("sidebar_local_vllm_base_url", "http://localhost:8000/v1"),
+                help="OpenAI-compatible endpoint for your vLLM server (e.g., http://<host>:8000/v1)",
+                key="sidebar_local_vllm_base_url",
+            )
+            local_vllm_api_key = st.text_input(
+                "API Key (optional)",
+                value=st.session_state.get("sidebar_local_vllm_api_key", ""),
+                type="password",
+                help="Leave blank if your vLLM endpoint does not require a key",
+                key="sidebar_local_vllm_api_key",
+            )
             st.markdown('</div>', unsafe_allow_html=True)
 
         # Model Selection Accordion
@@ -1222,7 +1236,7 @@ def render_sidebar():
             st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
             provider = st.selectbox(
                 "Select provider",
-                ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini", "Kimi"],
+                ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini", "Kimi", "Local vLLM"],
                 help="Choose your AI provider",
                 key="sidebar_provider_selectbox",
             )
@@ -1279,6 +1293,14 @@ def render_sidebar():
                     key="sidebar_kimi_model_selectbox",
                 )
                 api_key = kimi_api_key
+            elif provider == "Local vLLM":
+                model_choice = st.text_input(
+                    "Model name",
+                    value=st.session_state.get("sidebar_local_vllm_model", "meta-llama/Meta-Llama-3-8B-Instruct"),
+                    help="Enter the model name loaded by your vLLM server",
+                    key="sidebar_local_vllm_model",
+                )
+                api_key = local_vllm_api_key
             st.markdown('</div>', unsafe_allow_html=True)
 
         # Detection Mode Accordion
@@ -5996,19 +6018,34 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             ):
                 st.caption("Boxplots showing the distribution of ROUGE-L scores across different persuasion strategies.")
                 
-                # Prepare data for boxplots and binned frequencies
+                # Prepare data for boxplots using per-attempt ROUGE-L (recomputed to avoid stale values)
                 strategy_groups: Dict[str, List[float]] = {}
-                all_scores: List[float] = []
-                for row in ranked_rows:
-                    strategy = row["strategy"]
-                    rouge_score = row.get("score")
-                    if not isinstance(rouge_score, (int, float)):
-                        continue
-                    rouge_val = float(rouge_score)
-                    all_scores.append(rouge_val)
-                    if strategy not in strategy_groups:
-                        strategy_groups[strategy] = []
-                    strategy_groups[strategy].append(rouge_val)
+                reference_text = stage1_reference_map.get(selected_prompt, "")
+
+                # Use grouped panels to include every attempt for each mutation
+                for panel_payload in stored_panels:
+                    evaluation = panel_payload["evaluation"]
+                    strategy = evaluation.mutation.strategy
+                    group_items = panel_payload.get("group_items", [])
+                    for attempt_item in group_items:
+                        llm_resp = attempt_item.get("llm_response", "")
+                        rouge_val = None
+                        if reference_text and llm_resp:
+                            m = calculate_similarity_metrics(reference_text.strip(), llm_resp)
+                            rouge_val = m.get("rouge_l")
+                        if rouge_val is None and attempt_item.get("metrics"):
+                            rouge_val = attempt_item["metrics"].rouge_l
+                        if isinstance(rouge_val, (int, float)):
+                            strategy_groups.setdefault(strategy, []).append(float(rouge_val))
+
+                # Fallback: if no recomputed values (e.g., missing reference), use ranked_rows scores
+                if not any(strategy_groups.values()):
+                    for row in ranked_rows:
+                        strategy = row["strategy"]
+                        rouge_score = row.get("score")
+                        if not isinstance(rouge_score, (int, float)):
+                            continue
+                        strategy_groups.setdefault(strategy, []).append(float(rouge_score))
                 
                 if strategy_groups:
                     fig_box, ax_box = plt.subplots(figsize=(12, 6))

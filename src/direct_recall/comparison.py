@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import anthropic
 import google.genai as genai
+import streamlit as st
 from Levenshtein import distance
 from rouge_score import rouge_scorer
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -240,6 +241,7 @@ def get_llm_completion(
     provider="OpenAI",
     temperature=0.7,
     top_p=0.9,
+    base_url: Optional[str] = None,
     *,
     progress_message: Optional[str] = None,
     max_output_tokens: Optional[int] = None,
@@ -253,9 +255,10 @@ def get_llm_completion(
         prompt: The prompt to send to the LLM.
         api_key: API key for the provider.
         model_name: Name of the model to use.
-    provider: LLM provider ("OpenAI", "OpenRouter", "Anthropic", "Google Gemini", "Kimi").
+    provider: LLM provider ("OpenAI", "OpenRouter", "Anthropic", "Google Gemini", "Kimi", "Local vLLM").
         temperature: Sampling temperature.
         top_p: Top-p sampling parameter.
+        base_url: Optional base URL for OpenAI-compatible endpoints (used for Local vLLM).
         progress_message: Optional progress message.
         max_output_tokens: Maximum tokens to generate.
         stop_sequences: Stop sequences.
@@ -394,6 +397,38 @@ def get_llm_completion(
             # Kimi currently does not expose logprobs; ignore if requested
             response = client.chat.completions.create(**request_kwargs)
             result_text = response.choices[0].message.content.strip()
+
+        elif provider == "Local vLLM":
+            # Local vLLM via OpenAI-compatible endpoint
+            resolved_base = base_url or st.session_state.get("sidebar_local_vllm_base_url", "http://localhost:8000/v1")
+            resolved_key = api_key or st.session_state.get("sidebar_local_vllm_api_key", "")
+            client = openai.OpenAI(
+                api_key=resolved_key or None,
+                base_url=resolved_base,
+            )
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": prompt},
+            ]
+            request_kwargs = {
+                "model": model_name,
+                "messages": messages,
+                "temperature": temperature,
+                "top_p": top_p,
+            }
+            if max_output_tokens is not None:
+                request_kwargs["max_tokens"] = max_output_tokens
+            if stop_sequences:
+                request_kwargs["stop"] = stop_sequences
+
+            # Many local vLLM deployments may not support logprobs; attempt only if requested
+            if return_logprobs:
+                request_kwargs["logprobs"] = True
+                request_kwargs["top_logprobs"] = 5
+            response = client.chat.completions.create(**request_kwargs)
+            result_text = response.choices[0].message.content.strip()
+            if return_logprobs:
+                logprobs_data = _extract_logprobs_from_response(response)
         
         else:
             error_message = f"Error: Unsupported provider {provider}"
