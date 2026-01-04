@@ -1244,7 +1244,7 @@ def render_sidebar():
             model_choice = None
             if provider == "OpenAI":
                 model_choice = st.selectbox(
-                    "Choose a model",
+                    "Model Name",
                     [
                         "gpt-3.5-turbo",
                         "gpt-3.5-turbo-instruct",
@@ -1259,7 +1259,7 @@ def render_sidebar():
                 api_key = openai_api_key
             elif provider == "OpenRouter":
                 model_choice = st.selectbox(
-                    "Choose a model",
+                    "Model Name",
                     [
                         "allenai/olmo-3.1-32b-think:free",
                         "allenai/olmo-3-32b-think:free",
@@ -1276,14 +1276,14 @@ def render_sidebar():
                 )
                 api_key = openrouter_api_key.strip() if openrouter_api_key.strip() else DEFAULT_OPENROUTER_KEY
             elif provider == "Anthropic":
-                model_choice = st.selectbox("Choose a model", ["claude-3-haiku-20240307", "claude-3-sonnet-20240229", "claude-3-opus-20240229"], key="sidebar_anthropic_model_selectbox")
+                model_choice = st.selectbox("Model Name", ["claude-3-haiku-20240307", "claude-3-sonnet-20240229", "claude-3-opus-20240229"], key="sidebar_anthropic_model_selectbox")
                 api_key = anthropic_api_key
             elif provider == "Google Gemini":
-                model_choice = st.selectbox("Choose a model", ["gemini-1.5-flash", "gemini-1.5-pro"], key="sidebar_google_model_selectbox")
+                model_choice = st.selectbox("Model Name", ["gemini-1.5-flash", "gemini-1.5-pro"], key="sidebar_google_model_selectbox")
                 api_key = google_api_key
             elif provider == "Kimi":
                 model_choice = st.selectbox(
-                    "Choose a model",
+                    "Model Name",
                     [
                         "kimi-k2-0905-preview",
                         "kimi-k2-turbo-preview",
@@ -1295,9 +1295,10 @@ def render_sidebar():
                 api_key = kimi_api_key
             elif provider == "Local vLLM":
                 model_choice = st.text_input(
-                    "Model name",
-                    value=st.session_state.get("sidebar_local_vllm_model", "meta-llama/Meta-Llama-3-8B-Instruct"),
-                    help="Enter the model name loaded by your vLLM server",
+                    "Model Path",
+                    value=st.session_state.get("sidebar_local_vllm_model", ""),
+                    placeholder="e.g., /models/qwen2-7b-instruct or my-qwen-name",
+                    help="Enter the exact model path or served name configured in your vLLM instance (matches --served-model-name).",
                     key="sidebar_local_vllm_model",
                 )
                 api_key = local_vllm_api_key
