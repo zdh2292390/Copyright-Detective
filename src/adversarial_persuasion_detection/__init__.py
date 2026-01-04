@@ -7,11 +7,7 @@ from .jailbreak_probe import (
 )
 from .adversarial_prompting import (
     list_persuasion_strategies,
-    list_copyright_detection_strategies,
     get_mutation_instruction,
-    get_copyright_mutation_instruction,
-    run_copyright_detection_mutation,
-    mutate_for_copyright_detection,
     run_inference_scaling,
     assess_intention_preservation,
     mutate_strategies,
@@ -26,9 +22,6 @@ from .adversarial_prompting import (
     MutationWithJudge,
     MutationEvaluation,
     SimilarityMetrics,
-    CopyrightMutationResult,
-    ParsedCopyrightMutation,
-    COPYRIGHT_DETECTION_STRATEGIES,
 )
 
 __all__ = [
@@ -38,11 +31,7 @@ __all__ = [
     "get_persuasion_prompt",
     # adversarial_prompting
     "list_persuasion_strategies",
-    "list_copyright_detection_strategies",
     "get_mutation_instruction",
-    "get_copyright_mutation_instruction",
-    "run_copyright_detection_mutation",
-    "mutate_for_copyright_detection",
     "run_inference_scaling",
     "assess_intention_preservation",
     "mutate_strategies",
@@ -57,7 +46,4 @@ __all__ = [
     "MutationWithJudge",
     "MutationEvaluation",
     "SimilarityMetrics",
-    "CopyrightMutationResult",
-    "ParsedCopyrightMutation",
-    "COPYRIGHT_DETECTION_STRATEGIES",
 ]

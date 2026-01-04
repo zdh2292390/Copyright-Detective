@@ -53,7 +53,6 @@ from src.adversarial_persuasion_detection import (
     get_persuasion_template,
     get_persuasion_prompt,
     list_persuasion_strategies,
-    list_copyright_detection_strategies,
     get_mutation_instruction,
     run_inference_scaling,
     assess_intention_preservation,
@@ -4787,8 +4786,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
 
     # Get available strategies and baseline prompts
     baseline_strategy_label = "Baseline (no strategy)"
-    # Use copyright detection strategies for text continuation (instead of harmful intent strategies)
-    strategies = [baseline_strategy_label] + list_copyright_detection_strategies()
+    strategies = [baseline_strategy_label] + list_persuasion_strategies()
     baseline_prompts = list_baseline_prompts()
 
     # Page header with clear cache button
@@ -5289,7 +5287,6 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         temperature=0.7,  # Higher temperature for diverse mutation generation
                         top_p=0.9,
                         dry_run=False,
-                        use_copyright_mode=True,  # Use copyright detection templates for text continuation
                     )
                     
                     # Add mode information to evaluations
