@@ -68,6 +68,10 @@ from src.adversarial_persuasion_detection import (
     MutationWithJudge,
     MutationEvaluation,
     SimilarityMetrics,
+    # Custom input mutation support
+    list_custom_mutation_strategies,
+    mutate_custom_strategies,
+    parse_custom_mutation_output,
 )
 from src.adversarial_persuasion_detection.adversarial_prompting import (
     MutationResult,
@@ -1279,7 +1283,17 @@ def render_sidebar():
                 model_choice = st.selectbox("Model Name", ["claude-3-haiku-20240307", "claude-3-sonnet-20240229", "claude-3-opus-20240229"], key="sidebar_anthropic_model_selectbox")
                 api_key = anthropic_api_key
             elif provider == "Google Gemini":
-                model_choice = st.selectbox("Model Name", ["gemini-1.5-flash", "gemini-1.5-pro"], key="sidebar_google_model_selectbox")
+                model_choice = st.selectbox(
+                    "Model Name",
+                    [
+                        "gemini-1.5-flash-001",
+                        "gemini-1.5-flash-latest",
+                        "gemini-1.5-pro-001",
+                        "gemini-1.5-pro-latest",
+                    ],
+                    help="Use the latest Gemini model identifiers supported by the v1 API.",
+                    key="sidebar_google_model_selectbox",
+                )
                 api_key = google_api_key
             elif provider == "Kimi":
                 model_choice = st.selectbox(
@@ -2255,34 +2269,33 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     
                     fig, axes = plt.subplots(3, 3, figsize=(15, 15))
                     axes = axes.flatten()
-                    
-                    colors = ['lightblue', 'lightgreen', 'lightcoral', 'lightyellow', 'lightpink', 'lightcyan', 'lightsalmon', 'lightseagreen', 'lavender']
-                    
+
                     for i, (key, label) in enumerate(metrics_list):
                         ax = axes[i]
-                        if key in plot_df.columns:
-                            scores = plot_df[key].dropna().tolist()
-                        else:
-                            scores = []
-                        
+                        scores = plot_df[key].dropna().tolist() if key in plot_df.columns else []
+
                         if scores:
-                            box = ax.boxplot([scores], labels=[label], patch_artist=True)
-                            # Customize box colors
-                            for patch in box['boxes']:
-                                patch.set_facecolor(colors[i % len(colors)])
-                                patch.set_edgecolor('black')
-                                patch.set_linewidth(1.5)
-                            # Customize median lines
-                            for median in box['medians']:
-                                median.set(color='red', linewidth=2)
+                            box = ax.boxplot(
+                                [scores],
+                                labels=[label],
+                                patch_artist=True,
+                                boxprops={"facecolor": "white", "edgecolor": "black", "linewidth": 1.2},
+                                medianprops={"color": "#d9480f", "linewidth": 1.2},
+                                whiskerprops={"color": "black", "linewidth": 1.0},
+                                capprops={"color": "black", "linewidth": 1.0},
+                                flierprops={"marker": "o", "markerfacecolor": "black", "markersize": 4, "alpha": 0.6, "markeredgecolor": "black"},
+                            )
                         else:
                             ax.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax.transAxes)
                             ax.set_ylim(0, 1)
-                        
+
+                        # Styling to mimic reference: y-grid only, clean x-grid
+                        ax.yaxis.grid(True, linestyle='--', alpha=0.35)
+                        ax.xaxis.grid(False)
                         ax.set_title(f'{label} Distribution')
                         ax.set_ylabel('Value')
-                        ax.grid(True, alpha=0.3)
-                    
+                        ax.tick_params(axis='both', labelsize=10)
+
                     plt.tight_layout()
                     st.pyplot(fig)
 
@@ -4912,6 +4925,13 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             on_change=_apply_preset,
             help="These presets mirror the baseline requests from the paper's extraction study.",
         )
+    
+    # Show info message for custom input mode
+    if st.session_state.get("baseline_selector") == "Custom Input":
+        st.info(
+            "💡 **Custom Input Mode**: Your custom prompt will be mutated using the same persuasive strategies "
+            "(Ethos, Pathos, Logos, etc.) but with templates designed to analyze and transform your specific prompt structure."
+        )
 
     input_prompt = st.text_area(
         "Original adversarial prompt",
@@ -4932,24 +4952,31 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
 
     st.markdown("**⚙️ Sampling & evaluation parameters**")
     
+    # Determine if custom input mode is active
+    is_custom_input = st.session_state.get("baseline_selector") == "Custom Input"
+    
+    # Both modes use the same persuasion strategies, but with different mutation templates
+    available_strategies = strategies
+    strategies_help = "Select one or more persuasion strategies to apply."
+    
     col_mode, col_strategies, col_attempts_strategy, col_attempts_prompt = st.columns([1, 2, 1, 1])
     with col_mode:
         generation_mode = st.selectbox(
             "Choose zero-shot/few-shot",
-            ["One-Shot", "Few-Shot"],
+            ["One-Shot", "Few-Shot"] if not is_custom_input else ["One-Shot"],
             index=0,
             key="generation_mode",
-            help="Select generation mode: One-Shot (zero-shot) or Few-Shot.",
+            help="Select generation mode: One-Shot (zero-shot) or Few-Shot." if not is_custom_input else "Custom input mode uses One-Shot generation.",
         )
         generation_modes = [generation_mode]  # Convert to list for compatibility
     
     with col_strategies:
         selected_strategies = st.multiselect(
             "Persuasion strategies",
-            strategies,
+            available_strategies,
             default=[],
             key="strategies",
-            help="Select one or more persuasion strategies to apply.",
+            help=strategies_help,
         )
     
     with col_attempts_strategy:
@@ -5172,11 +5199,14 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         attempts_per_prompt = st.session_state.get('attempts_per_prompt', 1)
         generation_modes = [generation_mode]  # Convert to list for compatibility
         
+        # Check if custom input mode is active
+        is_custom_input = st.session_state.get("baseline_selector") == "Custom Input"
+        
         # Validation
         if not original_prompt.strip():
             st.warning("⚠️ Please enter an adversarial prompt.")
         elif not selected_strategies:
-            st.warning("⚠️ Select at least one persuasion strategy.")
+            st.warning("⚠️ Select at least one mutation strategy." if is_custom_input else "⚠️ Select at least one persuasion strategy.")
         elif not generation_mode:
             st.warning("⚠️ Select a generation mode.")
         elif not reference_text.strip():
@@ -5273,6 +5303,31 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 mode=generation_mode,
                             )
                         )
+                elif is_custom_input:
+                    # Use custom mutation for user-provided prompts
+                    evaluations = mutate_custom_strategies(
+                        api_key,
+                        model_choice,
+                        provider,
+                        [strategy],  # Process one strategy at a time
+                        original_prompt,
+                        reference_text=None,  # Don't calculate ROUGE during generation
+                        attempts_per_strategy=attempts,
+                        temperature=0.7,  # Higher temperature for diverse mutation generation
+                        top_p=0.9,
+                        dry_run=False,
+                    )
+                    
+                    # Add mode information to evaluations
+                    for i, evaluation in enumerate(evaluations):
+                        if evaluation and evaluation.mutation:
+                            evaluations[i] = MutationEvaluation(
+                                mutation=evaluation.mutation,
+                                parsed=evaluation.parsed,
+                                metrics=evaluation.metrics,
+                                attempt=evaluation.attempt,
+                                mode=generation_mode,
+                            )
                 else:
                     evaluations = mutate_strategies(
                         api_key,

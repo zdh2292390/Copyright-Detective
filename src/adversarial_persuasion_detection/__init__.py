@@ -22,6 +22,13 @@ from .adversarial_prompting import (
     MutationWithJudge,
     MutationEvaluation,
     SimilarityMetrics,
+    # Custom input mutation support
+    list_custom_mutation_strategies,
+    get_custom_mutation_instruction,
+    run_custom_mutation,
+    parse_custom_mutation_output,
+    mutate_custom_strategies,
+    CUSTOM_MUTATION_STRATEGIES,
 )
 
 __all__ = [
@@ -46,4 +53,11 @@ __all__ = [
     "MutationWithJudge",
     "MutationEvaluation",
     "SimilarityMetrics",
+    # Custom input mutation support
+    "list_custom_mutation_strategies",
+    "get_custom_mutation_instruction",
+    "run_custom_mutation",
+    "parse_custom_mutation_output",
+    "mutate_custom_strategies",
+    "CUSTOM_MUTATION_STRATEGIES",
 ]

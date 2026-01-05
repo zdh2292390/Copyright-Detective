@@ -46,6 +46,22 @@ _MINHASH_COEFFICIENTS = [
 ]
 
 
+_GEMINI_MODEL_ALIASES = {
+    # Legacy names that return 404 on v1beta
+    "gemini-1.5-flash": "gemini-1.5-flash-001",
+    "gemini-1.5-pro": "gemini-1.5-pro-001",
+    "gemini-pro": "gemini-1.5-pro-001",
+}
+
+
+def _normalize_gemini_model(model_name: Optional[str]) -> str:
+    """Map legacy Gemini names to current v1 identifiers."""
+
+    if not model_name:
+        return "gemini-1.5-flash-latest"
+    return _GEMINI_MODEL_ALIASES.get(model_name, model_name)
+
+
 @dataclass(frozen=True)
 class DiffToken:
     text: str
@@ -356,6 +372,7 @@ def get_llm_completion(
         
         elif provider == "Google Gemini":
             client = genai.Client(api_key=api_key)
+            normalized_model = _normalize_gemini_model(model_name)
             config = {}
             if temperature is not None:
                 config["temperature"] = temperature
@@ -366,7 +383,7 @@ def get_llm_completion(
             if stop_sequences:
                 config["stop_sequences"] = stop_sequences
             response = client.models.generate_content(
-                model=model_name,
+                model=normalized_model,
                 contents=prompt,
                 config=config or None
             )
