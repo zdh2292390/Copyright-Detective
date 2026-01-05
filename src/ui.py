@@ -1806,7 +1806,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         inference_runs = st.number_input(
             "Number of Inference Runs",
             min_value=1,
-            max_value=100,
+            max_value=1000,
             value=st.session_state['text_inference_runs'],
             step=1,
             help="Specify how many times to run the inference for statistical analysis.",
@@ -2184,10 +2184,11 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             st.caption(
                 "Each run reports ROUGE-1, ROUGE-L, LCS (character/word), ACS (word), Levenshtein distance, semantic similarity, MinHash similarity, and Jaccard index."
             )
-            for i, text in enumerate(generated_texts):
-                metrics_for_run = similarity_scores[i] if i < len(similarity_scores) else {}
-                with st.expander(f"Run {i+1}", expanded=False):
-                    render_direct_recall_diff(text2, text, title=f"Run {i+1}", metrics=metrics_for_run)
+            with st.expander("All Runs", expanded=False):
+                for i, text in enumerate(generated_texts):
+                    metrics_for_run = similarity_scores[i] if i < len(similarity_scores) else {}
+                    with st.expander(f"Run {i+1}", expanded=False):
+                        render_direct_recall_diff(text2, text, title=f"Run {i+1}", metrics=metrics_for_run)
 
             metrics_df = pd.DataFrame(similarity_scores).apply(pd.to_numeric, errors="coerce")
 
