@@ -1212,8 +1212,8 @@ def render_sidebar():
             openrouter_api_key = st.text_input(
                 "OpenRouter API Key",
                 type="password",
-                help="Leave blank to use the built-in default key (for quick testing)",
-                placeholder="Will fallback automatically if empty",
+                help="Enter your OpenRouter API key",
+                placeholder="Required for OpenRouter",
                 key="sidebar_openrouter_api_key"
             )
             anthropic_api_key = st.text_input("Anthropic API Key", type="password", help="Enter your Anthropic API key", key="sidebar_anthropic_api_key")
