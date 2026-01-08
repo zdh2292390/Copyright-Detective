@@ -1209,13 +1209,7 @@ def render_sidebar():
         with st.expander("🔑 API Configuration", expanded=False):
             st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
             openai_api_key = st.text_input("OpenAI API Key", type="password", help="Enter your OpenAI API key", key="sidebar_openai_api_key")
-            openrouter_api_key = st.text_input(
-                "OpenRouter API Key",
-                type="password",
-                help="Enter your OpenRouter API key",
-                placeholder="Required for OpenRouter",
-                key="sidebar_openrouter_api_key"
-            )
+            openrouter_api_key = st.text_input("OpenRouter API Key", type="password", help="Enter your OpenRouter API key", key="sidebar_openrouter_api_key")
             anthropic_api_key = st.text_input("Anthropic API Key", type="password", help="Enter your Anthropic API key", key="sidebar_anthropic_api_key")
             google_api_key = st.text_input("Google Gemini API Key", type="password", help="Enter your Google Gemini API key", key="sidebar_google_api_key")
             kimi_api_key = st.text_input("Kimi API Key", type="password", help="Enter your Kimi (Moonshot) API key", key="sidebar_kimi_api_key")
