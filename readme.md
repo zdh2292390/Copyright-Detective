@@ -28,7 +28,7 @@ streamlit run app.py
 
 ## 🌐 Sidebar — vLLM Model Setup & Usage
 
-### Scenario A — Run the App Locally, Serve vLLM Remotely (Private Network / No Public Exposure)
+### Scenario A — Run the App Locally, Serve vLLM Remotely (Private Network / No Public Exposure, you can also use the method in scenario B)
 
 Use this setup when your **vLLM model is deployed on a remote server**, but you run **this project locally** (e.g., on your laptop). The vLLM endpoint is reachable via your internal network/VPN/SSH tunnel, and you **do not** need to expose it to the public internet.
 
