@@ -22,7 +22,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## 🌐 Remote vLLM Deployment (Optional)
+## 🌐 Remote vLLM Deployment (Deploying this project locally)
 
 Use this option if your vLLM model is deployed on a separate server.
 
@@ -58,3 +58,6 @@ In the Streamlit sidebar, go to **✨ Model Selection** and set:
 
 
 This workspace is intended for auditing and defense research. Handle all generated content responsibly, follow institutional review policies, and avoid redeploying harmful mutations outside controlled evaluations.
+
+
+## 🌐 Remote vLLM Deployment (Using this project on the web)
