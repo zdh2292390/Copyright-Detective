@@ -1303,10 +1303,9 @@ def render_sidebar():
                 api_key = kimi_api_key
             elif provider == "Local vLLM":
                 model_choice = st.text_input(
-                    "Model Path",
+                    "Model Choice (Optional)",
                     value=st.session_state.get("sidebar_local_vllm_model", ""),
-                    placeholder="e.g., /models/qwen2-7b-instruct or my-qwen-name",
-                    help="Enter the exact model path or served name configured in your vLLM instance (matches --served-model-name).",
+                    placeholder="Just to identify the model you are using (e.g., 'meta-llama/Llama-3-70B-Instruct-v3')",
                     key="sidebar_local_vllm_model",
                 )
                 api_key = local_vllm_api_key
