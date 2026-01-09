@@ -12,6 +12,7 @@ import streamlit as st
 import pandas as pd
 from Levenshtein import distance
 import html
+import requests
 from datasets import load_dataset, concatenate_datasets
 from fpdf import FPDF
 import base64
@@ -6178,6 +6179,8 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
         st.session_state['unlearn_max_length'] = 128
     if 'unlearn_last_result' not in st.session_state:
         st.session_state['unlearn_last_result'] = None
+    if 'unlearn_deploy_agent_url' not in st.session_state:
+        st.session_state['unlearn_deploy_agent_url'] = ""
     
     st.markdown('<h4 class="section-header">🧬 Representational Analysis</h4>', unsafe_allow_html=True)
     st.markdown(
@@ -6214,18 +6217,35 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
 
     st.markdown("##### Model checkpoints")
     st.info("💡 **Model Path Format**: Use Hugging Face model IDs (e.g., 'gpt2', 'microsoft/DialoGPT-medium') or absolute paths to local directories containing `config.json` and model files. Do not use Hugging Face cache paths directly.")
+    
+    # Server deployment agent configuration
+    st.markdown("##### 🚀 Server Deployment Agent Configuration")
+    st.caption("Configure the URL of your server deployment agent (e.g., Cloudflare Tunnel URL)")
+    agent_url = st.text_input(
+        "Deployment Agent URL",
+        value=st.session_state.get('unlearn_deploy_agent_url', ''),
+        placeholder="https://cool-server-link.trycloudflare.com",
+        help="The URL of your server deployment agent (from Cloudflare Tunnel or similar)",
+        key="unlearn_deploy_agent_url_input",
+    )
+    if agent_url:
+        st.session_state['unlearn_deploy_agent_url'] = agent_url.strip()
+    else:
+        st.session_state['unlearn_deploy_agent_url'] = ""
+    
     col_ref, col_upd = st.columns(2)
     with col_ref:
         reference_model_path = st.text_input(
-            "Reference model (baseline)",
+            "Reference model path",
             value=st.session_state['unlearn_reference_model'],
             placeholder="e.g. gpt2, Qwen/Qwen2.5-7B, or /path/to/local/model",
             help="Hugging Face model ID (e.g., 'gpt2') or absolute path to local model directory containing config.json",
             key="representational_reference_model",
         )
+    
     with col_upd:
-        st.text_input(
-            "Updated / deployed model",
+        updated_model_path = st.text_input(
+            "Unlearned model path",
             value=st.session_state['unlearn_updated_model'],
             placeholder="Path or HF repo ID for the model under audit",
             help="Hugging Face model ID (e.g., 'microsoft/DialoGPT-medium') or absolute path to local model directory",
@@ -6326,6 +6346,78 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
             elif not queries:
                 st.warning("⚠️ Enter at least one non-empty query prompt.")
             else:
+                # Auto-deploy models if Deployment Agent URL is configured
+                agent_url = st.session_state.get('unlearn_deploy_agent_url', '').strip()
+                if agent_url:
+                    ref_path = reference_model_path.strip()
+                    upd_path = updated_model_path.strip()
+                    
+                    # Deploy reference model
+                    if ref_path:
+                        with st.spinner("Sending deployment request for reference model..."):
+                            try:
+                                response = requests.post(
+                                    f"{agent_url}/deploy",
+                                    json={"model_path": ref_path},
+                                    timeout=10
+                                )
+                                if response.status_code == 200:
+                                    res_json = response.json()
+                                    if res_json.get("status") == "success":
+                                        st.success(f"✅ Reference model deployment initiated: {res_json.get('message', '')}")
+                                    else:
+                                        st.warning(f"⚠️ Reference model deployment warning: {res_json.get('message', 'Unknown error')}")
+                                elif response.status_code == 530:
+                                    st.warning(
+                                        f"⚠️ Reference model deployment failed (530): Cloudflare Tunnel cannot reach the server. "
+                                        f"Please check:\n"
+                                        f"1. Is `deploy_agent.py` running on the server?\n"
+                                        f"2. Is Cloudflare Tunnel running and connected?\n"
+                                        f"3. Is the Tunnel URL still valid? (Tunnel URLs may expire)\n"
+                                        f"Continuing with analysis..."
+                                    )
+                                else:
+                                    st.warning(f"⚠️ Reference model deployment failed with status code: {response.status_code}. Continuing with analysis...")
+                            except requests.exceptions.Timeout:
+                                st.warning("⏱️ Reference model deployment timeout. The server may be slow or unreachable. Continuing with analysis...")
+                            except requests.exceptions.ConnectionError as e:
+                                st.warning(f"🔌 Unable to connect to deployment agent for reference model: {str(e)}. Continuing with analysis...")
+                            except Exception as e:
+                                st.warning(f"⚠️ Reference model deployment error: {str(e)}. Continuing with analysis...")
+                    
+                    # Deploy updated model
+                    if upd_path:
+                        with st.spinner("Sending deployment request for updated model..."):
+                            try:
+                                response = requests.post(
+                                    f"{agent_url}/deploy",
+                                    json={"model_path": upd_path},
+                                    timeout=10
+                                )
+                                if response.status_code == 200:
+                                    res_json = response.json()
+                                    if res_json.get("status") == "success":
+                                        st.success(f"✅ Updated model deployment initiated: {res_json.get('message', '')}")
+                                    else:
+                                        st.warning(f"⚠️ Updated model deployment warning: {res_json.get('message', 'Unknown error')}")
+                                elif response.status_code == 530:
+                                    st.warning(
+                                        f"⚠️ Updated model deployment failed (530): Cloudflare Tunnel cannot reach the server. "
+                                        f"Please check:\n"
+                                        f"1. Is `deploy_agent.py` running on the server?\n"
+                                        f"2. Is Cloudflare Tunnel running and connected?\n"
+                                        f"3. Is the Tunnel URL still valid? (Tunnel URLs may expire)\n"
+                                        f"Continuing with analysis..."
+                                    )
+                                else:
+                                    st.warning(f"⚠️ Updated model deployment failed with status code: {response.status_code}. Continuing with analysis...")
+                            except requests.exceptions.Timeout:
+                                st.warning("⏱️ Updated model deployment timeout. The server may be slow or unreachable. Continuing with analysis...")
+                            except requests.exceptions.ConnectionError as e:
+                                st.warning(f"🔌 Unable to connect to deployment agent for updated model: {str(e)}. Continuing with analysis...")
+                            except Exception as e:
+                                st.warning(f"⚠️ Updated model deployment error: {str(e)}. Continuing with analysis...")
+                
                 # Validate model paths
                 import os
                 ref_path = reference_model_path.strip()
@@ -6351,6 +6443,9 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                     st.error(f"❌ Updated model path '{upd_path}' is not valid. Use a Hugging Face model ID (e.g., 'gpt2') or a local directory containing config.json")
                 
                 if ref_valid and upd_valid:
+                    # Get agent_url from session state if configured
+                    agent_url = st.session_state.get('unlearn_deploy_agent_url', '').strip()
+                    
                     analysis_request = {
                         "feature": selected_feature.id,
                         "model_reference_path": ref_path,
@@ -6361,6 +6456,10 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                         "num_batches": int(num_batches),
                         "max_length": int(max_length),
                     }
+                    
+                    # Add agent_url if configured (for remote execution)
+                    if agent_url:
+                        analysis_request["agent_url"] = agent_url
                     with st.spinner("🔎 Computing representational differences... this may take several minutes for large models."):
                         try:
                             rep_result = run_representational_analysis(**analysis_request)

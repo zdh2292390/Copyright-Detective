@@ -236,16 +236,21 @@ def run_cka_analysis(
         activations: Dict[int, np.ndarray] = {}
         module_lookup = dict(model.named_modules())
         layer_module_pattern = _get_layer_module_pattern(model)
-        layer_names = [name for name in module_lookup if layer_module_pattern.format(layer_idx=0) in name]
-        # Filter to only numeric layer indices
+        
+        # Find all layer indices by checking which layer keys exist in the module lookup
+        # We need to find the maximum layer index first
         layer_indices = []
-        for name in layer_names:
-            try:
-                idx = int(name.rsplit(".", 1)[-1])
-                layer_indices.append(idx)
-            except ValueError:
-                continue  # Skip non-numeric layer names like 'ln_1'
-        layer_indices = sorted(set(layer_indices))  # Remove duplicates and sort
+        max_layer_idx = 0
+        while True:
+            layer_key = layer_module_pattern.format(layer_idx=max_layer_idx)
+            if layer_key in module_lookup:
+                layer_indices.append(max_layer_idx)
+                max_layer_idx += 1
+            else:
+                break
+        
+        if not layer_indices:
+            raise ValueError(f"No layers found matching pattern: {layer_module_pattern}")
 
         for layer_idx in layer_indices:
             buffer: List[np.ndarray] = []
@@ -282,7 +287,24 @@ def run_cka_analysis(
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    cka_scores = {layer: linear_cka(ref_acts[layer], upd_acts[layer]) for layer in ref_acts}
+    # Only compute CKA for layers that exist in both models
+    common_layers = sorted(set(ref_acts.keys()) & set(upd_acts.keys()))
+    if not common_layers:
+        raise ValueError(
+            "No common layers found between reference and updated models. "
+            f"Reference layers: {sorted(ref_acts.keys())}, "
+            f"Updated layers: {sorted(upd_acts.keys())}"
+        )
+    
+    # Warn if some layers are missing
+    ref_only = set(ref_acts.keys()) - set(upd_acts.keys())
+    upd_only = set(upd_acts.keys()) - set(ref_acts.keys())
+    if ref_only:
+        print(f"[!] Warning: Reference model has layers not in updated model: {sorted(ref_only)}")
+    if upd_only:
+        print(f"[!] Warning: Updated model has layers not in reference model: {sorted(upd_only)}")
+    
+    cka_scores = {layer: linear_cka(ref_acts[layer], upd_acts[layer]) for layer in common_layers}
 
     mpl.rcParams.update({
         "font.family": "serif",

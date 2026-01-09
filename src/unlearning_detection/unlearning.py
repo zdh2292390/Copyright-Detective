@@ -196,9 +196,65 @@ def run_representational_analysis(
     batch_size: int = 4,
     num_batches: int = 10,
     max_length: int = 128,
+    agent_url: Optional[str] = None,  # If provided, execute analysis remotely
 ) -> RepresentationalAnalysisResult:
     """Execute representational analysis for model unlearning audits."""
 
+    # If agent_url is provided, execute analysis remotely
+    if agent_url and agent_url.strip():
+        try:
+            from src.unlearning_detection.remote_execution import execute_analysis_remotely
+            
+            normalised_query = _normalise_query_inputs(query)
+            if not normalised_query:
+                raise ValueError("At least one non-empty query string is required for representational analysis.")
+            
+            feature_id = feature.lower().strip()
+            feature_meta = get_representational_feature(feature_id)
+            if feature_meta is None:
+                raise ValueError(f"Unknown representational feature: {feature}")
+            
+            # Execute remotely
+            remote_result = execute_analysis_remotely(
+                agent_url=agent_url.strip(),
+                feature=feature_id,
+                model_reference_path=model_reference_path,
+                model_path=model_path,
+                query=normalised_query,
+                device=device,
+                batch_size=batch_size,
+                num_batches=num_batches,
+                max_length=max_length,
+            )
+            
+            # Convert remote result to RepresentationalAnalysisResult
+            inline_artifacts = []
+            for viz in remote_result.visualizations:
+                inline_artifacts.append(
+                    InlineArtifact(
+                        title=viz.title,
+                        mime_type=viz.mime_type,
+                        data=viz.data,
+                        description=viz.description,
+                    )
+                )
+            
+            return RepresentationalAnalysisResult(
+                feature_id=feature_id,
+                feature_name=feature_meta.name,
+                output_path=output_path,
+                generated_artifacts=[],
+                inline_artifacts=inline_artifacts,
+                warnings=remote_result.warnings,
+            )
+        except ImportError:
+            # If remote_execution module is not available, fall back to local execution
+            pass
+        except Exception as e:
+            # If remote execution fails, raise the error
+            raise RuntimeError(f"Remote execution failed: {str(e)}") from e
+
+    # Local execution (original logic)
     if not is_representational_analysis_available():
         raise RuntimeError(
             "Representational analysis requires optional dependencies (torch, transformers, scikit-learn, matplotlib)."
