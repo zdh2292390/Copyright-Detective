@@ -6184,15 +6184,6 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
         "Run Fisher Information, PCA shift/sim, and layer-wise CKA probes to quantify how unlearning reshapes the reference versus adapted model across every layer."
     )
 
-    st.warning(
-        "⚠️ **Important Notes:**\n\n"
-        "- **API Incompatibility**: This feature is not applicable for API-based-only models as it requires access to the model's internal state\n"
-        "- **Memory Requirements**: Large models (>7B parameters) may cause crashes due to insufficient RAM/VRAM\n"
-        "- **Network**: First-time use requires internet to download models from HuggingFace\n"
-        "- **Recommendation**: Start with small models (≤1B parameters) like `Qwen/Qwen2-0.5B` or `gpt2`\n"
-        "- **Offline Mode**: Pre-download models using `huggingface-cli` for offline use"
-    )
-
     dependencies_available = is_representational_analysis_available()
     if not dependencies_available:
         st.warning(
