@@ -185,3 +185,52 @@ Now you can access:
 - **Model 2** via: `https://xxxx-xxx-xxx.ngrok-free.dev/m2/v1`
 
 > **Note:** Keep the `/v1` suffix for OpenAI-compatible APIs served by vLLM.
+
+---
+
+## 🧠 Unlearning Detection — Representational Analysis (Deployment)
+
+This module runs a lightweight deployment service on your **remote server**, then exposes it to your local Streamlit app via a temporary Cloudflare tunnel.
+
+### 1) Server (Remote): Install `cloudflared` and Start a Quick Tunnel
+
+On your server, download and start Cloudflare Tunnel:
+
+```bash
+wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+chmod +x cloudflared-linux-amd64
+./cloudflared-linux-amd64 tunnel --url http://localhost:6666
+```
+
+You should see output similar to:
+
+```bash
+Requesting new quick Tunnel on trycloudflare.com...
++--------------------------------------------------------------------------------------------+
+|  Your quick Tunnel has been created! Visit it at (it may take some time to be reachable):  |
+|  https://cool-server-link.trycloudflare.com                                                |
++--------------------------------------------------------------------------------------------+
+```
+
+Copy the generated `https://*.trycloudflare.com` link and paste it into the app:
+
+- **Deployment Agent URL** → `https://cool-server-link.trycloudflare.com`
+
+> **Note:** It may take a short time before the tunnel becomes reachable.
+
+### 2) App: Set Model Paths (Absolute Paths on the Server)
+
+In **Representational Analysis (Unlearning Detection)**, provide the **absolute paths on the deployment server**:
+
+- **Reference model path** → `/absolute/path/to/reference_model`
+- **Unlearned model path** → `/absolute/path/to/unlearned_model`
+
+> The paths must be server-local absolute paths (not your local machine paths).
+
+### 3) Server (Remote): Start the Deployment Service
+
+Run the deployment script on your server:
+
+[unlearning_deployment.py](/backend/unlearning_deploy.py)
+
+Once the service is running and the tunnel is up, you can use **Representational Analysis (Unlearning Detection)** directly from the app UI.
