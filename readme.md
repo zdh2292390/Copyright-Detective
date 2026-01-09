@@ -117,3 +117,71 @@ https://xxxx-xxx-xxx.ngrok-free.dev/v1
 ```
 
 > **Tip:** The `/v1` suffix is required for OpenAI-compatible APIs served by vLLM.
+
+---
+
+## 🌐 Unlearning Detection Module — vLLM Models (2) Setup & Usage (Optional)
+
+If you want to use **multiple vLLM models at the same time**, you can route them through a single public endpoint using **Caddy + ngrok**.
+
+### 1) Server: Start Two vLLM Instances (Localhost)
+
+```bash
+# Model 1
+vllm serve /data1/guangwei/models/Llama-2-7b-hf \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --api-key key \
+  --served-model-name 1
+
+# Model 2
+vllm serve /data1/guangwei/models/tofu_ft_llama2-7b \
+  --host 127.0.0.1 \
+  --port 8001 \
+  --api-key key \
+  --served-model-name 2
+```
+
+### 2) Server: Install Caddy
+
+```bash
+wget https://github.com/caddyserver/caddy/releases/download/v2.8.4/caddy_2.8.4_linux_amd64.tar.gz
+tar -zxvf caddy_2.8.4_linux_amd64.tar.gz
+chmod +x caddy
+./caddy version
+```
+
+### 3) Server: Configure `Caddyfile` (Reverse Proxy by Path)
+
+Create / edit `Caddyfile`:
+
+```caddyfile
+:8081 {
+    handle_path /m1/* {
+        reverse_proxy 127.0.0.1:8000
+    }
+
+    handle_path /m2/* {
+        reverse_proxy 127.0.0.1:8001
+    }
+}
+```
+
+Run Caddy:
+
+```bash
+./caddy run --config Caddyfile > caddy.log 2>&1 &
+```
+
+### 4) Server: Expose via ngrok
+
+```bash
+./ngrok http 8081
+```
+
+Now you can access:
+
+- **Model 1** via: `https://YOUR_NGROK_DOMAIN/m1/v1`
+- **Model 2** via: `https://YOUR_NGROK_DOMAIN/m2/v1`
+
+> **Note:** Keep the `/v1` suffix for OpenAI-compatible APIs served by vLLM.
