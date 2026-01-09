@@ -120,7 +120,7 @@ https://xxxx-xxx-xxx.ngrok-free.dev/v1
 
 ---
 
-## 🌐 Unlearning Detection Module — vLLM Models (2) Setup & Usage (Optional)
+## 🌐 vLLM Multi-Model Serving (2 Models) — Setup & Usage (Optional)
 
 If you want to use **multiple vLLM models at the same time**, you can route them through a single public endpoint using **Caddy + ngrok**.
 
