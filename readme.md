@@ -181,7 +181,7 @@ Run Caddy:
 
 Now you can access:
 
-- **Model 1** via: `https://YOUR_NGROK_DOMAIN/m1/v1`
-- **Model 2** via: `https://YOUR_NGROK_DOMAIN/m2/v1`
+- **Model 1** via: `https://xxxx-xxx-xxx.ngrok-free.dev/m1/v1`
+- **Model 2** via: `https://xxxx-xxx-xxx.ngrok-free.dev/m2/v1`
 
 > **Note:** Keep the `/v1` suffix for OpenAI-compatible APIs served by vLLM.
