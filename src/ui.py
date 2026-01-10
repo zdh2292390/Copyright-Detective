@@ -6191,6 +6191,8 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
         st.session_state['unlearn_last_result'] = None
     if 'unlearn_deploy_agent_url' not in st.session_state:
         st.session_state['unlearn_deploy_agent_url'] = ""
+    if 'unlearn_deploy_agent_key' not in st.session_state:
+        st.session_state['unlearn_deploy_agent_key'] = ""
     
     st.markdown('<h4 class="section-header">🧬 Representational Analysis</h4>', unsafe_allow_html=True)
     st.markdown(
@@ -6230,18 +6232,33 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
     
     # Server deployment agent configuration
     st.markdown("##### 🚀 Server Deployment Agent Configuration")
-    st.caption("Configure the URL of your server deployment agent (e.g., Cloudflare Tunnel URL)")
-    agent_url = st.text_input(
-        "Deployment Agent URL",
-        value=st.session_state.get('unlearn_deploy_agent_url', ''),
-        placeholder="https://cool-server-link.trycloudflare.com",
-        help="The URL of your server deployment agent (from Cloudflare Tunnel or similar)",
-        key="unlearn_deploy_agent_url_input",
-    )
+    st.caption("Configure the URL and API key of your server deployment agent (e.g., Cloudflare Tunnel URL)")
+    col_url, col_key = st.columns([2, 1])
+    with col_url:
+        agent_url = st.text_input(
+            "Deployment Agent URL",
+            value=st.session_state.get('unlearn_deploy_agent_url', ''),
+            placeholder="https://cool-server-link.trycloudflare.com",
+            help="The URL of your server deployment agent (from Cloudflare Tunnel or similar)",
+            key="unlearn_deploy_agent_url_input",
+        )
+    with col_key:
+        agent_key = st.text_input(
+            "Key",
+            value=st.session_state.get('unlearn_deploy_agent_key', ''),
+            placeholder="YOUR_API_KEY",
+            help="API key set on your server (YOUR_API_KEY environment variable)",
+            type="password",
+            key="unlearn_deploy_agent_key_input",
+        )
     if agent_url:
         st.session_state['unlearn_deploy_agent_url'] = agent_url.strip()
     else:
         st.session_state['unlearn_deploy_agent_url'] = ""
+    if agent_key:
+        st.session_state['unlearn_deploy_agent_key'] = agent_key.strip()
+    else:
+        st.session_state['unlearn_deploy_agent_key'] = ""
     
     col_ref, col_upd = st.columns(2)
     with col_ref:
@@ -6358,9 +6375,15 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
             else:
                 # Auto-deploy models if Deployment Agent URL is configured
                 agent_url = st.session_state.get('unlearn_deploy_agent_url', '').strip()
+                agent_key = st.session_state.get('unlearn_deploy_agent_key', '').strip()
                 if agent_url:
                     ref_path = reference_model_path.strip()
                     upd_path = updated_model_path.strip()
+                    
+                    # Prepare headers with API key if provided
+                    deploy_headers = {}
+                    if agent_key:
+                        deploy_headers["X-API-Key"] = agent_key
                     
                     # Deploy reference model
                     if ref_path:
@@ -6369,6 +6392,7 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                                 response = requests.post(
                                     f"{agent_url}/deploy",
                                     json={"model_path": ref_path},
+                                    headers=deploy_headers,
                                     timeout=10
                                 )
                                 if response.status_code == 200:
@@ -6377,6 +6401,10 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                                         st.success(f"✅ Reference model deployment initiated: {res_json.get('message', '')}")
                                     else:
                                         st.warning(f"⚠️ Reference model deployment warning: {res_json.get('message', 'Unknown error')}")
+                                elif response.status_code == 401:
+                                    st.error(f"❌ Reference model deployment failed (401): Authentication failed. Please check your API key in the 'Key' field.")
+                                elif response.status_code == 403:
+                                    st.error(f"❌ Reference model deployment failed (403): Invalid API key. Please check your API key in the 'Key' field.")
                                 elif response.status_code == 530:
                                     st.warning(
                                         f"⚠️ Reference model deployment failed (530): Cloudflare Tunnel cannot reach the server. "
@@ -6402,6 +6430,7 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                                 response = requests.post(
                                     f"{agent_url}/deploy",
                                     json={"model_path": upd_path},
+                                    headers=deploy_headers,
                                     timeout=10
                                 )
                                 if response.status_code == 200:
@@ -6410,6 +6439,10 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                                         st.success(f"✅ Updated model deployment initiated: {res_json.get('message', '')}")
                                     else:
                                         st.warning(f"⚠️ Updated model deployment warning: {res_json.get('message', 'Unknown error')}")
+                                elif response.status_code == 401:
+                                    st.error(f"❌ Updated model deployment failed (401): Authentication failed. Please check your API key in the 'Key' field.")
+                                elif response.status_code == 403:
+                                    st.error(f"❌ Updated model deployment failed (403): Invalid API key. Please check your API key in the 'Key' field.")
                                 elif response.status_code == 530:
                                     st.warning(
                                         f"⚠️ Updated model deployment failed (530): Cloudflare Tunnel cannot reach the server. "
@@ -6453,8 +6486,9 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                     st.error(f"❌ Updated model path '{upd_path}' is not valid. Use a Hugging Face model ID (e.g., 'gpt2') or a local directory containing config.json")
                 
                 if ref_valid and upd_valid:
-                    # Get agent_url from session state if configured
+                    # Get agent_url and agent_key from session state if configured
                     agent_url = st.session_state.get('unlearn_deploy_agent_url', '').strip()
+                    agent_key = st.session_state.get('unlearn_deploy_agent_key', '').strip()
                     
                     analysis_request = {
                         "feature": selected_feature.id,
@@ -6467,9 +6501,11 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
                         "max_length": int(max_length),
                     }
                     
-                    # Add agent_url if configured (for remote execution)
+                    # Add agent_url and agent_key if configured (for remote execution)
                     if agent_url:
                         analysis_request["agent_url"] = agent_url
+                        if agent_key:
+                            analysis_request["agent_key"] = agent_key
                     with st.spinner("🔎 Computing representational differences... this may take several minutes for large models."):
                         try:
                             rep_result = run_representational_analysis(**analysis_request)

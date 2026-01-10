@@ -91,6 +91,7 @@ def execute_analysis_remotely(
     timeout: int = 3600,  # 60 minutes timeout for analysis (FIM analysis can take a very long time)
     poll_interval: int = 2,  # Poll every 2 seconds
     max_poll_time: int = 3600,  # Maximum time to poll (1 hour)
+    api_key: Optional[str] = None,  # API key for authentication
 ) -> FeatureAnalysisResult:
     """
     Execute representational analysis on the remote server using async task pattern.
@@ -113,6 +114,7 @@ def execute_analysis_remotely(
         timeout: Request timeout in seconds (for individual requests)
         poll_interval: Seconds between status polls
         max_poll_time: Maximum time to poll for results (seconds)
+        api_key: API key for authentication (X-API-Key header)
         
     Returns:
         FeatureAnalysisResult with visualizations and warnings
@@ -146,6 +148,11 @@ def execute_analysis_remotely(
         code_size = len(json.dumps(code_files))
         print(f"📦 Request size: {code_size} bytes of code")
         
+        # Prepare headers with API key if provided
+        headers = {}
+        if api_key:
+            headers["X-API-Key"] = api_key
+        
         response = requests.post(
             f"{agent_url}/run_analysis",
             json={
@@ -159,6 +166,7 @@ def execute_analysis_remotely(
                 "max_length": max_length,
                 "analysis_code": json.dumps(code_files),
             },
+            headers=headers,
             timeout=submit_timeout,
         )
         
@@ -181,6 +189,18 @@ def execute_analysis_remotely(
             # Process synchronous result
             data = result.get("data", {})
             return _parse_analysis_result(data)
+        elif response.status_code == 401:
+            raise RuntimeError(
+                f"Authentication failed (401): Missing or invalid API key. "
+                f"Please check that you've entered the correct API key in the 'Key' field. "
+                f"The key should match the YOUR_API_KEY environment variable set on your server."
+            )
+        elif response.status_code == 403:
+            raise RuntimeError(
+                f"Access denied (403): Invalid API key. "
+                f"Please check that you've entered the correct API key in the 'Key' field. "
+                f"The key should match the YOUR_API_KEY environment variable set on your server."
+            )
         elif response.status_code == 524:
             # Cloudflare timeout - this shouldn't happen with async, but handle it
             raise RuntimeError(
@@ -232,12 +252,28 @@ def execute_analysis_remotely(
             )
         
         try:
+            # Prepare headers with API key if provided
+            headers = {}
+            if api_key:
+                headers["X-API-Key"] = api_key
+            
             status_response = requests.get(
                 f"{agent_url}/task_status/{task_id}",
+                headers=headers,
                 timeout=timeout,
             )
             
-            if status_response.status_code == 404:
+            if status_response.status_code == 401:
+                raise RuntimeError(
+                    f"Authentication failed (401): Missing or invalid API key. "
+                    f"Please check that you've entered the correct API key in the 'Key' field."
+                )
+            elif status_response.status_code == 403:
+                raise RuntimeError(
+                    f"Access denied (403): Invalid API key. "
+                    f"Please check that you've entered the correct API key in the 'Key' field."
+                )
+            elif status_response.status_code == 404:
                 raise RuntimeError(f"Task {task_id} not found on server")
             
             status_data = status_response.json()

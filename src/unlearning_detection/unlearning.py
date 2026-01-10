@@ -197,6 +197,7 @@ def run_representational_analysis(
     num_batches: int = 10,
     max_length: int = 128,
     agent_url: Optional[str] = None,  # If provided, execute analysis remotely
+    agent_key: Optional[str] = None,  # API key for remote agent authentication
 ) -> RepresentationalAnalysisResult:
     """Execute representational analysis for model unlearning audits."""
 
@@ -225,6 +226,7 @@ def run_representational_analysis(
                 batch_size=batch_size,
                 num_batches=num_batches,
                 max_length=max_length,
+                api_key=agent_key,
             )
             
             # Convert remote result to RepresentationalAnalysisResult

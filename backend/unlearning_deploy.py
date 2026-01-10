@@ -1,7 +1,11 @@
 # deploy.py (Server-side)
 import uvicorn
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status, Depends, Security, Request
+from starlette.requests import Request
 from fastapi.responses import JSONResponse
+from fastapi.security import APIKeyHeader
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -15,8 +19,105 @@ import threading
 import time
 from datetime import datetime
 from enum import Enum
+import os
+import secrets
 
-app = FastAPI()
+app = FastAPI(
+    title="Model Deployment API",
+    description="Secure API for model deployment and analysis",
+    version="1.0.0"
+)
+
+# Security Middleware Configuration
+# CORS Configuration - adjust allowed origins for your use case
+ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
+if ALLOWED_ORIGINS == ["*"]:
+    # In production, specify exact origins instead of "*"
+    print("⚠️  WARNING: CORS is set to allow all origins (*). Set ALLOWED_ORIGINS for production!")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+    max_age=3600,
+)
+
+# Trusted Host Middleware - only allow requests from trusted hosts
+# Set TRUSTED_HOSTS environment variable (comma-separated) to restrict hosts
+# Example: export TRUSTED_HOSTS=localhost,127.0.0.1,yourdomain.com
+TRUSTED_HOSTS = os.environ.get("TRUSTED_HOSTS", None)
+if TRUSTED_HOSTS:
+    trusted_hosts = [h.strip() for h in TRUSTED_HOSTS.split(",")]
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=trusted_hosts
+    )
+    print(f"✅ Trusted hosts configured: {trusted_hosts}")
+else:
+    print("⚠️  WARNING: No TRUSTED_HOSTS set. All hosts are allowed. Set for production!")
+
+# Request size limit (in bytes) - default 50MB
+MAX_REQUEST_SIZE = int(os.environ.get("MAX_REQUEST_SIZE", 50 * 1024 * 1024))  # 50MB default
+
+# Security Configuration
+API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+# Get API key from environment variable or generate a default one
+# In production, set this via environment variable: export YOUR_API_KEY="your-secret-key"
+# Supports both forms: export YOUR_API_KEY=key or export YOUR_API_KEY="key"
+api_key_raw = os.environ.get("YOUR_API_KEY", None)
+API_KEY = api_key_raw.strip('"\'') if api_key_raw else None  # Remove quotes if present
+
+# If no API key is set, generate a random one and print it (for development)
+if API_KEY is None:
+    API_KEY = secrets.token_urlsafe(32)
+    print(f"⚠️  WARNING: No YOUR_API_KEY environment variable set!")
+    print(f"⚠️  Generated temporary API key: {API_KEY}")
+    print(f"⚠️  Set YOUR_API_KEY environment variable for production use!")
+    print(f"⚠️  Example: export YOUR_API_KEY=\"your-secret-key-here\"")
+
+# List of allowed API keys (support multiple keys)
+ALLOWED_API_KEYS = set([API_KEY])
+if os.environ.get("API_KEYS"):
+    # Support comma-separated list of API keys
+    # Remove quotes from each key if present
+    additional_keys = [
+        k.strip().strip('"\'') 
+        for k in os.environ.get("API_KEYS", "").split(",") 
+        if k.strip()
+    ]
+    ALLOWED_API_KEYS.update(additional_keys)
+
+def verify_api_key(api_key: str = Security(API_KEY_HEADER)) -> str:
+    """
+    Verify API key from request header.
+    
+    Args:
+        api_key: API key from X-API-Key header
+        
+    Returns:
+        The verified API key
+        
+    Raises:
+        HTTPException: If API key is missing or invalid
+    """
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing API key. Please provide X-API-Key header.",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+    
+    if api_key not in ALLOWED_API_KEYS:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid API key. Access denied.",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+    
+    return api_key
 
 # Global variables to cache models, avoiding reloading on every request
 GLOBAL_REFERENCE_MODEL = None
@@ -479,7 +580,7 @@ def load_models_if_needed(reference_path: str, updated_path: str):
             raise RuntimeError(f"Failed to load updated model: {str(e)}")
 
 @app.post("/deploy")
-def deploy(req: DeployRequest):
+def deploy(req: DeployRequest, api_key: str = Depends(verify_api_key)):
     """
     Model deployment endpoint (compatible with frontend deployment requests).
     This endpoint is mainly used to notify the server to prepare models. 
@@ -505,7 +606,7 @@ def deploy(req: DeployRequest):
         }
 
 @app.post("/run_dynamic_code")
-def run_dynamic_code(req: CodeRequest):
+def run_dynamic_code(req: CodeRequest, request: Request, api_key: str = Depends(verify_api_key)):
     """
     Execute dynamic code asynchronously.
     
@@ -514,6 +615,25 @@ def run_dynamic_code(req: CodeRequest):
     """
     import time
     request_start = time.time()
+    
+    # Check request size
+    try:
+        if request:
+            content_length = request.headers.get("content-length")
+            if content_length and int(content_length) > MAX_REQUEST_SIZE:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"Request too large. Maximum size: {MAX_REQUEST_SIZE / 1024 / 1024:.1f}MB"
+                )
+    except (AttributeError, ValueError, TypeError):
+        pass  # Ignore if headers are not available or invalid
+    
+    # Check code size
+    if len(req.code) > MAX_REQUEST_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Code too large. Maximum size: {MAX_REQUEST_SIZE / 1024 / 1024:.1f}MB"
+        )
     
     # Generate unique task ID
     task_id = str(uuid.uuid4())
@@ -854,7 +974,7 @@ def _execute_analysis_task(task_id: str, req: AnalysisRequest):
 
 
 @app.post("/run_analysis")
-def run_analysis(req: AnalysisRequest):
+def run_analysis(req: AnalysisRequest, request: Request, api_key: str = Depends(verify_api_key)):
     """
     Execute representational analysis asynchronously.
     
@@ -864,10 +984,27 @@ def run_analysis(req: AnalysisRequest):
     import time
     request_start = time.time()
     
-    # Check request size (warn if too large, but don't block)
+    # Check request size
+    try:
+        if request:
+            content_length = request.headers.get("content-length")
+            if content_length and int(content_length) > MAX_REQUEST_SIZE:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"Request too large. Maximum size: {MAX_REQUEST_SIZE / 1024 / 1024:.1f}MB"
+                )
+    except (AttributeError, ValueError, TypeError):
+        pass  # Ignore if headers are not available or invalid
+    
+    # Check analysis code size
     if req.analysis_code:
         code_size = len(req.analysis_code)
-        if code_size > 1_000_000:  # 1MB
+        if code_size > MAX_REQUEST_SIZE:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Analysis code too large. Maximum size: {MAX_REQUEST_SIZE / 1024 / 1024:.1f}MB"
+            )
+        elif code_size > 1_000_000:  # 1MB
             print(f"⚠️ Large request detected: {code_size / 1024 / 1024:.2f} MB of code")
         else:
             print(f"📦 Request size: {code_size / 1024:.2f} KB of code")
@@ -908,7 +1045,7 @@ def run_analysis(req: AnalysisRequest):
 
 
 @app.get("/task_status/{task_id}")
-def get_task_status(task_id: str):
+def get_task_status(task_id: str, api_key: str = Depends(verify_api_key)):
     """
     Get status of an analysis task.
     
@@ -969,7 +1106,7 @@ def get_task_status(task_id: str):
         )
 
 @app.get("/health")
-def health_check():
+def health_check(api_key: str = Depends(verify_api_key)):
     """Health check endpoint"""
     with TASKS_LOCK:
         task_count = len(TASKS)
@@ -1004,15 +1141,31 @@ if __name__ == "__main__":
     timeout_keep_alive = int(os.environ.get("TIMEOUT_KEEP_ALIVE", 1800))  # 30 minutes default (increased from 600)
     
     print(f"🚀 Starting deployment agent on port {port}...")
-    print("📝 Available endpoints:")
+    print("\n🔐 Security Configuration:")
+    # Check if API key was set via environment variable (not auto-generated)
+    api_key_from_env = os.environ.get("YOUR_API_KEY", None)
+    if api_key_from_env:
+        print(f"   ✅ API Key authentication: ENABLED")
+        print(f"   ✅ API Key configured via environment variable")
+    else:
+        print(f"   ⚠️  API Key: {API_KEY[:20]}... (temporary, set YOUR_API_KEY env var)")
+    print(f"   ✅ CORS: {'Enabled' if ALLOWED_ORIGINS else 'Disabled'}")
+    print(f"   ✅ Max request size: {MAX_REQUEST_SIZE / 1024 / 1024:.1f}MB")
+    print("\n📝 Available endpoints (all require X-API-Key header):")
     print("   - POST /deploy - Deploy model (compatibility endpoint)")
     print("   - POST /run_dynamic_code - Execute dynamic Python code (async, returns 202 + task_id)")
     print("   - POST /run_analysis - Run representational analysis (async, returns 202 + task_id)")
     print("   - GET /task_status/{task_id} - Check status of any task (analysis or dynamic code)")
     print("   - GET /health - Health check")
-    print(f"\n💡 Tip: Set PORT environment variable to change port (default: 1234)")
-    print(f"💡 Tip: Set TIMEOUT_KEEP_ALIVE environment variable to change timeout (default: 1800s / 30min)")
-    print(f"✅ Async task processing enabled for all long-running operations!")
+    print(f"\n💡 Environment Variables:")
+    print(f"   - PORT: Server port (default: 1234)")
+    print(f"   - YOUR_API_KEY: Required API key for authentication")
+    print(f"   - API_KEYS: Comma-separated list of additional API keys")
+    print(f"   - ALLOWED_ORIGINS: Comma-separated CORS origins (default: *)")
+    print(f"   - TRUSTED_HOSTS: Comma-separated trusted hosts (optional)")
+    print(f"   - MAX_REQUEST_SIZE: Max request size in bytes (default: 50MB)")
+    print(f"   - TIMEOUT_KEEP_ALIVE: Keep-alive timeout in seconds (default: 1800s / 30min)")
+    print(f"\n✅ Async task processing enabled for all long-running operations!")
     print(f"   - No more Cloudflare timeout issues!")
     print(f"   - All tasks use the same /task_status/{{task_id}} endpoint for polling")
     uvicorn.run(
