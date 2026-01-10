@@ -6,4 +6,5 @@ abuse. Users can still override it by entering their own key in the sidebar.
 """
 
 # Default OpenRouter API key fallback (used only if user leaves the input blank)
+# Keep this secret - it's used as a fallback when user doesn't provide their own key
 DEFAULT_OPENROUTER_KEY = ""

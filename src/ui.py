@@ -1236,6 +1236,7 @@ def render_sidebar():
             provider = st.selectbox(
                 "Select provider",
                 ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini", "Kimi", "Local vLLM"],
+                index=1,  # Default to OpenRouter (index 1)
                 help="Choose your AI provider",
                 key="sidebar_provider_selectbox",
             )
@@ -1257,6 +1258,7 @@ def render_sidebar():
                 )
                 api_key = openai_api_key
             elif provider == "OpenRouter":
+                # Default model: meta-llama/llama-3.3-70b-instruct:free (index 7)
                 model_choice = st.selectbox(
                     "Model Name",
                     [
@@ -1271,8 +1273,10 @@ def render_sidebar():
                         "nousresearch/hermes-3-llama-3.1-405b:free",
                         "meta-llama/llama-3.1-405b-instruct:free"
                     ],
+                    index=7,  # Default to meta-llama/llama-3.3-70b-instruct:free
                     key="sidebar_openrouter_model_selectbox",
                 )
+                # Use default key if user doesn't provide one
                 api_key = openrouter_api_key.strip() if openrouter_api_key.strip() else DEFAULT_OPENROUTER_KEY
             elif provider == "Anthropic":
                 model_choice = st.selectbox("Model Name", ["claude-3-haiku-20240307", "claude-3-sonnet-20240229", "claude-3-opus-20240229"], key="sidebar_anthropic_model_selectbox")
