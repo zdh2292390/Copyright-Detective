@@ -1,66 +1,194 @@
-# Security Audit: `unlearning_deploy.py` Vulnerability Assessment
+# Notes: Secure Model Deployment & Analysis Server (`deploy.py`)
 
-**⚠️ CRITICAL WARNING:** This code contains severe security vulnerabilities. It permits arbitrary remote code execution (RCE) without sandboxing or authentication. **Do not deploy this to a public network or any environment containing sensitive data.**
-
-## 1. Critical Vulnerabilities
-
-### A. Remote Code Execution (RCE)
-- **Location:** `run_dynamic_code` endpoint and `execute_analysis_code` function.
-- **Issue:** The code uses the Python built-in `exec()` function to run string input received directly from the client (`req.code`).
-- **Risk:** This is the highest possible severity. An attacker can execute **any** Python command on the host server.
-    - **Data Theft:** `import os; print(os.environ)` reveals API keys, database credentials, and system paths.
-    - **File Access:** Attackers can read sensitive files (e.g., `/etc/passwd`, `~/.ssh/id_rsa`) or upload malicious files.
-    - **System Control:** Attackers can open a reverse shell (`import socket...`) to take full control of the server.
-
-### B. Lack of Isolation (No Sandboxing)
-- **Issue:** The dynamic code runs in the same process and memory space as the web server.
-- **Risk:** Even though `exec_globals` attempts to limit context, it does not prevent imports. A user can simply `import sys` or `import shutil` to bypass restrictions and destroy the file system or access network resources.
-
-### C. Cross-User Data Leakage (Global State)
-- **Location:** Global variables `GLOBAL_REFERENCE_MODEL`, `GLOBAL_UPDATED_MODEL`, and `TASKS`.
-- **Issue:** The server is stateful and shares variables across all requests.
-- **Risk:**
-    - **Model Theft:** If User A loads a proprietary model, User B can write a script to access `model_ref` (which points to User A's model) and extract weights or architecture details.
-    - **Task Snooping:** The `TASKS` dictionary is shared. If an attacker guesses or brute-forces a UUID, or simply iterates through memory objects via the RCE vulnerability, they can see other users' code, prompts, and analysis results.
-
-### D. Information Disclosure via Tracebacks
-- **Location:** `except Exception` blocks returning `traceback.format_exc()`.
-- **Issue:** Detailed Python stack traces are returned to the API client upon error.
-- **Risk:** This reveals the server's absolute file paths, installed library versions, and internal code structure, which aids attackers in crafting specific exploits.
-
-### E. Missing Authentication
-- **Issue:** The FastAPI app has no middleware for API keys, OAuth, or tokens.
-- **Risk:** Anyone with network access to the port can execute code and control the server.
+This document provides **user-facing** guidance for operating the server safely. Please read before use.
 
 ---
 
-## 2. Privacy Impact Assessment
+## Overview
 
-| Data Type | Risk Level | Description |
-| :--- | :--- | :--- |
-| **Model Weights** | 🔴 Critical | Proprietary models loaded into memory can be dumped by any user. |
-| **User Code** | 🔴 Critical | Code sent for analysis is stored in the global `TASKS` dict and is accessible. |
-| **Server Env Vars** | 🔴 Critical | API Keys (OpenAI, AWS, HF) stored in env vars are readable via RCE. |
-| **File System** | 🔴 Critical | Local training data or config files can be read/exfiltrated. |
+This server exposes endpoints to:
+
+- deploy a model path (`POST /deploy`)
+- run **dynamic Python code** against a loaded model (`POST /run_dynamic_code`)
+- run representational analyses (e.g., FIM/PCA/CKA) (`POST /run_analysis`)
+- poll async task status (`GET /task_status/{task_id}`)
+- check service health (`GET /health`)
+
+**All endpoints require the `X-API-Key` header** (as currently implemented in your code).
 
 ---
 
-## 3. Recommendations for Remediation
+## Critical Security Warnings
 
-1.  **Implement Sandboxing (Mandatory):**
-    *   Never run `exec()` on the host machine.
-    *   Use **Docker containers**, **Firecracker microVMs**, or **gVisor** to execute user code in an isolated environment.
-    *   Destroy the container immediately after execution.
+### 1) Authenticated Remote Code Execution (RCE) — **High Risk**
+This server executes code sent by clients using `exec()` (both in dynamic code execution and analysis-code execution).
 
-2.  **Add Authentication:**
-    *   Implement `API Key` or `Bearer Token` verification for all endpoints.
+- **What this means:** anyone who obtains a valid API key can run arbitrary Python on the server.
+- **Impact:** reading files, exfiltrating environment variables/secrets, network calls, installing malware, deleting data, etc.
+- **Bottom line:** API key auth reduces *who* can attack, but it does not remove the underlying capability.
 
-3.  **Remove Global State:**
-    *   Refactor the application to be stateless where possible.
-    *   If models must be cached, use a session-based approach where User A cannot access User B's loaded objects.
+**Do not expose this service to the public internet.** Use only in a controlled environment (private network/VPN + IP allowlist).
 
-4.  **Sanitize Error Outputs:**
-    *   Log full tracebacks internally (to a file or monitoring system) but return only generic error messages (e.g., "Internal Execution Error") to the client.
+---
 
-5.  **Network Isolation:**
-    *   Ensure the server running this code has no outbound internet access (unless strictly necessary) to prevent data exfiltration.
+### 2) Concurrency & Cross-Request Data Leakage (Thread Safety)
+The server uses:
+- global state (`GLOBAL_*`, `CURRENT_*`, `TASKS`)
+- background threads (`threading.Thread`)
+- global monkey-patching of `transformers.AutoModelForCausalLM.from_pretrained` during analysis
+
+**Risk:** if multiple tasks run concurrently, one task may affect another (wrong model used, incorrect results, crashes, or data mixing between users).
+
+**Recommended usage:** **single-user / low-concurrency**. Prefer **one analysis at a time**.
+
+---
+
+### 3) Sensitive Error Disclosure (Tracebacks)
+When execution fails, full Python tracebacks may be returned/stored in task errors.
+
+- **Impact:** reveals filesystem paths, internal module structure, and sometimes sensitive values.
+
+**Production recommendation:** return generic errors to clients; store detailed tracebacks only in server logs.
+
+---
+
+### 4) Denial-of-Service (DoS) via Resource Exhaustion
+Request size limits help, but **they do not prevent**:
+- infinite loops
+- large tensor allocations / GPU OOM
+- huge memory allocation
+- extremely long computations
+
+**Impact:** service becomes unavailable; host may become unstable.
+
+**Recommendation:** run this service inside a sandbox/container with CPU/memory/GPU limits, and enforce per-task timeouts.
+
+---
+
+### 5) Transport Security (TLS/HTTPS)
+If you access the service over plain HTTP, the API key is exposed to network interception.
+
+**Recommendation:** always use HTTPS via a reverse proxy (Nginx/Caddy) or a tunnel solution, and restrict inbound access.
+
+---
+
+### 6) Temporary Files / Disk Usage
+Some analysis flows create temporary directories (e.g., `tempfile.mkdtemp(...)`) that may not be removed automatically.
+
+**Impact:** disk usage grows over time and can eventually break the server.
+
+**Recommendation:** ensure temp directories are cleaned up (server-side) and monitor disk usage.
+
+---
+
+## Deployment Recommendations (Checklist)
+
+**Minimum recommended controls:**
+
+1. **Set a strong API key**
+   - Use a long random secret (32+ bytes).
+
+2. **Run behind HTTPS**
+   - Terminate TLS at a reverse proxy/tunnel.
+
+3. **Restrict network access**
+   - Allow only trusted IPs/VPN subnets.
+   - Consider `TrustedHostMiddleware` with `TRUSTED_HOSTS`.
+
+4. **Avoid high concurrency**
+   - Run one analysis at a time, or redesign to multi-process isolation.
+
+5. **Sandbox dynamic execution**
+   - If possible: execute code in an isolated container/VM (recommended).
+   - Disable outbound network for the execution environment if not needed.
+
+6. **Reduce information leakage**
+   - Do not return full tracebacks to clients in production.
+
+---
+
+## Environment Variables
+
+| Variable | Required | Example | Notes |
+|---|---:|---|---|
+| `YOUR_API_KEY` | Yes | `export YOUR_API_KEY="..."` | Primary API key for authentication. |
+| `API_KEYS` | No | `export API_KEYS="k1,k2"` | Optional additional keys (comma-separated). |
+| `PORT` | No | `export PORT=1234` | Server port. |
+| `ALLOWED_ORIGINS` | No | `export ALLOWED_ORIGINS="https://your-ui.com"` | Avoid `*` in production. |
+| `TRUSTED_HOSTS` | No | `export TRUSTED_HOSTS="yourdomain.com,localhost"` | Restricts Host header. |
+| `MAX_REQUEST_SIZE` | No | `export MAX_REQUEST_SIZE=52428800` | Bytes; default ~50MB. |
+| `TIMEOUT_KEEP_ALIVE` | No | `export TIMEOUT_KEEP_ALIVE=1800` | Keep-alive seconds. |
+
+**Example (Linux/macOS):**
+```bash
+export YOUR_API_KEY="replace-with-a-strong-random-secret"
+export PORT=8000
+export ALLOWED_ORIGINS="https://your-frontend.example"
+export TRUSTED_HOSTS="your-frontend.example,localhost,127.0.0.1"
+python deploy.py
+```
+
+---
+
+## API Usage
+
+### Required Header
+All requests must include:
+- `X-API-Key: <your key>`
+
+### Example: `curl`
+```bash
+curl -X POST "http://localhost:8000/deploy" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: YOUR_KEY_HERE" \
+  -d '{"model_path":"gpt2"}'
+```
+
+### Example: Python (requests)
+```python
+import requests
+
+API_URL = "http://localhost:8000"
+API_KEY = "YOUR_KEY_HERE"
+
+headers = {"X-API-Key": API_KEY, "Content-Type": "application/json"}
+
+# Submit an async analysis
+resp = requests.post(
+    f"{API_URL}/run_analysis",
+    headers=headers,
+    json={
+        "feature": "cka",
+        "model_reference_path": "gpt2",
+        "model_path": "gpt2",
+        "query": ["Hello world"],
+        "device": "cuda",
+        "batch_size": 1,
+        "num_batches": 1,
+        "max_length": 128,
+        "analysis_code": None,
+    },
+)
+task_id = resp.json()["task_id"]
+
+# Poll status
+status = requests.get(f"{API_URL}/task_status/{task_id}", headers=headers).json()
+print(status)
+```
+
+---
+
+## Known Limitations
+
+- This server is best suited for **research/development** settings.
+- Multi-user, high-concurrency usage may lead to:
+  - incorrect results
+  - crashes
+  - cross-request interference
+- Dynamic code execution is inherently dangerous and should be treated as privileged access.
+
+---
+
+## Disclaimer
+
+This service enables privileged execution of code for research workflows. The operator is responsible for securing the environment, protecting API keys, and preventing unauthorized access or misuse.
