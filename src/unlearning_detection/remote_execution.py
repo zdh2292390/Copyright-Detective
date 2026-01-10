@@ -89,9 +89,16 @@ def execute_analysis_remotely(
     num_batches: int = 10,
     max_length: int = 128,
     timeout: int = 3600,  # 60 minutes timeout for analysis (FIM analysis can take a very long time)
+    poll_interval: int = 2,  # Poll every 2 seconds
+    max_poll_time: int = 3600,  # Maximum time to poll (1 hour)
 ) -> FeatureAnalysisResult:
     """
-    Execute representational analysis on the remote server.
+    Execute representational analysis on the remote server using async task pattern.
+    
+    The server now uses async task processing to avoid Cloudflare timeout:
+    1. Submit analysis request -> get task_id (202 Accepted)
+    2. Poll /task_status/{task_id} until completed
+    3. Return results
     
     Args:
         agent_url: URL of the deployment agent (e.g., https://xxx.trycloudflare.com)
@@ -103,21 +110,21 @@ def execute_analysis_remotely(
         batch_size: Batch size for analysis
         num_batches: Number of batches
         max_length: Max sequence length
-        timeout: Request timeout in seconds
+        timeout: Request timeout in seconds (for individual requests)
+        poll_interval: Seconds between status polls
+        max_poll_time: Maximum time to poll for results (seconds)
         
     Returns:
         FeatureAnalysisResult with visualizations and warnings
     """
     
-    # Optimize parameters for FIM analysis to avoid Cloudflare timeout
+    # Optimize parameters for FIM analysis
     if feature.lower() == "fim":
-        # FIM is computationally intensive and can easily timeout
-        # Use very conservative defaults for remote execution
         if batch_size > 1:
-            print(f"⚠️ FIM analysis: Reducing batch_size from {batch_size} to 1 to avoid timeout")
+            print(f"⚠️ FIM analysis: Reducing batch_size from {batch_size} to 1")
             batch_size = 1
         if num_batches > 3:
-            print(f"⚠️ FIM analysis: Reducing num_batches from {num_batches} to 3 to avoid timeout")
+            print(f"⚠️ FIM analysis: Reducing num_batches from {num_batches} to 3")
             num_batches = 3
     
     # Read analysis code from frontend
@@ -129,9 +136,16 @@ def execute_analysis_remotely(
             f"This is a frontend issue. Please check if representational_toolkit files exist."
         ) from e
     
-    # Send analysis request to server with code
-    # The server should have a /run_analysis endpoint that accepts these parameters
+    # Step 1: Submit analysis request and get task_id
+    # Use a shorter timeout for the initial request (should be fast)
+    # Cloudflare has a 100s timeout, so we use 90s to get a clearer error
+    submit_timeout = min(90, timeout)
+    
     try:
+        print(f"📤 Submitting analysis request to {agent_url}/run_analysis...")
+        code_size = len(json.dumps(code_files))
+        print(f"📦 Request size: {code_size} bytes of code")
+        
         response = requests.post(
             f"{agent_url}/run_analysis",
             json={
@@ -143,108 +157,168 @@ def execute_analysis_remotely(
                 "batch_size": batch_size,
                 "num_batches": num_batches,
                 "max_length": max_length,
-                "analysis_code": json.dumps(code_files),  # Send code files as JSON string
+                "analysis_code": json.dumps(code_files),
             },
-            timeout=timeout,
+            timeout=submit_timeout,
         )
         
-        if response.status_code != 200:
-            # Handle specific error codes
-            if response.status_code == 524:
-                # Cloudflare Tunnel timeout
-                raise RuntimeError(
-                    f"Cloudflare Tunnel timeout (524). The analysis took longer than Cloudflare's timeout limit (usually 100 seconds).\n\n"
-                    f"Solutions:\n"
-                    f"1. Configure Cloudflare Tunnel with increased timeout (see CLOUDFLARE_TUNNEL_SETUP.md)\n"
-                    f"   - Edit ~/.cloudflared/config.yml and set timeout: 1800s\n"
-                    f"   - Restart Cloudflare Tunnel\n"
-                    f"2. Use ngrok instead of Cloudflare Tunnel (see CLOUDFLARE_TUNNEL_SETUP.md)\n"
-                    f"3. Reduce analysis parameters (num_batches, batch_size) to speed up processing\n"
-                    f"4. Run analysis locally instead of remotely"
-                )
-            elif response.status_code == 504:
-                # Gateway timeout
-                raise RuntimeError(
-                    f"Gateway timeout (504). The server took too long to respond.\n\n"
-                    f"This may indicate:\n"
-                    f"- The analysis is taking longer than expected\n"
-                    f"- Server resources are overloaded\n"
-                    f"- Network connectivity issues\n\n"
-                    f"Try reducing num_batches or batch_size, or check server status."
-                )
-            else:
-                raise RuntimeError(
-                    f"Remote execution failed with status code {response.status_code}: {response.text[:500]}"
-                )
-        
-        result = response.json()
-        
-        if result.get("status") == "error":
-            raise RuntimeError(
-                f"Remote execution error: {result.get('msg', 'Unknown error')}\n"
-                f"Log: {result.get('log', '')}"
-            )
-        
-        # Parse the result
-        # The server should return a dict with 'visualizations' and 'warnings'
-        data = result.get("data", {})
-        
-        visualizations = []
-        warnings = []
-        
-        # Parse visualizations (assuming they're returned as base64-encoded images)
-        if isinstance(data, dict):
-            viz_list = data.get("visualizations", [])
-            for viz in viz_list:
-                if isinstance(viz, dict):
-                    title = viz.get("title", "Visualization")
-                    image_data = viz.get("data", "")
-                    description = viz.get("description")
-                    
-                    # Decode base64 image if needed
-                    if isinstance(image_data, str):
-                        try:
-                            image_bytes = base64.b64decode(image_data)
-                        except Exception:
-                            image_bytes = image_data.encode() if isinstance(image_data, str) else b""
-                    else:
-                        image_bytes = image_data
-                    
-                    visualizations.append(
-                        VisualizationItem(
-                            title=title,
-                            data=image_bytes,
-                            mime_type=viz.get("mime_type", "image/png"),
-                            description=description,
-                        )
-                    )
+        if response.status_code == 202:
+            # Async task created
+            result = response.json()
+            task_id = result.get("task_id")
+            if not task_id:
+                raise RuntimeError("Server returned 202 but no task_id in response")
             
-            warnings = data.get("warnings", [])
-        
-        return FeatureAnalysisResult(
-            visualizations=visualizations,
-            warnings=warnings,
-        )
-        
-    except requests.exceptions.Timeout:
-        raise RuntimeError(
-            f"Remote execution timed out after {timeout} seconds. "
-            "The analysis may be taking longer than expected.\n\n"
-            "This could be due to:\n"
-            "- Cloudflare Tunnel timeout (default 100s) - configure with increased timeout\n"
-            "- Long-running analysis (FIM can take 30+ minutes)\n"
-            "- Network connectivity issues\n\n"
-            "Solutions:\n"
-            "- See CLOUDFLARE_TUNNEL_SETUP.md for timeout configuration\n"
-            "- Configure Cloudflare Tunnel: edit ~/.cloudflared/config.yml and set timeout: 1800s\n"
-            "- Reduce num_batches or batch_size to speed up processing\n"
-            "- Check server logs for analysis progress"
-        )
+            print(f"✅ Task created: {task_id}")
+            print(f"⏳ Polling for results (polling every {poll_interval}s, max {max_poll_time}s)...")
+        elif response.status_code == 200:
+            # Legacy synchronous response (for backward compatibility)
+            result = response.json()
+            if result.get("status") == "error":
+                raise RuntimeError(
+                    f"Remote execution error: {result.get('msg', 'Unknown error')}"
+                )
+            # Process synchronous result
+            data = result.get("data", {})
+            return _parse_analysis_result(data)
+        elif response.status_code == 524:
+            # Cloudflare timeout - this shouldn't happen with async, but handle it
+            raise RuntimeError(
+                f"Cloudflare timeout (524) while submitting request. This usually means:\n"
+                f"1. The request body is too large (code files are too big: {code_size} bytes)\n"
+                f"2. Network connectivity issues\n"
+                f"3. Server is overloaded\n\n"
+                f"Solutions:\n"
+                f"- Check network connection\n"
+                f"- Try again (may be temporary)\n"
+                f"- Contact server administrator if problem persists\n"
+                f"- Consider reducing the size of analysis code files"
+            )
+        else:
+            raise RuntimeError(
+                f"Failed to submit analysis request. Status code: {response.status_code}, "
+                f"Response: {response.text[:500]}"
+            )
     except requests.exceptions.ConnectionError as e:
         raise RuntimeError(
             f"Unable to connect to deployment agent at {agent_url}. "
             f"Please check if the server is running and the URL is correct. Error: {str(e)}"
         )
-    except Exception as e:
-        raise RuntimeError(f"Remote execution failed: {str(e)}")
+    except requests.exceptions.Timeout:
+        raise RuntimeError(
+            f"Request to server timed out after {submit_timeout} seconds while submitting task. "
+            f"This may indicate:\n"
+            f"- Request body is too large (code files are very large)\n"
+            f"- Network connectivity issues\n"
+            f"- Server is not responding quickly enough\n\n"
+            f"Note: This timeout is for submitting the task, not for the analysis itself. "
+            f"The analysis will run asynchronously once submitted."
+        )
+    except RuntimeError:
+        # Re-raise RuntimeError as-is (already has proper error message)
+        raise
+    
+    # Step 2: Poll for task status
+    import time
+    start_time = time.time()
+    last_status = None
+    
+    while True:
+        elapsed = time.time() - start_time
+        if elapsed > max_poll_time:
+            raise RuntimeError(
+                f"Polling timeout: Analysis did not complete within {max_poll_time} seconds. "
+                f"Task {task_id} may still be running on the server."
+            )
+        
+        try:
+            status_response = requests.get(
+                f"{agent_url}/task_status/{task_id}",
+                timeout=timeout,
+            )
+            
+            if status_response.status_code == 404:
+                raise RuntimeError(f"Task {task_id} not found on server")
+            
+            status_data = status_response.json()
+            current_status = status_data.get("status")
+            
+            # Print status updates (only when status changes)
+            if current_status != last_status:
+                if current_status == "pending":
+                    print(f"⏳ Task {task_id}: Queued (waiting to start)...")
+                elif current_status == "running":
+                    started_at = status_data.get("started_at", "unknown")
+                    print(f"🔄 Task {task_id}: Running (started at {started_at})...")
+                last_status = current_status
+            
+            if current_status == "completed":
+                print(f"✅ Task {task_id}: Completed!")
+                result_data = status_data.get("result", {})
+                if result_data.get("status") == "error":
+                    raise RuntimeError(
+                        f"Analysis failed: {result_data.get('msg', 'Unknown error')}"
+                    )
+                return _parse_analysis_result(result_data.get("data", {}))
+            
+            elif current_status == "failed":
+                error_info = status_data.get("error", {})
+                error_msg = error_info.get("msg", "Unknown error")
+                error_traceback = error_info.get("traceback", "")
+                raise RuntimeError(
+                    f"Analysis task failed: {error_msg}\n"
+                    f"{error_traceback[:1000] if error_traceback else ''}"
+                )
+            
+            # Task is still pending or running, wait and poll again
+            time.sleep(poll_interval)
+            
+        except requests.exceptions.Timeout:
+            print(f"⚠️ Status poll timed out, retrying...")
+            time.sleep(poll_interval)
+            continue
+        except requests.exceptions.ConnectionError as e:
+            raise RuntimeError(
+                f"Lost connection to server while polling task {task_id}. "
+                f"Error: {str(e)}"
+            )
+
+
+def _parse_analysis_result(data: Dict[str, Any]) -> FeatureAnalysisResult:
+    """Parse analysis result data into FeatureAnalysisResult."""
+    visualizations = []
+    warnings = []
+    
+    if isinstance(data, dict):
+        viz_list = data.get("visualizations", [])
+        for viz in viz_list:
+            if isinstance(viz, dict):
+                title = viz.get("title", "Visualization")
+                image_data = viz.get("data", "")
+                description = viz.get("description")
+                
+                # Decode base64 image if needed
+                if isinstance(image_data, str):
+                    try:
+                        image_bytes = base64.b64decode(image_data)
+                    except Exception:
+                        image_bytes = image_data.encode() if isinstance(image_data, str) else b""
+                else:
+                    image_bytes = image_data
+                
+                visualizations.append(
+                    VisualizationItem(
+                        title=title,
+                        data=image_bytes,
+                        mime_type=viz.get("mime_type", "image/png"),
+                        description=description,
+                    )
+                )
+        
+        warnings = data.get("warnings", [])
+    
+    return FeatureAnalysisResult(
+        visualizations=visualizations,
+        warnings=warnings,
+    )
 

@@ -1,6 +1,7 @@
 # deploy.py (Server-side)
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -9,6 +10,11 @@ import contextlib
 import base64
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+import uuid
+import threading
+import time
+from datetime import datetime
+from enum import Enum
 
 app = FastAPI()
 
@@ -18,6 +24,17 @@ GLOBAL_UPDATED_MODEL = None
 GLOBAL_TOKENIZER = None
 CURRENT_REFERENCE_PATH = None
 CURRENT_UPDATED_PATH = None
+
+# Task storage for async analysis
+class TaskStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+# In-memory task storage (in production, consider using Redis or a database)
+TASKS: Dict[str, Dict[str, Any]] = {}
+TASKS_LOCK = threading.Lock()
 
 class CodeRequest(BaseModel):
     model_path: str
@@ -306,6 +323,7 @@ def execute_analysis_code(
         import tempfile
         temp_output_path = tempfile.mkdtemp(prefix="analysis_output_")
         
+        print(f"🚀 Calling run_feature_analysis for feature={feature}...")
         result = run_feature_analysis(
             feature=feature,
             model_reference_path=CURRENT_REFERENCE_PATH or "",  # Use actual path for matching
@@ -318,23 +336,46 @@ def execute_analysis_code(
             max_length=max_length,
         )
         
+        print(f"📊 run_feature_analysis returned: type={type(result)}")
+        if result is None:
+            raise RuntimeError("run_feature_analysis returned None")
+        if not hasattr(result, 'visualizations'):
+            raise RuntimeError(f"Result missing 'visualizations' attribute. Has: {dir(result)}")
+        
+        viz_count = len(result.visualizations) if hasattr(result, 'visualizations') else 0
+        print(f"📊 Result has {viz_count} visualizations")
+        
         # Convert result to response format
         visualizations = []
         warnings = getattr(result, 'warnings', [])
         
-        for viz in result.visualizations:
-            image_data = getattr(viz, 'data', b'')
-            if isinstance(image_data, bytes):
-                image_b64 = base64.b64encode(image_data).decode('utf-8')
-            else:
-                image_b64 = ""
-            
-            visualizations.append({
-                "title": getattr(viz, 'title', 'Visualization'),
-                "data": image_b64,
-                "mime_type": getattr(viz, 'mime_type', 'image/png'),
-                "description": getattr(viz, 'description', None),
-            })
+        # Check if result has visualizations
+        if not hasattr(result, 'visualizations'):
+            raise RuntimeError("FeatureAnalysisResult missing 'visualizations' attribute")
+        
+        print(f"📊 Processing {len(result.visualizations)} visualizations...")
+        
+        for idx, viz in enumerate(result.visualizations):
+            try:
+                image_data = getattr(viz, 'data', b'')
+                if isinstance(image_data, bytes):
+                    image_b64 = base64.b64encode(image_data).decode('utf-8')
+                    print(f"  ✓ Visualization {idx+1}: {len(image_data)} bytes -> {len(image_b64)} base64 chars")
+                else:
+                    print(f"  ⚠️ Visualization {idx+1}: image_data is not bytes (type: {type(image_data)})")
+                    image_b64 = ""
+                
+                visualizations.append({
+                    "title": getattr(viz, 'title', f'Visualization {idx+1}'),
+                    "data": image_b64,
+                    "mime_type": getattr(viz, 'mime_type', 'image/png'),
+                    "description": getattr(viz, 'description', None),
+                })
+            except Exception as e:
+                print(f"  ❌ Error processing visualization {idx+1}: {str(e)}")
+                import traceback
+                print(f"  Traceback: {traceback.format_exc()}")
+                raise RuntimeError(f"Failed to process visualization {idx+1}: {str(e)}")
         
         print(f"✅ Analysis code executed: {len(visualizations)} visualizations, {len(warnings)} warnings")
         
@@ -519,137 +560,118 @@ def run_dynamic_code(req: CodeRequest):
             "traceback": traceback.format_exc()
         }
 
-@app.post("/run_analysis")
-def run_analysis(req: AnalysisRequest):
+def _execute_analysis_task(task_id: str, req: AnalysisRequest):
     """
-    Execute representational analysis.
+    Execute analysis task in background thread.
+    Updates task status in TASKS dictionary.
+    """
+    with TASKS_LOCK:
+        TASKS[task_id]["status"] = TaskStatus.RUNNING
+        TASKS[task_id]["started_at"] = datetime.now().isoformat()
     
-    If analysis_code is provided, execute the code from frontend using server's models.
-    Otherwise, try to import representational_toolkit from server.
-    """
     try:
-        print(f"🔎 Received analysis request: feature={req.feature}, "
+        print(f"🔎 [Task {task_id}] Starting analysis: feature={req.feature}, "
               f"reference={req.model_reference_path}, updated={req.model_path}")
         
-        # Optimize parameters for FIM analysis to reduce timeout risk
+        # Optimize parameters for FIM analysis
         batch_size = req.batch_size
         num_batches = req.num_batches
         if req.feature.lower() == "fim":
-            # FIM is computationally intensive, use very conservative defaults to avoid Cloudflare timeout
-            # Cloudflare Tunnel has a 100s timeout, so we need to be aggressive
             if batch_size > 1:
-                print(f"⚠️ FIM analysis: Reducing batch_size from {batch_size} to 1 to avoid Cloudflare timeout")
+                print(f"⚠️ [Task {task_id}] FIM analysis: Reducing batch_size from {batch_size} to 1")
                 batch_size = 1
             if num_batches > 3:
-                print(f"⚠️ FIM analysis: Reducing num_batches from {num_batches} to 3 to avoid Cloudflare timeout")
+                print(f"⚠️ [Task {task_id}] FIM analysis: Reducing num_batches from {num_batches} to 3")
                 num_batches = 3
-            print(f"ℹ️ FIM analysis will use batch_size={batch_size}, num_batches={num_batches}")
-            print(f"ℹ️ If timeout still occurs, consider using ngrok or running locally")
         
         # 1. Load models (if needed)
         load_models_if_needed(req.model_reference_path, req.model_path)
         
         # 2. Execute analysis
-        # If analysis_code is provided, use it (frontend sends the code)
+        result = None
         if req.analysis_code:
-            print("📦 Using analysis code from frontend...")
-            try:
-                import json
-                code_files = json.loads(req.analysis_code)
-                
-                # Validate that we have the required files
-                if not code_files:
-                    return {
-                        "status": "error",
-                        "msg": "No code files received from frontend. Please check if representational_toolkit files exist."
-                    }
-                
-                print(f"📦 Received {len(code_files)} code file(s): {list(code_files.keys())}")
-                return execute_analysis_code(
-                    code_files=code_files,
-                    feature=req.feature,
-                    query=req.query,
-                    device=req.device,
-                    batch_size=batch_size,  # Use optimized batch_size
-                    num_batches=num_batches,  # Use optimized num_batches
-                    max_length=req.max_length,
-                )
-            except json.JSONDecodeError as e:
-                return {
-                    "status": "error",
-                    "msg": f"Failed to parse analysis code JSON: {str(e)}"
-                }
-            except Exception as e:
-                import traceback
-                return {
-                    "status": "error",
-                    "msg": f"Error processing analysis code: {str(e)}",
-                    "traceback": traceback.format_exc()
-                }
-        
-        # Otherwise, try to import from server
-        import sys
-        import os
-        
-        # Get the directory where the current script is located
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        parent_dir = os.path.dirname(current_dir)
-        
-        # Check for environment variable first
-        toolkit_env_path = os.environ.get("REPRESENTATIONAL_TOOLKIT_PATH")
-        if toolkit_env_path and os.path.exists(toolkit_env_path):
-            possible_paths = [toolkit_env_path]
-            print(f"📁 Using REPRESENTATIONAL_TOOLKIT_PATH: {toolkit_env_path}")
-        else:
-            # List of possible paths
-            possible_paths = [
-                # Method 1: In current directory (most common)
-                os.path.join(current_dir, "representational_toolkit"),
-                # Method 2: In parent directory
-                os.path.join(parent_dir, "representational_toolkit"),
-                # Method 3: In src/unlearning_detection
-                os.path.join(current_dir, "src", "unlearning_detection", "representational_toolkit"),
-                os.path.join(parent_dir, "src", "unlearning_detection", "representational_toolkit"),
-                # Method 4: In project root directory
-                os.path.join(current_dir, "..", "src", "unlearning_detection", "representational_toolkit"),
-                # Method 5: Check common installation locations
-                os.path.join("/usr/local/lib/python3", "site-packages", "representational_toolkit"),
-                os.path.join(os.path.expanduser("~"), ".local", "lib", "python3", "site-packages", "representational_toolkit"),
-            ]
-        
-        toolkit_path = None
-        for path in possible_paths:
-            abs_path = os.path.abspath(path)
-            if os.path.exists(abs_path) and os.path.isdir(abs_path):
-                analysis_file = os.path.join(abs_path, "analysis.py")
-                if os.path.exists(analysis_file):
-                    toolkit_path = abs_path
-                    print(f"📁 Found representational_toolkit at: {abs_path}")
-                    break
-        
-        if toolkit_path:
-            # Add toolkit's parent directory to sys.path
-            toolkit_parent = os.path.dirname(toolkit_path)
-            if toolkit_parent not in sys.path:
-                sys.path.insert(0, toolkit_parent)
+            print(f"📦 [Task {task_id}] Using analysis code from frontend...")
+            import json
+            code_files = json.loads(req.analysis_code)
             
-            # Try to import
-            try:
-                # If toolkit is in src/unlearning_detection
-                if "src" in toolkit_path and "unlearning_detection" in toolkit_path:
-                    from src.unlearning_detection.representational_toolkit.analysis import run_feature_analysis
-                    print("✅ Imported from src.unlearning_detection.representational_toolkit.analysis")
-                else:
-                    # Direct import
-                    from representational_toolkit.analysis import run_feature_analysis
-                    print("✅ Imported from representational_toolkit.analysis")
-            except ImportError as e:
-                # If direct import fails, try adding the toolkit directory itself to the path
-                if toolkit_path not in sys.path:
-                    sys.path.insert(0, toolkit_path)
+            if not code_files:
+                raise ValueError("No code files received from frontend")
+            
+            print(f"📦 [Task {task_id}] Received {len(code_files)} code file(s): {list(code_files.keys())}")
+            print(f"🚀 [Task {task_id}] Executing analysis code...")
+            result = execute_analysis_code(
+                code_files=code_files,
+                feature=req.feature,
+                query=req.query,
+                device=req.device,
+                batch_size=batch_size,
+                num_batches=num_batches,
+                max_length=req.max_length,
+            )
+            print(f"📊 [Task {task_id}] Analysis code execution returned: status={result.get('status') if result else 'None'}")
+            
+            # Check if execute_analysis_code returned an error
+            if not result:
+                raise RuntimeError("execute_analysis_code returned None")
+            if result.get("status") == "error":
+                raise RuntimeError(
+                    f"Analysis code execution failed: {result.get('msg', 'Unknown error')}\n"
+                    f"Traceback: {result.get('traceback', '')}"
+                )
+            if result.get("status") != "success":
+                raise RuntimeError(
+                    f"Unexpected status from execute_analysis_code: {result.get('status')}"
+                )
+            
+            # Verify result has data
+            if "data" not in result:
+                raise RuntimeError("execute_analysis_code result missing 'data' field")
+            
+            data = result.get("data", {})
+            viz_count = len(data.get("visualizations", []))
+            print(f"✅ [Task {task_id}] Analysis completed: {viz_count} visualizations generated")
+        else:
+            # Import from server
+            import sys
+            import os
+            
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            parent_dir = os.path.dirname(current_dir)
+            
+            toolkit_env_path = os.environ.get("REPRESENTATIONAL_TOOLKIT_PATH")
+            if toolkit_env_path and os.path.exists(toolkit_env_path):
+                possible_paths = [toolkit_env_path]
+            else:
+                possible_paths = [
+                    os.path.join(current_dir, "representational_toolkit"),
+                    os.path.join(parent_dir, "representational_toolkit"),
+                    os.path.join(current_dir, "src", "unlearning_detection", "representational_toolkit"),
+                    os.path.join(parent_dir, "src", "unlearning_detection", "representational_toolkit"),
+                    os.path.join(current_dir, "..", "src", "unlearning_detection", "representational_toolkit"),
+                ]
+            
+            toolkit_path = None
+            for path in possible_paths:
+                abs_path = os.path.abspath(path)
+                if os.path.exists(abs_path) and os.path.isdir(abs_path):
+                    analysis_file = os.path.join(abs_path, "analysis.py")
+                    if os.path.exists(analysis_file):
+                        toolkit_path = abs_path
+                        break
+            
+            if toolkit_path:
+                toolkit_parent = os.path.dirname(toolkit_path)
+                if toolkit_parent not in sys.path:
+                    sys.path.insert(0, toolkit_parent)
                 
                 try:
-                    # Try to directly import analysis module
+                    if "src" in toolkit_path and "unlearning_detection" in toolkit_path:
+                        from src.unlearning_detection.representational_toolkit.analysis import run_feature_analysis
+                    else:
+                        from representational_toolkit.analysis import run_feature_analysis
+                except ImportError:
+                    if toolkit_path not in sys.path:
+                        sys.path.insert(0, toolkit_path)
                     import importlib.util
                     spec = importlib.util.spec_from_file_location(
                         "analysis", 
@@ -659,185 +681,237 @@ def run_analysis(req: AnalysisRequest):
                         analysis_module = importlib.util.module_from_spec(spec)
                         spec.loader.exec_module(analysis_module)
                         run_feature_analysis = analysis_module.run_feature_analysis
-                        print("✅ Imported by loading analysis.py directly")
-                    else:
-                        raise ImportError("Failed to create module spec")
-                except Exception as e2:
-                    # Last attempt: directly import analysis (if path has been added)
-                    try:
-                        import analysis
-                        run_feature_analysis = analysis.run_feature_analysis
-                        print("✅ Imported analysis module directly")
-                    except Exception as e3:
-                        raise ImportError(
-                            f"Found toolkit at {toolkit_path} but failed to import.\n"
-                            f"Standard import error: {str(e)}\n"
-                            f"Direct file import error: {str(e2)}\n"
-                            f"Module import error: {str(e3)}"
-                        )
-        else:
-            # Try standard import (if installed as package)
-            try:
-                from representational_toolkit.analysis import run_feature_analysis
-                print("✅ Imported from representational_toolkit.analysis (installed package)")
-            except ImportError:
+            else:
                 try:
-                    from src.unlearning_detection.representational_toolkit.analysis import run_feature_analysis
-                    print("✅ Imported from src.unlearning_detection.representational_toolkit.analysis")
+                    from representational_toolkit.analysis import run_feature_analysis
                 except ImportError:
-                    # Provide detailed error information and solutions
-                    searched_paths = "\n".join(f"  - {os.path.abspath(p)}" for p in possible_paths)
-                    raise ImportError(
-                        f"Cannot find representational_toolkit directory.\n\n"
-                        f"Searched in:\n{searched_paths}\n\n"
-                        f"Please do one of the following:\n"
-                        f"1. Copy the 'representational_toolkit' directory to: {current_dir}/representational_toolkit/\n"
-                        f"2. Or set environment variable: export REPRESENTATIONAL_TOOLKIT_PATH=/path/to/representational_toolkit\n"
-                        f"3. Or set PYTHONPATH to include the directory containing representational_toolkit\n"
-                        f"4. Or install it as a Python package\n\n"
-                        f"Expected structure:\n"
-                        f"  representational_toolkit/\n"
-                        f"    ├── __init__.py\n"
-                        f"    ├── analysis.py\n"
-                        f"    ├── fisher_analysis.py\n"
-                        f"    ├── pca_shift_analysis.py\n"
-                        f"    ├── pca_sim_analysis.py\n"
-                        f"    ├── cka_analysis.py\n"
-                        f"    └── types.py\n\n"
-                        f"Quick fix:\n"
-                        f"  cd {current_dir}\n"
-                        f"  # Copy from frontend project (replace with actual path):\n"
-                        f"  cp -r /path/to/frontend/src/unlearning_detection/representational_toolkit ./\n"
-                        f"  touch representational_toolkit/__init__.py\n\n"
-                        f"Or set environment variable before starting server:\n"
-                        f"  export REPRESENTATIONAL_TOOLKIT_PATH=/path/to/representational_toolkit\n"
-                        f"  python deploy.py"
-                    )
-        
-        if run_feature_analysis is None:
-            return {
-                "status": "error",
-                "msg": "Failed to import run_feature_analysis function"
+                    try:
+                        from src.unlearning_detection.representational_toolkit.analysis import run_feature_analysis
+                    except ImportError:
+                        raise ImportError(f"Cannot find representational_toolkit directory")
+            
+            if run_feature_analysis is None:
+                raise RuntimeError("Failed to import run_feature_analysis function")
+            
+            print(f"🚀 [Task {task_id}] Running {req.feature} analysis...")
+            analysis_result = run_feature_analysis(
+                feature=req.feature,
+                model_reference_path=req.model_reference_path,
+                model_path=req.model_path,
+                query=req.query,
+                device=req.device,
+                batch_size=batch_size,
+                num_batches=num_batches,
+                max_length=req.max_length,
+            )
+            
+            # Process results
+            visualizations = []
+            warnings = []
+            
+            if hasattr(analysis_result, 'warnings'):
+                warnings = analysis_result.warnings if analysis_result.warnings else []
+            
+            if hasattr(analysis_result, 'visualizations'):
+                for viz in analysis_result.visualizations:
+                    image_data = getattr(viz, 'data', b'')
+                    if isinstance(image_data, bytes):
+                        image_b64 = base64.b64encode(image_data).decode('utf-8')
+                    elif isinstance(image_data, str):
+                        image_b64 = image_data
+                    else:
+                        image_b64 = ""
+                    
+                    visualizations.append({
+                        "title": getattr(viz, 'title', 'Visualization'),
+                        "data": image_b64,
+                        "mime_type": getattr(viz, 'mime_type', 'image/png'),
+                        "description": getattr(viz, 'description', None),
+                    })
+            
+            result = {
+                "status": "success",
+                "data": {
+                    "visualizations": visualizations,
+                    "warnings": warnings,
+                }
             }
         
-        # 3. Execute analysis
-        print(f"🚀 Running {req.feature} analysis...")
-        result = run_feature_analysis(
-            feature=req.feature,
-            model_reference_path=req.model_reference_path,
-            model_path=req.model_path,
-            query=req.query,
-            device=req.device,
-            batch_size=batch_size,  # Use optimized batch_size
-            num_batches=num_batches,  # Use optimized num_batches
-            max_length=req.max_length,
-        )
+        # Verify result before updating task
+        if result is None:
+            raise RuntimeError("Result is None, cannot update task")
+        if not isinstance(result, dict):
+            raise RuntimeError(f"Result is not a dict: {type(result)}")
+        if "status" not in result:
+            raise RuntimeError("Result missing 'status' field")
+        if result.get("status") != "success":
+            raise RuntimeError(f"Result status is not 'success': {result.get('status')}")
         
-        # 4. Process results
-        # result should be FeatureAnalysisResult type
-        visualizations = []
-        warnings = []
+        print(f"📝 [Task {task_id}] Updating task status to COMPLETED...")
         
-        if hasattr(result, 'warnings'):
-            warnings = result.warnings if result.warnings else []
+        # Update task with result
+        with TASKS_LOCK:
+            TASKS[task_id]["status"] = TaskStatus.COMPLETED
+            TASKS[task_id]["completed_at"] = datetime.now().isoformat()
+            TASKS[task_id]["result"] = result
         
-        if hasattr(result, 'visualizations'):
-            for viz in result.visualizations:
-                # Encode image data as base64
-                image_data = getattr(viz, 'data', b'')
-                if isinstance(image_data, bytes):
-                    image_b64 = base64.b64encode(image_data).decode('utf-8')
-                elif isinstance(image_data, str):
-                    # If it's already a base64 string, use it directly
-                    image_b64 = image_data
-                else:
-                    image_b64 = ""
-                
-                visualizations.append({
-                    "title": getattr(viz, 'title', 'Visualization'),
-                    "data": image_b64,
-                    "mime_type": getattr(viz, 'mime_type', 'image/png'),
-                    "description": getattr(viz, 'description', None),
-                })
+        print(f"✅ [Task {task_id}] Analysis completed successfully and task status updated")
         
-        print(f"✅ Analysis completed: {len(visualizations)} visualizations, {len(warnings)} warnings")
-        
-        return {
-            "status": "success",
-            "data": {
-                "visualizations": visualizations,
-                "warnings": warnings,
-            }
-        }
-        
-    except ImportError as e:
-        error_msg = (
-            f"Cannot import representational_toolkit.analysis.\n"
-            f"Please copy the representational_toolkit directory to the server.\n"
-            f"Error: {str(e)}"
-        )
-        print(f"❌ {error_msg}")
-        return {
-            "status": "error",
-            "msg": error_msg
-        }
-    except TimeoutError as e:
-        error_msg = (
-            f"Analysis timed out. FIM analysis can take several minutes.\n\n"
-            f"Solutions:\n"
-            f"1. Reduce batch_size (current: {batch_size}, try: 1-2)\n"
-            f"2. Reduce num_batches (current: {num_batches}, try: 3-5)\n"
-            f"3. Analyze fewer layers using layers_to_analyze parameter\n"
-            f"4. Increase server timeout: export TIMEOUT_KEEP_ALIVE=600\n"
-            f"5. Use ngrok instead of Cloudflare Tunnel (ngrok has longer timeout)\n"
-            f"6. Run analysis locally instead of remotely\n\n"
-            f"Original error: {str(e)}"
-        )
-        print(f"❌ {error_msg}")
-        return {
-            "status": "error",
-            "msg": error_msg
-        }
     except Exception as e:
         import traceback
-        error_msg = f"Analysis failed: {str(e)}"
         error_traceback = traceback.format_exc()
+        error_msg = f"Analysis failed: {str(e)}"
         
-        # Check if it's a timeout-related error
-        error_str_lower = str(e).lower()
-        if "timeout" in error_str_lower or "524" in error_str_lower or "cloudflare" in error_str_lower:
-            error_msg = (
-                f"Analysis timed out (Cloudflare Tunnel timeout). FIM analysis can take several minutes.\n\n"
-                f"Solutions:\n"
-                f"1. Configure Cloudflare Tunnel timeout (see CLOUDFLARE_TUNNEL_SETUP.md):\n"
-                f"   - Edit ~/.cloudflared/config.yml\n"
-                f"   - Set timeout: 1800s (30 minutes)\n"
-                f"   - Restart Cloudflare Tunnel\n"
-                f"2. Reduce batch_size (current: {batch_size}, try: 1)\n"
-                f"3. Reduce num_batches (current: {num_batches}, try: 2-3)\n"
-                f"4. Analyze fewer layers using layers_to_analyze parameter\n"
-                f"5. Use ngrok instead of Cloudflare Tunnel (see CLOUDFLARE_TUNNEL_SETUP.md)\n"
-                f"6. Run analysis locally instead of remotely\n\n"
-                f"Original error: {str(e)}"
-            )
-        
-        print(f"❌ {error_msg}")
+        print(f"❌ [Task {task_id}] {error_msg}")
         print(f"Traceback:\n{error_traceback}")
-        return {
-            "status": "error",
-            "msg": error_msg,
-            "traceback": error_traceback
+        
+        with TASKS_LOCK:
+            TASKS[task_id]["status"] = TaskStatus.FAILED
+            TASKS[task_id]["completed_at"] = datetime.now().isoformat()
+            TASKS[task_id]["error"] = {
+                "msg": error_msg,
+                "traceback": error_traceback
+            }
+
+
+@app.post("/run_analysis")
+def run_analysis(req: AnalysisRequest):
+    """
+    Execute representational analysis asynchronously.
+    
+    Returns 202 Accepted with task_id immediately, then executes analysis in background.
+    Use /task_status/{task_id} to poll for results.
+    """
+    import time
+    request_start = time.time()
+    
+    # Check request size (warn if too large, but don't block)
+    if req.analysis_code:
+        code_size = len(req.analysis_code)
+        if code_size > 1_000_000:  # 1MB
+            print(f"⚠️ Large request detected: {code_size / 1024 / 1024:.2f} MB of code")
+        else:
+            print(f"📦 Request size: {code_size / 1024:.2f} KB of code")
+    
+    # Generate unique task ID
+    task_id = str(uuid.uuid4())
+    
+    # Create task entry
+    with TASKS_LOCK:
+        TASKS[task_id] = {
+            "status": TaskStatus.PENDING,
+            "created_at": datetime.now().isoformat(),
+            "feature": req.feature,
+            "model_reference_path": req.model_reference_path,
+            "model_path": req.model_path,
         }
+    
+    # Start background thread to execute analysis
+    thread = threading.Thread(
+        target=_execute_analysis_task,
+        args=(task_id, req),
+        daemon=True
+    )
+    thread.start()
+    
+    request_elapsed = time.time() - request_start
+    print(f"📋 Created task {task_id} for {req.feature} analysis (took {request_elapsed*1000:.1f}ms)")
+    
+    # Return 202 Accepted with task_id immediately
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "status": "accepted",
+            "task_id": task_id,
+            "message": "Analysis task created. Use /task_status/{task_id} to check status."
+        }
+    )
+
+
+@app.get("/task_status/{task_id}")
+def get_task_status(task_id: str):
+    """
+    Get status of an analysis task.
+    
+    Returns:
+    - 200: Task completed or failed (includes result/error)
+    - 202: Task still running
+    - 404: Task not found
+    """
+    with TASKS_LOCK:
+        task = TASKS.get(task_id)
+    
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task {task_id} not found"
+        )
+    
+    task_status = task["status"]
+    
+    if task_status == TaskStatus.COMPLETED:
+        return {
+            "status": "completed",
+            "task_id": task_id,
+            "result": task.get("result"),
+            "created_at": task.get("created_at"),
+            "started_at": task.get("started_at"),
+            "completed_at": task.get("completed_at"),
+        }
+    elif task_status == TaskStatus.FAILED:
+        return {
+            "status": "failed",
+            "task_id": task_id,
+            "error": task.get("error"),
+            "created_at": task.get("created_at"),
+            "started_at": task.get("started_at"),
+            "completed_at": task.get("completed_at"),
+        }
+    elif task_status == TaskStatus.RUNNING:
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "status": "running",
+                "task_id": task_id,
+                "created_at": task.get("created_at"),
+                "started_at": task.get("started_at"),
+                "message": "Analysis is still running. Please poll again later."
+            }
+        )
+    else:  # PENDING
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "status": "pending",
+                "task_id": task_id,
+                "created_at": task.get("created_at"),
+                "message": "Task is queued and will start soon."
+            }
+        )
 
 @app.get("/health")
 def health_check():
     """Health check endpoint"""
+    with TASKS_LOCK:
+        task_count = len(TASKS)
+        running_tasks = sum(1 for t in TASKS.values() if t.get("status") == TaskStatus.RUNNING)
+        pending_tasks = sum(1 for t in TASKS.values() if t.get("status") == TaskStatus.PENDING)
+        completed_tasks = sum(1 for t in TASKS.values() if t.get("status") == TaskStatus.COMPLETED)
+        failed_tasks = sum(1 for t in TASKS.values() if t.get("status") == TaskStatus.FAILED)
+    
     return {
         "status": "ok",
         "models_loaded": {
             "reference": CURRENT_REFERENCE_PATH is not None,
             "updated": CURRENT_UPDATED_PATH is not None,
             "tokenizer": GLOBAL_TOKENIZER is not None,
+        },
+        "tasks": {
+            "total": task_count,
+            "running": running_tasks,
+            "pending": pending_tasks,
+            "completed": completed_tasks,
+            "failed": failed_tasks,
         }
     }
 
@@ -854,11 +928,12 @@ if __name__ == "__main__":
     print("📝 Available endpoints:")
     print("   - POST /deploy - Deploy model (compatibility endpoint)")
     print("   - POST /run_dynamic_code - Execute dynamic Python code")
-    print("   - POST /run_analysis - Run representational analysis")
+    print("   - POST /run_analysis - Run representational analysis (async, returns 202 + task_id)")
+    print("   - GET /task_status/{task_id} - Check status of analysis task")
     print("   - GET /health - Health check")
     print(f"\n💡 Tip: Set PORT environment variable to change port (default: 1234)")
     print(f"💡 Tip: Set TIMEOUT_KEEP_ALIVE environment variable to change timeout (default: 1800s / 30min)")
-    print(f"⚠️  Note: Cloudflare Tunnel has its own timeout (default 100s). Configure it separately!")
+    print(f"✅ Async task processing enabled - no more Cloudflare timeout issues!")
     uvicorn.run(
         app, 
         host="0.0.0.0", 
