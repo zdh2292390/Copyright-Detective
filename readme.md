@@ -192,7 +192,19 @@ Now you can access:
 
 This module runs a lightweight deployment service on your **remote server**, then exposes it to your local Streamlit app via a temporary Cloudflare tunnel.
 
-### 1) Server (Remote): Install `cloudflared` and Start a Quick Tunnel
+
+### 1) Server (Remote): Start the Deployment Service
+
+export your key:
+``bash
+export YOUR_API_KEY="your_api_key"
+``
+
+Run the deployment script on your server: [unlearning_deployment.py](/backend/unlearning_deploy.py), please check [unlearning_deployment.py](/backend/notes.md) to see the risks.
+
+Once the service is running and the tunnel is up, you can use **Representational Analysis (Unlearning Detection)** directly from the app UI.
+
+### 2) Server (Remote): Install `cloudflared` and Start a Quick Tunnel
 
 On your server, download and start Cloudflare Tunnel:
 
@@ -216,9 +228,11 @@ Copy the generated `https://*.trycloudflare.com` link and paste it into the app:
 
 - **Deployment Agent URL** → `https://cool-server-link.trycloudflare.com`
 
+- **KEY** → `your_api_key`
+
 > **Note:** It may take a short time before the tunnel becomes reachable.
 
-### 2) App: Set Model Paths (Absolute Paths on the Server)
+### 3) App: Set Model Paths (Absolute Paths on the Server)
 
 In **Representational Analysis (Unlearning Detection)**, provide the **absolute paths on the deployment server**:
 
@@ -227,10 +241,4 @@ In **Representational Analysis (Unlearning Detection)**, provide the **absolute 
 
 > The paths must be server-local absolute paths (not your local machine paths).
 
-### 3) Server (Remote): Start the Deployment Service
 
-Run the deployment script on your server:
-
-[unlearning_deployment.py](/backend/unlearning_deploy.py)
-
-Once the service is running and the tunnel is up, you can use **Representational Analysis (Unlearning Detection)** directly from the app UI.
