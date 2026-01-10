@@ -214,53 +214,86 @@ def run_pca_similarity(
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
+    # Modern, professional styling
     mpl.rcParams.update({
-        "font.family": "serif",
-        "font.serif": ["DejaVu Serif"],
-        "font.size": 10,
-        "axes.titlesize": 12,
-        "axes.labelsize": 8,
-        "xtick.labelsize": 8,
-        "ytick.labelsize": 8,
-        "lines.linewidth": 2,
-        "lines.markersize": 6,
-        "axes.linewidth": 1.2,
+        "font.family": "sans-serif",
+        "font.sans-serif": ["Arial", "DejaVu Sans", "Liberation Sans", "Helvetica"],
+        "font.size": 11,
+        "axes.titlesize": 13,
+        "axes.labelsize": 11,
+        "xtick.labelsize": 10,
+        "ytick.labelsize": 10,
+        "lines.linewidth": 2.5,
+        "lines.markersize": 8,
+        "axes.linewidth": 1.0,
         "axes.spines.top": False,
         "axes.spines.right": False,
+        "axes.edgecolor": "#333333",
         "axes.grid": True,
-        "grid.linestyle": "--",
-        "grid.linewidth": 0.6,
-        "grid.alpha": 0.6,
+        "grid.linestyle": "-",
+        "grid.linewidth": 0.5,
+        "grid.alpha": 0.3,
         "legend.frameon": True,
-        "legend.fontsize": 8,
-        "legend.title_fontsize": 8,
-        "axes.prop_cycle": mpl.cycler("color", ["#0072B2", "#D55E00", "#009E73"]),
+        "legend.fontsize": 10,
+        "legend.title_fontsize": 10,
+        "figure.facecolor": "white",
+        "axes.facecolor": "white",
     })
 
-    fig, ax = plt.subplots(figsize=(6, 4))
+    fig, ax = plt.subplots(figsize=(7, 4.5), facecolor="white")
 
     marker_freq = 5
     marker_indices = [idx for idx in range(len(layers)) if idx % marker_freq == 0]
 
-    ax.plot(layers, sims, linestyle="-", label="Updated vs Reference")
+    # Modern color
+    plot_color = "#9B59B6"  # Modern purple
+    ax.plot(
+        layers, 
+        sims, 
+        linestyle="-", 
+        color=plot_color,
+        label="Updated vs Reference",
+        linewidth=2.5,
+        alpha=0.9,
+        zorder=2,
+    )
     ax.plot(
         [layers[idx] for idx in marker_indices],
         [sims[idx] for idx in marker_indices],
         linestyle="None",
         marker="o",
+        color=plot_color,
+        markersize=10,
+        markerfacecolor=plot_color,
+        markeredgecolor="white",
+        markeredgewidth=1.5,
+        zorder=3,
     )
 
-    ax.set_xlabel("Layer index")
-    ax.set_ylabel("Cosine similarity of PC1")
-    ax.set_title("Layer-wise PCA Similarity", pad=12)
+    ax.set_xlabel("Layer Index", fontweight="medium")
+    ax.set_ylabel("Cosine Similarity of PC1", fontweight="medium")
+    ax.set_title("Layer-wise PCA Similarity", fontweight="bold", pad=15)
     ax.set_ylim(-1, 1)
-    ax.grid(True)
-    ax.legend(loc="best")
+    
+    # Improved legend
+    ax.legend(
+        loc="best",
+        frameon=True,
+        fancybox=True,
+        shadow=True,
+        framealpha=0.9,
+        edgecolor="#CCCCCC",
+        facecolor="white",
+    )
+    
+    # Subtle background
+    ax.set_facecolor("#FAFAFA")
+    fig.patch.set_facecolor("white")
 
     fig.tight_layout()
 
     image_buffer = io.BytesIO()
-    fig.savefig(image_buffer, dpi=300, bbox_inches="tight", format="png")
+    fig.savefig(image_buffer, dpi=200, bbox_inches="tight", format="png", facecolor="white")
     plt.close(fig)
 
     visualization = VisualizationItem(

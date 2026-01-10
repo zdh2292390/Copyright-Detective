@@ -506,59 +506,138 @@ def deploy(req: DeployRequest):
 
 @app.post("/run_dynamic_code")
 def run_dynamic_code(req: CodeRequest):
-    """Original dynamic code execution endpoint (maintained for compatibility)"""
-    global GLOBAL_REFERENCE_MODEL, GLOBAL_TOKENIZER, CURRENT_REFERENCE_PATH
+    """
+    Execute dynamic code asynchronously.
     
-    # If the path has changed or not loaded yet, load it
-    if CURRENT_REFERENCE_PATH != req.model_path:
-        print(f"🔄 Loading model: {req.model_path} ...")
-        try:
-            GLOBAL_TOKENIZER = AutoTokenizer.from_pretrained(req.model_path, trust_remote_code=True)
-            GLOBAL_REFERENCE_MODEL = AutoModelForCausalLM.from_pretrained(
-                req.model_path, 
-                device_map="auto", 
-                trust_remote_code=True,
-                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
-            )
-            CURRENT_REFERENCE_PATH = req.model_path
-            print("✅ Model loaded successfully")
-        except Exception as e:
-            return {"status": "error", "msg": f"Model loading failed: {str(e)}"}
-
-    # Prepare execution environment
-    exec_globals = {
-        "model": GLOBAL_REFERENCE_MODEL,
-        "tokenizer": GLOBAL_TOKENIZER,
-        "torch": torch,
-        "result": None  # Frontend code must assign the result to this variable
-    }
-
-    # Execute code sent from frontend
-    print("🚀 Executing dynamic code...")
-    try:
-        # Capture stdout output (print content)
-        f = io.StringIO()
-        with contextlib.redirect_stdout(f):
-            exec(req.code, exec_globals)
-        
-        output_log = f.getvalue()
-        
-        # Get the 'result' calculated in the code
-        calc_result = exec_globals.get("result")
-        
-        return {
-            "status": "success",
-            "log": output_log,     # print content
-            "data": calc_result    # Final calculation result (e.g., loss, accuracy, etc.)
+    Returns 202 Accepted with task_id immediately, then executes code in background.
+    Use /task_status/{task_id} to poll for results.
+    """
+    import time
+    request_start = time.time()
+    
+    # Generate unique task ID
+    task_id = str(uuid.uuid4())
+    
+    # Create task entry
+    with TASKS_LOCK:
+        TASKS[task_id] = {
+            "status": TaskStatus.PENDING,
+            "created_at": datetime.now().isoformat(),
+            "model_path": req.model_path,
+            "code_length": len(req.code),
         }
+    
+    # Start background thread to execute code
+    thread = threading.Thread(
+        target=_execute_dynamic_code_task,
+        args=(task_id, req),
+        daemon=True
+    )
+    thread.start()
+    
+    request_elapsed = time.time() - request_start
+    print(f"📋 Created task {task_id} for dynamic code execution (took {request_elapsed*1000:.1f}ms)")
+    
+    # Return 202 Accepted with task_id immediately
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "status": "accepted",
+            "task_id": task_id,
+            "message": "Dynamic code execution task created. Use /task_status/{task_id} to check status."
+        }
+    )
+
+def _execute_dynamic_code_task(task_id: str, req: CodeRequest):
+    """
+    Execute dynamic code task in background thread.
+    Updates task status in TASKS dictionary.
+    """
+    with TASKS_LOCK:
+        TASKS[task_id]["status"] = TaskStatus.RUNNING
+        TASKS[task_id]["started_at"] = datetime.now().isoformat()
+    
+    try:
+        print(f"🔎 [Task {task_id}] Starting dynamic code execution for model: {req.model_path}")
+        
+        global GLOBAL_REFERENCE_MODEL, GLOBAL_TOKENIZER, CURRENT_REFERENCE_PATH
+        
+        # If the path has changed or not loaded yet, load it
+        if CURRENT_REFERENCE_PATH != req.model_path:
+            print(f"🔄 [Task {task_id}] Loading model: {req.model_path} ...")
+            try:
+                GLOBAL_TOKENIZER = AutoTokenizer.from_pretrained(req.model_path, trust_remote_code=True)
+                GLOBAL_REFERENCE_MODEL = AutoModelForCausalLM.from_pretrained(
+                    req.model_path, 
+                    device_map="auto", 
+                    trust_remote_code=True,
+                    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
+                )
+                CURRENT_REFERENCE_PATH = req.model_path
+                print(f"✅ [Task {task_id}] Model loaded successfully")
+            except Exception as e:
+                raise RuntimeError(f"Model loading failed: {str(e)}")
+
+        # Prepare execution environment
+        exec_globals = {
+            "model": GLOBAL_REFERENCE_MODEL,
+            "tokenizer": GLOBAL_TOKENIZER,
+            "torch": torch,
+            "result": None  # Frontend code must assign the result to this variable
+        }
+
+        # Execute code sent from frontend
+        print(f"🚀 [Task {task_id}] Executing dynamic code...")
+        try:
+            # Capture stdout output (print content)
+            f = io.StringIO()
+            with contextlib.redirect_stdout(f):
+                exec(req.code, exec_globals)
+            
+            output_log = f.getvalue()
+            
+            # Get the 'result' calculated in the code
+            calc_result = exec_globals.get("result")
+            
+            result = {
+                "status": "success",
+                "log": output_log,     # print content
+                "data": calc_result    # Final calculation result (e.g., loss, accuracy, etc.)
+            }
+            
+            print(f"✅ [Task {task_id}] Dynamic code execution completed")
+            
+        except Exception as e:
+            import traceback
+            error_traceback = traceback.format_exc()
+            raise RuntimeError(
+                f"Code execution error: {str(e)}\n"
+                f"Traceback: {error_traceback}"
+            )
+        
+        # Update task with result
+        with TASKS_LOCK:
+            TASKS[task_id]["status"] = TaskStatus.COMPLETED
+            TASKS[task_id]["completed_at"] = datetime.now().isoformat()
+            TASKS[task_id]["result"] = result
+        
+        print(f"✅ [Task {task_id}] Task completed successfully and status updated")
         
     except Exception as e:
         import traceback
-        return {
-            "status": "error", 
-            "msg": f"Code execution error: {str(e)}",
-            "traceback": traceback.format_exc()
-        }
+        error_traceback = traceback.format_exc()
+        error_msg = f"Dynamic code execution failed: {str(e)}"
+        
+        print(f"❌ [Task {task_id}] {error_msg}")
+        print(f"Traceback:\n{error_traceback}")
+        
+        with TASKS_LOCK:
+            TASKS[task_id]["status"] = TaskStatus.FAILED
+            TASKS[task_id]["completed_at"] = datetime.now().isoformat()
+            TASKS[task_id]["error"] = {
+                "msg": error_msg,
+                "traceback": error_traceback
+            }
 
 def _execute_analysis_task(task_id: str, req: AnalysisRequest):
     """
@@ -927,13 +1006,15 @@ if __name__ == "__main__":
     print(f"🚀 Starting deployment agent on port {port}...")
     print("📝 Available endpoints:")
     print("   - POST /deploy - Deploy model (compatibility endpoint)")
-    print("   - POST /run_dynamic_code - Execute dynamic Python code")
+    print("   - POST /run_dynamic_code - Execute dynamic Python code (async, returns 202 + task_id)")
     print("   - POST /run_analysis - Run representational analysis (async, returns 202 + task_id)")
-    print("   - GET /task_status/{task_id} - Check status of analysis task")
+    print("   - GET /task_status/{task_id} - Check status of any task (analysis or dynamic code)")
     print("   - GET /health - Health check")
     print(f"\n💡 Tip: Set PORT environment variable to change port (default: 1234)")
     print(f"💡 Tip: Set TIMEOUT_KEEP_ALIVE environment variable to change timeout (default: 1800s / 30min)")
-    print(f"✅ Async task processing enabled - no more Cloudflare timeout issues!")
+    print(f"✅ Async task processing enabled for all long-running operations!")
+    print(f"   - No more Cloudflare timeout issues!")
+    print(f"   - All tasks use the same /task_status/{{task_id}} endpoint for polling")
     uvicorn.run(
         app, 
         host="0.0.0.0", 

@@ -306,60 +306,92 @@ def run_cka_analysis(
     
     cka_scores = {layer: linear_cka(ref_acts[layer], upd_acts[layer]) for layer in common_layers}
 
+    # Modern, professional styling
     mpl.rcParams.update({
-        "font.family": "serif",
-        "font.serif": ["DejaVu Serif"],
-        "font.size": 10,
-        "axes.titlesize": 12,
-        "axes.labelsize": 8,
-        "xtick.labelsize": 8,
-        "ytick.labelsize": 8,
-        "lines.linewidth": 2,
-        "lines.markersize": 6,
-        "axes.linewidth": 1.2,
+        "font.family": "sans-serif",
+        "font.sans-serif": ["Arial", "DejaVu Sans", "Liberation Sans", "Helvetica"],
+        "font.size": 11,
+        "axes.titlesize": 13,
+        "axes.labelsize": 11,
+        "xtick.labelsize": 10,
+        "ytick.labelsize": 10,
+        "lines.linewidth": 2.5,
+        "lines.markersize": 8,
+        "axes.linewidth": 1.0,
         "axes.spines.top": False,
         "axes.spines.right": False,
+        "axes.edgecolor": "#333333",
         "axes.grid": True,
-        "grid.linestyle": "--",
-        "grid.linewidth": 0.6,
-        "grid.alpha": 0.6,
+        "grid.linestyle": "-",
+        "grid.linewidth": 0.5,
+        "grid.alpha": 0.3,
         "legend.frameon": True,
-        "legend.fontsize": 8,
-        "legend.title_fontsize": 8,
-        "axes.prop_cycle": mpl.cycler("color", ["#0072B2", "#D55E00", "#009E73"]),
+        "legend.fontsize": 10,
+        "legend.title_fontsize": 10,
+        "figure.facecolor": "white",
+        "axes.facecolor": "white",
     })
 
     layers = list(cka_scores.keys())
     values = [cka_scores[layer] for layer in layers]
 
-    fig, ax = plt.subplots(figsize=(5, 3))
+    # Larger figure for better readability
+    fig, ax = plt.subplots(figsize=(7, 4.5), facecolor="white")
 
     marker_freq = 5
     marker_indices = [idx for idx in range(len(layers)) if idx % marker_freq == 0]
 
-    plot_color = "#1b9e77"
-    ax.plot(layers, values, linestyle="--", color=plot_color, label="Updated vs Reference")
+    # Modern, vibrant color
+    plot_color = "#3498DB"  # Modern blue
+    ax.plot(
+        layers, 
+        values, 
+        linestyle="-", 
+        color=plot_color, 
+        label="Updated vs Reference",
+        linewidth=2.5,
+        alpha=0.9,
+        zorder=2,
+    )
     ax.plot(
         [layers[idx] for idx in marker_indices],
         [values[idx] for idx in marker_indices],
         "o",
         color=plot_color,
-        markersize=8,
+        markersize=10,
         linestyle="None",
+        markerfacecolor=plot_color,
+        markeredgecolor="white",
+        markeredgewidth=1.5,
+        zorder=3,
     )
 
     ax.set_xticks([layers[idx] for idx in marker_indices])
     ax.set_xticklabels([str(layers[idx]) for idx in marker_indices])
-    ax.set_xlabel("Layer index")
-    ax.set_ylabel("Linear CKA")
-    ax.set_title("Layerwise CKA", pad=12)
+    ax.set_xlabel("Layer Index", fontweight="medium")
+    ax.set_ylabel("Linear CKA", fontweight="medium")
+    ax.set_title("Layer-wise CKA Similarity", fontweight="bold", pad=15)
     ax.set_ylim(-1, 3)
-    ax.legend(loc="best", frameon=False, fancybox=True)
+    
+    # Improved legend
+    ax.legend(
+        loc="best",
+        frameon=True,
+        fancybox=True,
+        shadow=True,
+        framealpha=0.9,
+        edgecolor="#CCCCCC",
+        facecolor="white",
+    )
+    
+    # Subtle background
+    ax.set_facecolor("#FAFAFA")
+    fig.patch.set_facecolor("white")
 
     fig.tight_layout()
 
     image_buffer = io.BytesIO()
-    fig.savefig(image_buffer, dpi=300, bbox_inches="tight", format="png")
+    fig.savefig(image_buffer, dpi=200, bbox_inches="tight", format="png", facecolor="white")
     plt.close(fig)
 
     visualization = VisualizationItem(

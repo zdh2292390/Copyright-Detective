@@ -394,24 +394,33 @@ def run_fim_analysis(
     fim_updated = _collect_fim_by_layer(model_path)
     print(f"[FIM] ✓ FIM analysis completed, generating visualizations...")
 
+    # Modern, professional styling
     mpl.rcParams.update({
         "font.family": "sans-serif",
-        "font.sans-serif": ["DejaVu Serif"],
-        "font.size": 12,
-        "axes.titlesize": 14,
-        "axes.labelsize": 12,
+        "font.sans-serif": ["Arial", "DejaVu Sans", "Liberation Sans", "Helvetica"],
+        "font.size": 11,
+        "axes.titlesize": 13,
+        "axes.labelsize": 11,
         "xtick.labelsize": 10,
         "ytick.labelsize": 10,
         "legend.fontsize": 10,
-        "figure.dpi": 150,
+        "figure.dpi": 200,
         "axes.grid": True,
-        "grid.linestyle": "--",
-        "grid.linewidth": 0.4,
-        "grid.alpha": 0.5,
+        "grid.linestyle": "-",
+        "grid.linewidth": 0.5,
+        "grid.alpha": 0.3,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.linewidth": 1.0,
+        "axes.edgecolor": "#333333",
+        "figure.facecolor": "white",
+        "axes.facecolor": "white",
     })
 
-    plot_colors = {"Reference": "#d62728", "Updated": "#1f77b4"}
+    # Modern color palette - professional and accessible
+    plot_colors = {"Reference": "#E74C3C", "Updated": "#3498DB"}  # More vibrant, modern colors
     linestyles = {"Reference": "-", "Updated": "--"}
+    linewidths = {"Reference": 2.5, "Updated": 2.5}
 
     visualizations: List[VisualizationItem] = []
 
@@ -419,28 +428,31 @@ def run_fim_analysis(
         fim_ref = fim_reference[layer_idx]
         fim_upd = fim_updated[layer_idx]
 
-        fig, ax = plt.subplots(figsize=(3.5, 2.5))
+        # Larger figure size for better readability
+        fig, ax = plt.subplots(figsize=(5.5, 3.5), facecolor="white")
+        
         for tag, values in (("Reference", fim_ref), ("Updated", fim_upd)):
             ax.hist(
                 values,
-                bins=40,
+                bins=50,  # More bins for smoother curves
                 histtype="step",
-                linewidth=2,
+                linewidth=linewidths[tag],
                 linestyle=linestyles[tag],
                 color=plot_colors[tag],
                 label=tag,
+                alpha=0.9,
             )
 
         ax.set_xscale("log")
-        ax.set_xlabel("FIM diagonal values (log scale)")
-        ax.set_ylabel("Frequency")
-        ax.set_title(f"FIM Histogram @ Layer {layer_idx}", pad=8)
+        ax.set_xlabel("FIM Diagonal Values (log scale)", fontweight="medium")
+        ax.set_ylabel("Frequency", fontweight="medium")
+        ax.set_title(f"FIM Distribution @ Layer {layer_idx}", fontweight="bold", pad=12)
 
         ymax = 0
         for values in (fim_ref, fim_upd):
-            counts, _ = np.histogram(values, bins=40)
+            counts, _ = np.histogram(values, bins=50)
             ymax = max(ymax, counts.max() if len(counts) else 0)
-        ax.set_ylim(0, max(1, ymax * 1.2))
+        ax.set_ylim(0, max(1, ymax * 1.15))
 
         combined = np.concatenate([fim_ref, fim_upd])
         combined = combined[combined > 0]
@@ -455,11 +467,24 @@ def run_fim_analysis(
                 10 ** (np.log10(x_max) + pad_decades),
             )
 
-        ax.legend(loc="upper right", frameon=False, fancybox=True)
+        # Improved legend with frame
+        ax.legend(
+            loc="upper right",
+            frameon=True,
+            fancybox=True,
+            shadow=True,
+            framealpha=0.9,
+            edgecolor="#CCCCCC",
+            facecolor="white",
+        )
 
+        # Add subtle background
+        ax.set_facecolor("#FAFAFA")
+        fig.patch.set_facecolor("white")
+        
         fig.tight_layout()
         image_buffer = io.BytesIO()
-        fig.savefig(image_buffer, dpi=100, bbox_inches="tight", format="png")
+        fig.savefig(image_buffer, dpi=200, bbox_inches="tight", format="png", facecolor="white")
         plt.close(fig)
 
         visualizations.append(

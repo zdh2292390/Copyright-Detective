@@ -226,71 +226,97 @@ def run_pca_shift(
 
     df = pd.DataFrame(records)
 
+    # Modern, professional styling
     mpl.rcParams.update({
-        "font.family": "serif",
-        "font.serif": ["DejaVu Serif"],
-        "font.size": 10,
-        "axes.titlesize": 12,
-        "axes.labelsize": 8,
-        "xtick.labelsize": 8,
-        "ytick.labelsize": 8,
-        "lines.linewidth": 2,
-        "lines.markersize": 6,
-        "axes.linewidth": 1.2,
+        "font.family": "sans-serif",
+        "font.sans-serif": ["Arial", "DejaVu Sans", "Liberation Sans", "Helvetica"],
+        "font.size": 11,
+        "axes.titlesize": 13,
+        "axes.labelsize": 11,
+        "xtick.labelsize": 10,
+        "ytick.labelsize": 10,
+        "lines.linewidth": 1.5,
+        "lines.markersize": 8,
+        "axes.linewidth": 1.0,
         "axes.spines.top": False,
         "axes.spines.right": False,
+        "axes.edgecolor": "#333333",
         "axes.grid": True,
-        "grid.linestyle": "--",
-        "grid.linewidth": 0.6,
-        "grid.alpha": 0.6,
+        "grid.linestyle": "-",
+        "grid.linewidth": 0.5,
+        "grid.alpha": 0.3,
         "legend.frameon": True,
-        "legend.fontsize": 8,
-        "legend.title_fontsize": 8,
-        "axes.prop_cycle": mpl.cycler("color", ["#0072B2", "#D55E00", "#009E73"]),
+        "legend.fontsize": 10,
+        "legend.title_fontsize": 10,
+        "figure.facecolor": "white",
+        "axes.facecolor": "white",
     })
 
-    fig, ax = plt.subplots(figsize=(3.5, 2.5))
+    # Larger figure for better readability
+    fig, ax = plt.subplots(figsize=(6, 5), facecolor="white")
 
+    # Modern color palette
+    state_colors = {"Reference": "#E74C3C", "Updated": "#3498DB"}  # Red and Blue
+    
     for layer in df["layer"].unique():
         subset = df[df["layer"] == layer].sort_values("state")
         ax.plot(
             subset["shift"],
             subset["principal"],
-            color="gray",
-            linewidth=1,
-            alpha=0.5,
+            color="#BDC3C7",  # Light gray for connections
+            linewidth=1.5,
+            alpha=0.4,
             zorder=1,
         )
 
     markers = {"Reference": "o", "Updated": "^"}
+    marker_sizes = {"Reference": 120, "Updated": 120}
+    
     for state in df["state"].unique():
         subset = df[df["state"] == state]
         ax.scatter(
             subset["shift"],
             subset["principal"],
             marker=markers[state],
-            edgecolors="black",
+            c=state_colors[state],
+            edgecolors="white",
+            linewidths=2,
+            s=marker_sizes[state],
             label=state,
-            zorder=2,
+            zorder=3,
+            alpha=0.8,
         )
 
-    ax.set_xlabel("Δ PC1")
-    ax.set_ylabel("PC2")
-    ax.set_title("PCA Shift", pad=20)
+    ax.set_xlabel("Δ PC1", fontweight="medium")
+    ax.set_ylabel("PC2", fontweight="medium")
+    ax.set_title("PCA Shift Analysis", fontweight="bold", pad=15)
 
     x_min, x_max = df["shift"].min(), df["shift"].max()
     y_min, y_max = df["principal"].min(), df["principal"].max()
     x_pad = 0.05 * (x_max - x_min)
-    y_pad = 0.7 * (y_max - y_min)
+    y_pad = 0.1 * (y_max - y_min)
     ax.set_xlim(x_min - x_pad, x_max + x_pad)
     ax.set_ylim(y_min - y_pad, y_max + y_pad)
 
-    ax.legend(loc="upper center", bbox_to_anchor=(0.7, 1.2), frameon=False, fancybox=True)
+    # Improved legend
+    ax.legend(
+        loc="upper right",
+        frameon=True,
+        fancybox=True,
+        shadow=True,
+        framealpha=0.9,
+        edgecolor="#CCCCCC",
+        facecolor="white",
+    )
+    
+    # Subtle background
+    ax.set_facecolor("#FAFAFA")
+    fig.patch.set_facecolor("white")
 
     plt.tight_layout()
 
     image_buffer = io.BytesIO()
-    plt.savefig(image_buffer, bbox_inches="tight", dpi=300, format="png")
+    plt.savefig(image_buffer, bbox_inches="tight", dpi=200, format="png", facecolor="white")
     plt.close(fig)
 
     visualization = VisualizationItem(
