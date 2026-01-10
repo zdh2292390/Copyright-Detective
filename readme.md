@@ -217,7 +217,6 @@ Copy the generated `https://*.trycloudflare.com` link and paste it into the app:
 - **Deployment Agent URL** → `https://cool-server-link.trycloudflare.com`
 
 > **Note:** It may take a short time before the tunnel becomes reachable.
-> ⚠️ Important Note on Timeouts: Generating Fisher Information Matrix histograms can be computationally intensive and time-consuming. Please be aware that the free version of Cloudflare Quick Tunnel typically has a connection timeout of around 100 seconds. If the calculation exceeds this limit, the request may fail. In such cases, you may need to upgrade to a paid Cloudflare plan or use an alternative tunneling service that supports longer connection durations.
 
 ### 2) App: Set Model Paths (Absolute Paths on the Server)
 
