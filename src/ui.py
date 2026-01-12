@@ -98,6 +98,368 @@ from src.components import (
 from src.direct_recall.comparison import calculate_similarity_metrics
 
 
+def render_pdf_preview_with_blob(
+    pdf_bytes: bytes, 
+    title: str = "**📋 Report Preview:**",
+    iframe_height: int = 600,
+    download_filename: str = "report.pdf"
+) -> None:
+    """
+    Render PDF preview with title using PDF.js to avoid browser security restrictions.
+    This is a reusable function for all PDF preview sections.
+    
+    Args:
+        pdf_bytes: The PDF file content as bytes
+        title: Title text to display above the PDF preview (default: "**📋 Report Preview:**")
+        iframe_height: Height of the PDF preview in pixels (default: 600)
+        download_filename: Filename for the download button (default: "report.pdf")
+    """
+    # Display title and download button
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown(title)
+    with col2:
+        st.download_button(
+            label="📥 Download PDF",
+            data=pdf_bytes,
+            file_name=download_filename,
+            mime="application/pdf",
+            key=f"pdf_download_{random.randint(1000, 9999)}"
+        )
+    
+    # Convert PDF bytes to base64
+    pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+    
+    # Generate unique ID for this PDF preview
+    import time
+    pdf_id = f"{int(time.time() * 1000000)}{random.randint(1000, 9999)}"
+    
+    # Use PDF.js from CDN to render PDF directly in the page
+    # This avoids browser security restrictions on blob URLs in iframes
+    pdf_html = f'''
+    <style>
+        #pdf-container-{pdf_id} {{
+            width: 100%;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            padding: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }}
+        #pdf-viewer-{pdf_id} {{
+            width: 100%;
+            height: {iframe_height}px;
+            overflow: auto;
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+            position: relative;
+            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.06);
+        }}
+        #pdf-viewer-{pdf_id}::-webkit-scrollbar {{
+            width: 10px;
+            height: 10px;
+        }}
+        #pdf-viewer-{pdf_id}::-webkit-scrollbar-track {{
+            background: #f1f1f1;
+            border-radius: 5px;
+        }}
+        #pdf-viewer-{pdf_id}::-webkit-scrollbar-thumb {{
+            background: #888;
+            border-radius: 5px;
+        }}
+        #pdf-viewer-{pdf_id}::-webkit-scrollbar-thumb:hover {{
+            background: #555;
+        }}
+        #pdf-canvas-container-{pdf_id} {{
+            display: flex;
+            justify-content: center;
+            padding: 20px;
+            min-height: 100%;
+        }}
+        #pdf-canvas-{pdf_id} {{
+            display: block;
+            max-width: 100%;
+            height: auto;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+            border-radius: 4px;
+            background: white;
+        }}
+        #pdf-controls-{pdf_id} {{
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 12px;
+            padding: 12px 16px;
+            background: white;
+            border-top: 1px solid #dee2e6;
+            border-radius: 0 0 6px 6px;
+            margin-top: 8px;
+        }}
+        #pdf-controls-{pdf_id} button {{
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }}
+        #pdf-prev-{pdf_id}, #pdf-next-{pdf_id} {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }}
+        #pdf-prev-{pdf_id}:hover, #pdf-next-{pdf_id}:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(102, 126, 234, 0.4);
+        }}
+        #pdf-prev-{pdf_id}:active, #pdf-next-{pdf_id}:active {{
+            transform: translateY(0);
+        }}
+        #pdf-prev-{pdf_id}:disabled, #pdf-next-{pdf_id}:disabled {{
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }}
+        #pdf-zoom-in-{pdf_id}, #pdf-zoom-out-{pdf_id} {{
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            padding: 8px 12px;
+            font-size: 16px;
+            font-weight: bold;
+        }}
+        #pdf-zoom-in-{pdf_id}:hover, #pdf-zoom-out-{pdf_id}:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(245, 87, 108, 0.4);
+        }}
+        #pdf-zoom-in-{pdf_id}:active, #pdf-zoom-out-{pdf_id}:active {{
+            transform: translateY(0);
+        }}
+        #pdf-page-info-{pdf_id} {{
+            padding: 8px 16px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            font-size: 14px;
+            color: #495057;
+            font-weight: 500;
+            border: 1px solid #dee2e6;
+        }}
+        #pdf-zoom-level-{pdf_id} {{
+            padding: 8px 12px;
+            background: #e9ecef;
+            border-radius: 6px;
+            font-size: 14px;
+            color: #495057;
+            font-weight: 600;
+            min-width: 60px;
+            display: inline-block;
+            text-align: center;
+        }}
+        #pdf-loading-{pdf_id} {{
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: {iframe_height}px;
+            color: #667eea;
+        }}
+        .spinner {{
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin-bottom: 12px;
+        }}
+        @keyframes spin {{
+            0% {{ transform: rotate(0deg); }}
+            100% {{ transform: rotate(360deg); }}
+        }}
+    </style>
+    <div id="pdf-container-{pdf_id}">
+        <div id="pdf-loading-{pdf_id}">
+            <div class="spinner"></div>
+            <div>Loading PDF...</div>
+        </div>
+        <div id="pdf-viewer-{pdf_id}" style="display: none;">
+            <div id="pdf-canvas-container-{pdf_id}">
+                <canvas id="pdf-canvas-{pdf_id}"></canvas>
+            </div>
+        </div>
+        <div id="pdf-controls-{pdf_id}" style="display: none;">
+            <button id="pdf-prev-{pdf_id}" title="Previous page (←)">◀ Previous</button>
+            <div id="pdf-page-info-{pdf_id}">
+                Page <span id="pdf-page-num-{pdf_id}">1</span> of <span id="pdf-page-count-{pdf_id}">1</span>
+            </div>
+            <button id="pdf-next-{pdf_id}" title="Next page (→)">Next ▶</button>
+            <div style="width: 1px; height: 24px; background: #dee2e6; margin: 0 8px;"></div>
+            <span style="color: #6c757d; font-size: 14px; font-weight: 500;">Zoom:</span>
+            <button id="pdf-zoom-out-{pdf_id}" title="Zoom out">−</button>
+            <span id="pdf-zoom-level-{pdf_id}">100%</span>
+            <button id="pdf-zoom-in-{pdf_id}" title="Zoom in">+</button>
+        </div>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+        (function() {{
+            try {{
+                // Set PDF.js worker
+                pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+                
+                const base64Data = "{pdf_base64}";
+                const binaryString = atob(base64Data);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {{
+                    bytes[i] = binaryString.charCodeAt(i);
+                }}
+                
+                let pdfDoc = null;
+                let pageNum = 1;
+                let pageRendering = false;
+                let pageNumPending = null;
+                let scale = 1.0;
+                const canvas = document.getElementById('pdf-canvas-{pdf_id}');
+                const ctx = canvas.getContext('2d');
+                const loadingDiv = document.getElementById('pdf-loading-{pdf_id}');
+                const viewerDiv = document.getElementById('pdf-viewer-{pdf_id}');
+                const controlsDiv = document.getElementById('pdf-controls-{pdf_id}');
+                const prevBtn = document.getElementById('pdf-prev-{pdf_id}');
+                const nextBtn = document.getElementById('pdf-next-{pdf_id}');
+                
+                function updateButtons() {{
+                    if (pdfDoc) {{
+                        prevBtn.disabled = (pageNum <= 1);
+                        nextBtn.disabled = (pageNum >= pdfDoc.numPages);
+                        prevBtn.style.opacity = (pageNum <= 1) ? '0.5' : '1';
+                        nextBtn.style.opacity = (pageNum >= pdfDoc.numPages) ? '0.5' : '1';
+                        prevBtn.style.cursor = (pageNum <= 1) ? 'not-allowed' : 'pointer';
+                        nextBtn.style.cursor = (pageNum >= pdfDoc.numPages) ? 'not-allowed' : 'pointer';
+                    }}
+                }}
+                
+                function renderPage(num) {{
+                    pageRendering = true;
+                    pdfDoc.getPage(num).then(function(page) {{
+                        const viewport = page.getViewport({{scale: scale}});
+                        canvas.height = viewport.height;
+                        canvas.width = viewport.width;
+                        
+                        const renderContext = {{
+                            canvasContext: ctx,
+                            viewport: viewport
+                        }};
+                        const renderTask = page.render(renderContext);
+                        
+                        renderTask.promise.then(function() {{
+                            pageRendering = false;
+                            if (pageNumPending !== null) {{
+                                renderPage(pageNumPending);
+                                pageNumPending = null;
+                            }}
+                            // Scroll to top when page changes
+                            if (viewerDiv) {{
+                                viewerDiv.scrollTop = 0;
+                            }}
+                            updateButtons();
+                        }});
+                    }});
+                    
+                    document.getElementById('pdf-page-num-{pdf_id}').textContent = num;
+                }}
+                
+                function queueRenderPage(num) {{
+                    if (pageRendering) {{
+                        pageNumPending = num;
+                    }} else {{
+                        renderPage(num);
+                    }}
+                }}
+                
+                function onPrevPage() {{
+                    if (pageNum <= 1) return;
+                    pageNum--;
+                    queueRenderPage(pageNum);
+                }}
+                
+                function onNextPage() {{
+                    if (pageNum >= pdfDoc.numPages) return;
+                    pageNum++;
+                    queueRenderPage(pageNum);
+                }}
+                
+                function onZoomIn() {{
+                    scale += 0.2;
+                    queueRenderPage(pageNum);
+                    document.getElementById('pdf-zoom-level-{pdf_id}').textContent = Math.round(scale * 100) + '%';
+                }}
+                
+                function onZoomOut() {{
+                    if (scale <= 0.5) return;
+                    scale -= 0.2;
+                    queueRenderPage(pageNum);
+                    document.getElementById('pdf-zoom-level-{pdf_id}').textContent = Math.round(scale * 100) + '%';
+                }}
+                
+                // Load PDF
+                pdfjsLib.getDocument({{data: bytes}}).promise.then(function(pdf) {{
+                    pdfDoc = pdf;
+                    document.getElementById('pdf-page-count-{pdf_id}').textContent = pdf.numPages;
+                    
+                    // Hide loading, show viewer and controls
+                    if (loadingDiv) loadingDiv.style.display = 'none';
+                    if (viewerDiv) viewerDiv.style.display = 'block';
+                    if (controlsDiv) controlsDiv.style.display = 'flex';
+                    
+                    renderPage(pageNum);
+                    updateButtons();
+                }}).catch(function(error) {{
+                    console.error('Error loading PDF:', error);
+                    if (loadingDiv) {{
+                        loadingDiv.innerHTML = '<div style="color: #dc3545; padding: 20px; text-align: center;"><strong>❌ Error loading PDF</strong><br>Please use the download button to view the PDF.</div>';
+                    }}
+                }});
+                
+                // Event listeners
+                prevBtn.addEventListener('click', onPrevPage);
+                nextBtn.addEventListener('click', onNextPage);
+                document.getElementById('pdf-zoom-in-{pdf_id}').addEventListener('click', onZoomIn);
+                document.getElementById('pdf-zoom-out-{pdf_id}').addEventListener('click', onZoomOut);
+                
+                // Keyboard navigation
+                document.addEventListener('keydown', function(e) {{
+                    // Only handle if not typing in an input field
+                    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+                    
+                    if (e.key === 'ArrowLeft' && !prevBtn.disabled) {{
+                        e.preventDefault();
+                        onPrevPage();
+                    }} else if (e.key === 'ArrowRight' && !nextBtn.disabled) {{
+                        e.preventDefault();
+                        onNextPage();
+                    }}
+                }});
+                
+            }} catch (error) {{
+                console.error('Error initializing PDF viewer:', error);
+                document.getElementById('pdf-container-{pdf_id}').innerHTML = 
+                    '<p style="color: red; padding: 20px; text-align: center;">Error initializing PDF viewer. Please use the download button to view the PDF.</p>';
+            }}
+        }})();
+    </script>
+    '''
+    # Use st.components.v1.html to render the PDF viewer
+    try:
+        import streamlit.components.v1 as components
+        components.html(pdf_html, height=iframe_height + 100, scrolling=False)
+    except ImportError:
+        # Fallback: show download button only
+        st.warning("PDF preview is not available. Please use the download button above to view the PDF.")
+
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -2414,12 +2776,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             st.session_state['text_pdf_report'] = pdf_bytes
 
         # PDF Preview
-        st.markdown("**📋 Report Preview:**")
-        
-        # Convert PDF bytes to base64 for embedding
-        pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
-        pdf_display = f'<iframe src="data:application/pdf;base64,{pdf_base64}" width="100%" height="600" type="application/pdf"></iframe>'
-        st.markdown(pdf_display, unsafe_allow_html=True)
+        render_pdf_preview_with_blob(pdf_bytes, title="**📋 Report Preview:**", iframe_height=600)
 
     # The Jailbreak Persuasion Probe section is now integrated above.
     # render_jailbreak_persuasion_probe_section(api_key, model_choice, provider)
@@ -3316,12 +3673,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                     st.session_state['qa_pdf_report_bytes'] = pdf_bytes
 
                 # PDF Preview
-                st.markdown("**📋 Report Preview:**")
-
-                # Convert PDF bytes to base64 for embedding
-                pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
-                pdf_display = f'<iframe src="data:application/pdf;base64,{pdf_base64}" width="100%" height="600" type="application/pdf"></iframe>'
-                st.markdown(pdf_display, unsafe_allow_html=True)
+                render_pdf_preview_with_blob(pdf_bytes, title="**📋 Report Preview:**", iframe_height=600)
 
         # Step-by-step Leaking and Extraction evaluation mode
         elif evaluation_mode == "Step-by-step Leaking and Extraction":
@@ -3506,12 +3858,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                     st.session_state['qa_sleek_pdf_report'] = pdf_bytes
 
                 # PDF Preview
-                st.markdown("**📋 Report Preview:**")
-                
-                # Convert PDF bytes to base64 for embedding
-                pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
-                pdf_display = f'<iframe src="data:application/pdf;base64,{pdf_base64}" width="100%" height="600" type="application/pdf"></iframe>'
-                st.markdown(pdf_display, unsafe_allow_html=True)
+                render_pdf_preview_with_blob(pdf_bytes, title="**📋 Report Preview:**", iframe_height=600)
 
         elif not st.session_state['qa_generated_qa_pairs']:
             st.info("👆 Upload a PDF or TXT file and generate Q/A pairs to begin the knowledge memorization detection process.")
@@ -4053,12 +4400,7 @@ def render_sc_detection(api_key, model_choice, provider):
         pdf_bytes = generate_single_choice_question_pdf_report(pdf_data, model_choice, provider, source_mode)
 
         # PDF Preview
-        st.markdown("**📋 Analysis Report:**")
-
-        # Convert PDF bytes to base64 for embedding
-        pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
-        pdf_display = f'<iframe src="data:application/pdf;base64,{pdf_base64}" width="100%" height="600" type="application/pdf"></iframe>'
-        st.markdown(pdf_display, unsafe_allow_html=True)
+        render_pdf_preview_with_blob(pdf_bytes, title="**📋 Analysis Report:**", iframe_height=600)
 
 
 def render_legal_case_display_page():
@@ -4396,12 +4738,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
             pdf_bytes = st.session_state['pdf_report_bytes']
 
         # PDF Preview
-        st.markdown("**📋 Report Preview:**")
-        
-        # Convert PDF bytes to base64 for embedding
-        pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
-        pdf_display = f'<iframe src="data:application/pdf;base64,{pdf_base64}" width="100%" height="600" type="application/pdf"></iframe>'
-        st.markdown(pdf_display, unsafe_allow_html=True)
+        render_pdf_preview_with_blob(pdf_bytes, title="**📋 Report Preview:**", iframe_height=600)
 
     uploaded_file = st.file_uploader(
         "Choose a pdf or txt file",
@@ -6162,12 +6499,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                 pdf_bytes = st.session_state['jailbreak_pdf_report_bytes']
 
             # PDF Preview
-            st.markdown("**📋 Report Preview:**")
-            
-            # Convert PDF bytes to base64 for embedding
-            pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
-            pdf_display = f'<iframe src="data:application/pdf;base64,{pdf_base64}" width="100%" height="600" type="application/pdf"></iframe>'
-            st.markdown(pdf_display, unsafe_allow_html=True)
+            render_pdf_preview_with_blob(pdf_bytes, title="**📋 Report Preview:**", iframe_height=600)
             st.markdown("---")
 def render_unlearning_detection_page(api_key, model_choice, provider):
     """Render the representational analysis experience."""
