@@ -1173,7 +1173,7 @@ section[data-testid="stSidebar"][aria-expanded="true"] {
     border-radius: 16px;
     background: linear-gradient(145deg, rgba(255, 255, 255, 0.95), rgba(241, 245, 255, 0.9));
     box-shadow: 0 4px 20px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.04);
-    margin: 0.65rem 0;
+    margin: 0;
     overflow: hidden;
     transition: all 0.25s ease;
 }
