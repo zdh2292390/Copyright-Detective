@@ -1263,12 +1263,12 @@ def render_sidebar():
                 )
                 api_key = openai_api_key
             elif provider == "OpenRouter":
-                # Default model: meta-llama/llama-3.1-70b-instruct:free
+                # Default model: meta-llama/llama-3.3-70b-instruct:free
                 model_choice = st.selectbox(
                     "Model Name",
                     [
-                        "meta-llama/llama-3.1-70b-instruct:free",  # Default model (index 0)
-                        "meta-llama/llama-3.3-70b-instruct:free",
+                        "meta-llama/llama-3.3-70b-instruct:free",  # Default model (index 0)
+                        "meta-llama/llama-3.1-70b-instruct:free",
                         "allenai/olmo-3.1-32b-think:free",
                         "allenai/olmo-3-32b-think:free",
                         "openai/gpt-oss-120b:free",
@@ -1279,7 +1279,7 @@ def render_sidebar():
                         "nousresearch/hermes-3-llama-3.1-405b:free",
                         "meta-llama/llama-3.1-405b-instruct:free"
                     ],
-                    index=0,  # Default to meta-llama/llama-3.1-70b-instruct:free
+                    index=0,  # Default to meta-llama/llama-3.3-70b-instruct:free
                     key="sidebar_openrouter_model_selectbox",
                 )
                 # Use default key if user doesn't provide one
