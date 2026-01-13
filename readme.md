@@ -196,9 +196,9 @@ This module runs a lightweight deployment service on your **remote server**, the
 ### 1) Server (Remote): Start the Deployment Service
 
 export your key:
-``bash
+```bash
 export YOUR_API_KEY="your_api_key"
-``
+```
 
 Run the deployment script on your server: [unlearning_deployment.py](/backend/unlearning_deploy.py), please check [unlearning_deployment.py](/backend/notes.md) to see the risks.
 
