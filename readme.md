@@ -211,7 +211,7 @@ On your server, download and start Cloudflare Tunnel:
 ```bash
 wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
 chmod +x cloudflared-linux-amd64
-./cloudflared-linux-amd64 tunnel --url http://localhost:6666
+./cloudflared-linux-amd64 tunnel --url http://localhost:1234
 ```
 
 You should see output similar to:
