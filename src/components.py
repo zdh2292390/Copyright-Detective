@@ -169,15 +169,15 @@ _DIRECT_RECALL_DIFF_STYLE = """
     .dr-diff-wrapper {
         margin: 0.9rem 0 0.6rem;
         padding: 1rem 1.15rem 1.05rem;
-        border-radius: 18px;
-        border: 1px solid rgba(203, 213, 225, 0.75);
-        background: linear-gradient(145deg, rgba(255,255,255,0.96), rgba(240, 245, 255, 0.9));
-        box-shadow: 0 18px 36px rgba(15, 23, 42, 0.08);
+        border-radius: 8px;
+        border: 2px solid #000;
+        background: #fff;
+        box-shadow: 4px 4px 0px 0px rgba(0,0,0,1);
     }
     .dr-diff-title {
         font-size: 0.95rem;
         font-weight: 700;
-        color: #0f172a;
+        color: #000;
         margin-bottom: 0.65rem;
         letter-spacing: 0.3px;
     }
@@ -189,11 +189,12 @@ _DIRECT_RECALL_DIFF_STYLE = """
     .dr-diff-column {
         flex: 1 1 0;
         min-width: 260px;
-        background: rgba(248, 250, 252, 0.75);
-        border: 1px solid rgba(191, 219, 254, 0.6);
-        border-radius: 14px;
+        background: #fff;
+        border: 2px solid #000;
+        border-radius: 8px;
         padding: 0.75rem 0.85rem 0.8rem;
         position: relative;
+        box-shadow: 3px 3px 0px 0px rgba(0,0,0,1);
     }
     .dr-diff-column::before {
         content: "";
@@ -207,26 +208,29 @@ _DIRECT_RECALL_DIFF_STYLE = """
         font-size: 0.72rem;
         font-weight: 700;
         text-transform: uppercase;
-        color: #475569;
+        color: #000;
         letter-spacing: 0.42px;
         margin-bottom: 0.4rem;
+        border-bottom: 2px solid #000;
+        padding-bottom: 0.25rem;
     }
     .dr-diff-column__body {
         font-size: 0.9rem;
         line-height: 1.7;
         color: #1f2937;
-        background: rgba(255, 255, 255, 0.85);
-        border-radius: 12px;
-        border-left: 4px solid #2563eb;
+        background: #fff;
+        border-radius: 6px;
+        border-left: 4px solid #000;
         padding: 0.65rem 0.75rem;
         white-space: normal;
         word-break: break-word;
+        font-family: Georgia, serif;
     }
     .dr-diff-column__body--ground {
-        border-left-color: #dc2626;
+        border-left-color: #000;
     }
     .dr-diff-column__body--generated {
-        border-left-color: #2563eb;
+        border-left-color: #000;
     }
     .dr-token {
         display: inline;
@@ -267,8 +271,9 @@ _DIRECT_RECALL_DIFF_STYLE = """
         gap: 0.4rem;
         padding: 0.3rem 0.65rem;
         border-radius: 999px;
-        background: rgba(241, 245, 249, 0.85);
-        box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
+        background: #fff;
+        border: 1px solid #000;
+        box-shadow: 2px 2px 0px 0px rgba(0,0,0,1);
         font-weight: 600;
         letter-spacing: 0.35px;
     }
@@ -290,10 +295,11 @@ _DIRECT_RECALL_DIFF_STYLE = """
         color: #334155;
     }
     .dr-diff-metric {
-        background: rgba(226, 232, 240, 0.35);
-        border-radius: 12px;
+        background: #fff;
+        border: 1px solid #000;
+        border-radius: 6px;
         padding: 0.48rem 0.7rem;
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+        box-shadow: 2px 2px 0px 0px rgba(0,0,0,1);
     }
     .dr-diff-metric strong {
         color: #0f172a;
@@ -504,11 +510,11 @@ def render_direct_recall_diff(
             <div class="dr-diff-title">{html.escape(section_title)}</div>
             <div class="dr-diff-columns">
                 <div class="dr-diff-column">
-                    <div class="dr-diff-column__title">Ground Truth</div>
+                    <div class="dr-diff-column__title">GROUND TRUTH</div>
                     <div class="dr-diff-column__body dr-diff-column__body--ground">{ground_html}</div>
                 </div>
                 <div class="dr-diff-column">
-                    <div class="dr-diff-column__title">Model Output</div>
+                    <div class="dr-diff-column__title">MODEL OUTPUT <span style="font-size: 0.65rem; background: #dbeafe; border: 1px solid #000; padding: 0.125rem 0.375rem; border-radius: 999px; margin-left: 0.5rem;">Few-Shot</span></div>
                     <div class="dr-diff-column__body dr-diff-column__body--generated">{generated_html}</div>
                 </div>
             </div>

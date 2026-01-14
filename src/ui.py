@@ -185,9 +185,8 @@ def render_pdf_preview_with_blob(
         >
             <!-- Fallback content inside object tag -->
             <div style="padding: 20px; text-align: center; color: #495057;">
-                <p><strong>⚠️ PDF 预览无法在此浏览器中显示</strong></p>
-                <p>请使用上方的"📥 Download PDF"按钮下载并查看PDF文件。</p>
-                <p><small>PDF preview is not available. Please use the download button above.</small></p>
+                <p><strong>⚠️ PDF preview is not available in this browser.</strong></p>
+                <p>Please use the "📥 Download PDF" button above to view the file.</p>
             </div>
         </object>
     </div>
@@ -1332,9 +1331,10 @@ def render_header():
     """Render the app header with title and description."""
     st.markdown(
         """
-        <div class="app-header">
-            <div class="title">🕵️‍♂️ Copyright Detective</div>
-                <div class="subtitle" style="font-size: 1.1em;">Analyze and find evidence of potential text copyright infringement in LLM applications</div>
+        <div class="app-header" style="position: relative;">
+            <div style="position: absolute; left: 0; top: 0; transform: rotate(-6deg); font-size: 2.5rem;">🕵️</div>
+            <div class="title">Copyright Detective</div>
+            <div class="subtitle" style="font-size: 1.1em; color: #475569;">Analyze and find evidence of potential text copyright infringement in LLM applications</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1348,7 +1348,10 @@ def render_sidebar():
         st.markdown('''
         <div class="sidebar-brand">
             <div class="sidebar-brand__icon">🔍</div>
-            <div class="sidebar-brand__text">Copyright Detective</div>
+            <div class="sidebar-brand__text">
+                <span class="sidebar-brand__text-line">Sidebar</span>
+                <span class="sidebar-brand__text-line">Settings</span>
+            </div>
         </div>
         ''', unsafe_allow_html=True)
         
@@ -1391,7 +1394,7 @@ def render_sidebar():
 def render_snippet_to_document_page(api_key, model_choice, provider):
     """Render the combined snippet-to-document analysis workspace."""
 
-    st.markdown('<h4 class="section-header">🔎 Content Recall Detection</h4>', unsafe_allow_html=True)
+    st.markdown('<h4 class="section-header">🔍 Content Recall Detection</h4>', unsafe_allow_html=True)
     st.markdown(
         "Detect potential text memorization by analyzing model outputs against known source materials."
     )
@@ -1507,9 +1510,9 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     # Prompt Selection (moved from sidebar to main page)
     st.markdown(
         """
-        <div class=\"analysis-callout\">
-            <div class=\"analysis-callout__title\">How Content Recall Detection works</div>
-            <ul class=\"analysis-callout__list\">
+        <div class=\"hand-drawn-card\" style=\"margin-bottom: 1.5rem;\">
+            <div style=\"font-weight: 700; margin-bottom: 0.5rem; font-size: 0.95rem;\">How Content Recall Detection works</div>
+            <ul style=\"margin: 0; padding-left: 1.5rem; font-size: 0.88rem; line-height: 1.6;\">
                 <li>Provide an input snippet and the expected ground-truth passage.</li>
                 <li>Select a prompting strategy to probe potential memorization.</li>
                 <li>Run inference and inspect overlap metrics with side-by-side diffs.</li>
@@ -1519,7 +1522,11 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         unsafe_allow_html=True,
     )
 
-    st.markdown('<p class="analysis-step-label">Step 1 · Choose recall framing</p>', unsafe_allow_html=True)
+    st.markdown('''
+    <div style="margin: 0.85rem 0 0.35rem;">
+        <p class="analysis-step-label">Step 1 · Choose recall framing</p>
+    </div>
+    ''', unsafe_allow_html=True)
     prompt_type_options = [
         "Next-Passage Prediction",
         "Title Prediction",
@@ -1548,7 +1555,11 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             "_User-Defined Evaluation: Provide a completely custom prompt and ground truth to evaluate the model's response directly._"
         )
 
-    st.markdown('<p class="analysis-step-label">Step 2 · Provide comparison texts</p>', unsafe_allow_html=True)
+    st.markdown('''
+    <div style="margin: 0.85rem 0 0.35rem;">
+        <p class="analysis-step-label">Step 2 · Provide comparison texts</p>
+    </div>
+    ''', unsafe_allow_html=True)
 
     if prompt_type == "User-Defined Evaluation":
         # For User-Defined Evaluation, show Custom Prompt and Ground Truth side by side

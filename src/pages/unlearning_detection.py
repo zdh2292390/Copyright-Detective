@@ -46,7 +46,7 @@ def render_unlearning_detection_page(api_key, model_choice, provider):
     if 'unlearn_deploy_agent_key' not in st.session_state:
         st.session_state['unlearn_deploy_agent_key'] = ""
     
-    st.markdown('<h4 class="section-header">🧬 Representational Analysis</h4>', unsafe_allow_html=True)
+    st.markdown('<h4 class="section-header">🧬 Unlearning Detection</h4>', unsafe_allow_html=True)
     st.markdown(
         "Run Fisher Information, PCA shift/sim, and layer-wise CKA probes to quantify how unlearning reshapes the reference versus adapted model across every layer."
     )
