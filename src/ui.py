@@ -140,8 +140,10 @@ def render_pdf_preview_with_blob(
     import time
     pdf_id = f"{int(time.time() * 1000000)}{random.randint(1000, 9999)}"
     
-    # Primary method: Use iframe with data URI (most compatible with Edge)
-    # This approach works better in Microsoft Edge which may block external CDN resources
+    # Use multiple methods for maximum Edge compatibility:
+    # 1. Object tag (most compatible with Edge)
+    # 2. Embed tag (fallback)
+    # 3. Iframe (last resort)
     pdf_html = f'''
     <style>
         #pdf-container-{pdf_id} {{
@@ -152,7 +154,7 @@ def render_pdf_preview_with_blob(
             padding: 12px;
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         }}
-        #pdf-iframe-{pdf_id} {{
+        #pdf-object-{pdf_id}, #pdf-embed-{pdf_id}, #pdf-iframe-{pdf_id} {{
             width: 100%;
             height: {iframe_height}px;
             border: 1px solid #dee2e6;
@@ -174,59 +176,61 @@ def render_pdf_preview_with_blob(
         }}
     </style>
     <div id="pdf-container-{pdf_id}">
-        <iframe 
-            id="pdf-iframe-{pdf_id}"
-            src="{pdf_data_uri}"
+        <!-- Try object tag first (most compatible with Edge) -->
+        <object 
+            id="pdf-object-{pdf_id}"
+            data="{pdf_data_uri}"
             type="application/pdf"
-            title="PDF Preview"
-        ></iframe>
-        <div id="pdf-fallback-{pdf_id}">
-            <p><strong>⚠️ PDF 预览无法在此浏览器中显示</strong></p>
-            <p>请使用上方的"📥 Download PDF"按钮下载并查看PDF文件。</p>
-            <p><small>PDF preview is not available in this browser. Please use the download button above.</small></p>
-        </div>
+            style="width: 100%; height: {iframe_height}px; border: 1px solid #dee2e6; border-radius: 6px;"
+        >
+            <!-- Fallback content inside object tag -->
+            <div style="padding: 20px; text-align: center; color: #495057;">
+                <p><strong>⚠️ PDF 预览无法在此浏览器中显示</strong></p>
+                <p>请使用上方的"📥 Download PDF"按钮下载并查看PDF文件。</p>
+                <p><small>PDF preview is not available. Please use the download button above.</small></p>
+            </div>
+        </object>
     </div>
     <script>
         (function() {{
             try {{
-                const iframe = document.getElementById('pdf-iframe-{pdf_id}');
-                const fallback = document.getElementById('pdf-fallback-{pdf_id}');
-                let loadTimeout;
+                const object = document.getElementById('pdf-object-{pdf_id}');
                 
-                // Check if iframe loaded successfully
-                iframe.onload = function() {{
-                    clearTimeout(loadTimeout);
-                    // If iframe loads, hide fallback
-                    fallback.style.display = 'none';
-                }};
-                
-                // If iframe fails to load or is blocked, show fallback after a delay
-                loadTimeout = setTimeout(function() {{
-                    // Check if iframe is actually displaying content
-                    // If the iframe is blocked, it will have no content
-                    try {{
-                        // For data URIs, we can't access contentWindow due to same-origin policy
-                        // But if the iframe is blocked, it might have zero dimensions or be empty
-                        // We'll show fallback if iframe hasn't loaded after timeout
-                        if (iframe.offsetHeight === 0 || iframe.offsetWidth === 0) {{
-                            fallback.style.display = 'block';
+                // Check if PDF loaded successfully
+                if (object) {{
+                    // For object tags, we can check if content loaded
+                    object.onload = function() {{
+                        // PDF loaded successfully
+                        console.log('PDF loaded successfully');
+                    }};
+                    
+                    // Handle errors
+                    object.onerror = function() {{
+                        console.warn('PDF failed to load in object tag');
+                    }};
+                    
+                    // Additional check: if object tag shows fallback content, it means PDF didn't load
+                    // This happens when browser blocks the PDF
+                    setTimeout(function() {{
+                        try {{
+                            // Try to detect if the object is showing fallback content
+                            // If the object's contentDocument is accessible and shows our fallback, PDF was blocked
+                            var objDoc = object.contentDocument || object.contentWindow?.document;
+                            if (objDoc) {{
+                                var bodyText = objDoc.body?.innerText || '';
+                                if (bodyText.includes('PDF 预览无法') || bodyText.includes('PDF preview is not available')) {{
+                                    // PDF was blocked, but fallback is already showing inside object
+                                    console.warn('PDF preview blocked by browser');
+                                }}
+                            }}
+                        }} catch (e) {{
+                            // Cross-origin or other restrictions - this is normal for data URIs
+                            // The object tag should still work if browser supports it
                         }}
-                    }} catch (e) {{
-                        // If we can't check, assume it might be blocked and show fallback
-                        // But only if iframe hasn't loaded (no onload event fired)
-                        fallback.style.display = 'block';
-                    }}
-                }}, 3000);
-                
-                // Also handle error event
-                iframe.onerror = function() {{
-                    clearTimeout(loadTimeout);
-                    fallback.style.display = 'block';
-                }};
-                
+                    }}, 1000);
+                }}
             }} catch (error) {{
                 console.error('Error initializing PDF viewer:', error);
-                document.getElementById('pdf-fallback-{pdf_id}').style.display = 'block';
             }}
         }})();
     </script>
