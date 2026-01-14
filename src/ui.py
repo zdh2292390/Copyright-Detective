@@ -46,7 +46,6 @@ from src.direct_recall.confidence_anomaly import (
     ConfidenceAnalysisResult,
     analyze_logprobs_for_confidence,
 )
-from src.config import DEFAULT_OPENROUTER_KEY
 
 import matplotlib.pyplot as plt
 from src.adversarial_persuasion_detection import (
@@ -98,6 +97,10 @@ from src.components import (
 from src.direct_recall.comparison import calculate_similarity_metrics
 from src.pages.legal_cases_display import render_legal_case_display_page
 from src.pages.unlearning_detection import render_unlearning_detection_page
+from src.sidebar_utils import (
+    render_api_configuration_section,
+    render_model_selection_section,
+)
 
 
 def render_pdf_preview_with_blob(
@@ -1572,119 +1575,11 @@ def render_sidebar():
         
         # API Configuration Accordion
         with st.expander("🔑 API Configuration", expanded=False):
-            st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
-            openai_api_key = st.text_input("OpenAI API Key", type="password", help="Enter your OpenAI API key", key="sidebar_openai_api_key")
-            openrouter_api_key = st.text_input(
-                "OpenRouter API Key", 
-                type="password", 
-                help="Enter your OpenRouter API key (leave blank to use default key)", 
-                key="sidebar_openrouter_api_key"
-            )
-            anthropic_api_key = st.text_input("Anthropic API Key", type="password", help="Enter your Anthropic API key", key="sidebar_anthropic_api_key")
-            google_api_key = st.text_input("Google Gemini API Key", type="password", help="Enter your Google Gemini API key", key="sidebar_google_api_key")
-            kimi_api_key = st.text_input("Kimi API Key", type="password", help="Enter your Kimi (Moonshot) API key", key="sidebar_kimi_api_key")
-            st.markdown('<div style="margin-top:8px; font-size: 0.9rem; font-weight: 600;">Local vLLM</div>', unsafe_allow_html=True)
-            local_vllm_base_url = st.text_input(
-                "Base URL",
-                value=st.session_state.get("sidebar_local_vllm_base_url", "http://localhost:8000/v1"),
-                help="OpenAI-compatible endpoint for your vLLM server (e.g., http://<host>:8000/v1)",
-                key="sidebar_local_vllm_base_url",
-            )
-            local_vllm_api_key = st.text_input(
-                "API Key (optional)",
-                value=st.session_state.get("sidebar_local_vllm_api_key", ""),
-                type="password",
-                help="Leave blank if your vLLM endpoint does not require a key",
-                key="sidebar_local_vllm_api_key",
-            )
-            st.markdown('</div>', unsafe_allow_html=True)
+            api_keys = render_api_configuration_section()
 
         # Model Selection Accordion
         with st.expander("✨ Model Selection", expanded=True):
-            st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
-            provider = st.selectbox(
-                "Select provider",
-                ["OpenAI", "OpenRouter", "Anthropic", "Google Gemini", "Kimi", "Local vLLM"],
-                index=1,  # Default to OpenRouter (index 1)
-                help="Choose your AI provider",
-                key="sidebar_provider_selectbox",
-            )
-
-            model_choice = None
-            if provider == "OpenAI":
-                model_choice = st.selectbox(
-                    "Model Name",
-                    [
-                        "gpt-3.5-turbo",
-                        "gpt-3.5-turbo-instruct",
-                        "gpt-4o",
-                        "gpt-4o-mini",
-                        "gpt-5.1",
-                        "gpt-5.2",
-                    ],
-                    help="Select an OpenAI model. Perplexity probes work best with instruct-style or mini models that support logprobs.",
-                    key="sidebar_openai_model_selectbox",
-                )
-                api_key = openai_api_key
-            elif provider == "OpenRouter":
-                # Default model: meta-llama/llama-3.3-70b-instruct:free
-                model_choice = st.selectbox(
-                    "Model Name",
-                    [
-                        "meta-llama/llama-3.3-70b-instruct:free",  # Default model (index 0)
-                        "meta-llama/llama-3.1-70b-instruct:free",
-                        "allenai/olmo-3.1-32b-think:free",
-                        "allenai/olmo-3-32b-think:free",
-                        "openai/gpt-oss-120b:free",
-                        "z-ai/glm-4.5-air:free",
-                        "moonshotai/kimi-k2:free",
-                        "deepseek/deepseek-r1-0528:free",
-                        "mistralai/mistral-small-3.1-24b-instruct:free",
-                        "nousresearch/hermes-3-llama-3.1-405b:free",
-                        "meta-llama/llama-3.1-405b-instruct:free"
-                    ],
-                    index=0,  # Default to meta-llama/llama-3.3-70b-instruct:free
-                    key="sidebar_openrouter_model_selectbox",
-                )
-                # Use default key if user doesn't provide one
-                api_key = openrouter_api_key.strip() if openrouter_api_key.strip() else DEFAULT_OPENROUTER_KEY
-            elif provider == "Anthropic":
-                model_choice = st.selectbox("Model Name", ["claude-3-haiku-20240307", "claude-3-sonnet-20240229", "claude-3-opus-20240229"], key="sidebar_anthropic_model_selectbox")
-                api_key = anthropic_api_key
-            elif provider == "Google Gemini":
-                model_choice = st.selectbox(
-                    "Model Name",
-                    [
-                        "gemini-1.5-flash-001",
-                        "gemini-1.5-flash-latest",
-                        "gemini-1.5-pro-001",
-                        "gemini-1.5-pro-latest",
-                    ],
-                    help="Use the latest Gemini model identifiers supported by the v1 API.",
-                    key="sidebar_google_model_selectbox",
-                )
-                api_key = google_api_key
-            elif provider == "Kimi":
-                model_choice = st.selectbox(
-                    "Model Name",
-                    [
-                        "kimi-k2-0905-preview",
-                        "kimi-k2-turbo-preview",
-                        "kimi-k2-thinking",
-                        "kimi-k2-thinking-turbo",
-                    ],
-                    key="sidebar_kimi_model_selectbox",
-                )
-                api_key = kimi_api_key
-            elif provider == "Local vLLM":
-                model_choice = st.text_input(
-                    "Model Choice (Optional)",
-                    value=st.session_state.get("sidebar_local_vllm_model", ""),
-                    placeholder="Just to identify the model you are using (e.g., 'meta-llama/Llama-3-70B-Instruct-v3')",
-                    key="sidebar_local_vllm_model",
-                )
-                api_key = local_vllm_api_key
-            st.markdown('</div>', unsafe_allow_html=True)
+            model_choice, api_key, provider = render_model_selection_section(api_keys)
 
         # Detection Mode Accordion
         with st.expander("🧭 Detection Mode", expanded=True):
