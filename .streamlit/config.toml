@@ -1,0 +1,4 @@
+[server]
+# Streamlit Cloud restarts the app after a Git update. Disabling the in-process
+# watcher prevents reruns while the repository is only partially synchronized.
+fileWatcherType = "none"

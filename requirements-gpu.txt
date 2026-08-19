@@ -1,0 +1,7 @@
+# Local GPU install (CUDA 11.8). Use after installing base requirements.txt:
+# pip install -r requirements.txt
+# pip install -r requirements-gpu.txt --extra-index-url https://download.pytorch.org/whl/cu118
+
+torch==2.7.1+cu118
+torchvision==0.22.1+cu118
+torchaudio==2.7.1+cu118
