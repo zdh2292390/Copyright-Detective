@@ -136,7 +136,7 @@ KNOWLEDGE_CLEAR_CACHE_ID = "knowledge_memorization"
 KNOWLEDGE_QA_UPLOAD_CACHE_KEY = "qa_cached_upload"
 SLEEK_UPLOAD_CACHE_KEY = "qa_sleek_cached_upload"
 PERSUASIVE_CLEAR_CACHE_ID = "persuasive_jailbreak"
-GAMES_ENABLED = False
+GAMES_ENABLED = True
 
 from src.pdf_preview import (
     render_pdf_preview_with_blob,

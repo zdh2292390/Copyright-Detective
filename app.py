@@ -32,6 +32,7 @@ from src.job_guard import (
 )
 from src.floating_clear_cache import handle_clear_cache_query_param
 from src.ui import (
+    GAMES_ENABLED,
     render_header,
     render_sidebar,
     render_snippet_to_document_page,
@@ -102,6 +103,33 @@ try:
         render_unlearning_detection_page(api_key, model_choice, provider)
     elif page == "Legal Cases Display":
         render_legal_case_display_page()
+    elif GAMES_ENABLED and page in {
+        "Game 1: The Hidden Passage Hunt",
+        "Game 2: The Hidden Passage Hunt",
+        "Copyright Challenge",
+        "Copyright Challenge 1",
+    }:
+        from src.pages.copyright_game import render_copyright_game_page
+
+        render_copyright_game_page()
+    elif GAMES_ENABLED and page in {
+        "Game 2: The Cross-Model Scaling Quest",
+        "Game 1: The Cross-Model Scaling Quest",
+        "Game 2: The Twin Oracle Duel",
+        "Game 2: The Two-Model Continuation Duel",
+        "Copyright Challenge 2",
+    }:
+        from src.pages.copyright_game2 import render_copyright_game2_page
+
+        render_copyright_game2_page()
+    elif GAMES_ENABLED and page in {
+        "Game 3: The Memory Vault Hunt",
+        "Copyright Challenge 3",
+        "Game 3: The Knowledge Memorization Challenge",
+    }:
+        from src.pages.copyright_game3 import render_copyright_game3_page
+
+        render_copyright_game3_page(api_key, model_choice)
 except Exception:
     logger.exception("Unhandled page error on %s", page)
     st.error(

@@ -12,7 +12,7 @@ from src.auth import (
 )
 from src.config import DEFAULT_KIMI_KEY, DEFAULT_OPENROUTER_KEY
 
-HIDDEN_SIDEBAR_API_KEY_PROVIDERS = ("OpenAI", "Kimi")
+HIDDEN_SIDEBAR_API_KEY_PROVIDERS = ()
 
 SIDEBAR_DEFAULTS = {
     "sidebar_openai_api_key": "",
