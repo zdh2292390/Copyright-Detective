@@ -6,13 +6,13 @@
 
 🎉 **Accepted to ACL 2026 System Demonstrations!** 🎉
 
-[![arXiv](https://img.shields.io/badge/arXiv-Paper-b31b1b.svg)](https://arxiv.org/pdf/2602.05252)
+[![Paper](https://img.shields.io/badge/ACL_2026_Demo-Paper-b31b1b.svg?logo=googlescholar&logoColor=white)](https://aclanthology.org/2026.acl-demo.2.pdf)
 [![Project Page](https://img.shields.io/badge/Project-Homepage-blue)](https://changhu73.github.io/projects/copyright-detective)
 [![Demo](https://img.shields.io/badge/Streamlit-Live%20Demo-FF4B4B)](https://copyright-detective.streamlit.app)
 [![Video](https://img.shields.io/badge/YouTube-Video-FF0000)](https://youtu.be/8jYL4CJ-jks)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://github.com/zdh2292390/Copyright-Detective/blob/main/LICENSE)
 
-*For more details, please refer to [Copyright Detective: A Forensic System to Evidence LLMs Flickering Copyright Leakage Risks](https://arxiv.org/pdf/2602.05252)*
+*For more details, please refer to [Copyright Detective: A Forensic System to Evidence LLMs Flickering Copyright Leakage Risks](https://aclanthology.org/2026.acl-demo.2.pdf)*
 
 </div>
 
