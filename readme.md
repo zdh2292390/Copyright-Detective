@@ -283,13 +283,33 @@ In **Representational Analysis (Unlearning Detection)**, provide the **absolute 
 If you find this project useful for your research, please consider citing our paper:
 
 ```bibtex
-@misc{zhang2026copyrightdetectiveforensicevidence,
-      title={Copyright Detective: A Forensic System to Evidence LLMs Flickering Copyright Leakage Risks}, 
-      author={Guangwei Zhang and Jianing Zhu and Cheng Qian and Neil Gong and Rada Mihalcea and Zhaozhuo Xu and Jingrui He and Jiaqi Ma and Yun Huang and Chaowei Xiao and Bo Li and Ahmed Abbasi and Dongwon Lee and Heng Ji and Denghui Zhang},
-      year={2026},
-      eprint={2602.05252},
-      archivePrefix={arXiv},
-      primaryClass={cs.CL},
-      url={https://arxiv.org/abs/2602.05252}, 
+@inproceedings{zhang-etal-2026-copyright,
+    title = "Copyright Detective: A Forensic System to Evidence {LLM}s Flickering Copyright Leakage Risks",
+    author = "Zhang, Guangwei  and
+      Zhu, Jianing  and
+      Qian, Cheng  and
+      Gong, Neil Zhenqiang  and
+      Mihalcea, Rada  and
+      Xu, Zhaozhuo  and
+      He, Jingrui  and
+      Ma, Jiaqi W.  and
+      Xiao, Chaowei  and
+      Li, Bo  and
+      Abbasi, Ahmed  and
+      Lee, Dongwon  and
+      Ji, Heng  and
+      Zhang, Denghui",
+    editor = "Durrett, Greg  and
+      Jian, Ping",
+    booktitle = "Proceedings of the 64th Annual Meeting of the {A}ssociation for {C}omputational {L}inguistics (Volume 3: System Demonstrations)",
+    month = jul,
+    year = "2026",
+    address = "San Diego, California, United States",
+    publisher = "Association for Computational Linguistics",
+    url = "https://aclanthology.org/2026.acl-demo.2/",
+    doi = "10.18653/v1/2026.acl-demo.2",
+    pages = "14--26",
+    ISBN = "979-8-89176-392-0",
+    abstract = "We present \textbf{Copyright Detective}, the first interactive forensic system for detecting, analyzing, and visualizing potential copyright risks in LLM outputs. The system treats copyright infringement versus compliance as an \textbf{evidence discovery} process rather than a static classification task due to the complex nature of copyright law. It integrates multiple detection paradigms, including content recall testing, paraphrase-level similarity analysis, persuasive jailbreak probing, and unlearning verification, within a unified and extensible framework. Through interactive prompting, response collection, and iterative workflows, our system enables systematic auditing of verbatim memorization and paraphrase-level leakage, supporting responsible deployment and transparent evaluation of LLM copyright risks even with black-box access. In our experiments with GPT-4o-mini, we demonstrate that the specific persuasive strategy ``Pathos'' shifts the leakage distribution from about 0.1 (ROUGE-L) to 0.7. Our live system is hosted on \href{https://copyright-detective.streamlit.app}{Streamlit server}, with a \href{https://youtu.be/z9Lh4kNDHiM}{demonstration video} included as supplementary material."
 }
 ````
