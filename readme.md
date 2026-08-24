@@ -215,7 +215,7 @@ export your key:
 export YOUR_API_KEY="your_api_key"
 ```
 
-Run the deployment script on your server: [unlearning_deployment.py](/backend/unlearning_deploy.py), please check [unlearning_deployment.py](/backend/notes.md) to see the risks.
+Before running [unlearning_deploy.py](backend/unlearning_deploy.py), review the [remote deployment safety notes](backend/notes.md).
 
 Once the service is running and the tunnel is up, you can use **Representational Analysis (Unlearning Detection)** directly from the app UI.
 

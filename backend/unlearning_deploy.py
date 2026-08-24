@@ -96,6 +96,13 @@ if os.environ.get("API_KEYS"):
     ]
     ALLOWED_API_KEYS.update(additional_keys)
 
+def _api_key_is_allowed(candidate: str) -> bool:
+    """Compare a candidate against every configured key in constant time."""
+    matches = False
+    for allowed_key in ALLOWED_API_KEYS:
+        matches |= secrets.compare_digest(candidate, allowed_key)
+    return matches
+
 def verify_api_key(api_key: str = Security(API_KEY_HEADER)) -> str:
     """
     Verify API key from request header.
@@ -116,7 +123,7 @@ def verify_api_key(api_key: str = Security(API_KEY_HEADER)) -> str:
             headers={"WWW-Authenticate": "ApiKey"},
         )
     
-    if api_key not in ALLOWED_API_KEYS:
+    if not _api_key_is_allowed(api_key):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid API key. Access denied.",
@@ -145,10 +152,9 @@ def verify_api_key_openai(request: Request) -> str:
     # If not found, try Authorization: Bearer <api_key> (for OpenAI-compatible endpoints)
     if not api_key:
         auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            api_key = auth_header[7:]  # Remove "Bearer " prefix
-        elif auth_header.startswith("bearer "):
-            api_key = auth_header[7:]  # Case-insensitive
+        auth_parts = auth_header.split(maxsplit=1)
+        if len(auth_parts) == 2 and auth_parts[0].lower() == "bearer":
+            api_key = auth_parts[1]
     
     if not api_key:
         raise HTTPException(
@@ -157,7 +163,7 @@ def verify_api_key_openai(request: Request) -> str:
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    if api_key not in ALLOWED_API_KEYS:
+    if not _api_key_is_allowed(api_key):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid API key. Access denied.",
@@ -1838,4 +1844,3 @@ if __name__ == "__main__":
         timeout_keep_alive=timeout_keep_alive,
         timeout_graceful_shutdown=30,
     )
-

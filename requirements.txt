@@ -1,4 +1,6 @@
 streamlit>=1.52,<2
+fastapi
+uvicorn
 starlette<1.0.0
 supabase
 cryptography
