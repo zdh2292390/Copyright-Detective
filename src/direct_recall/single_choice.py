@@ -13,7 +13,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import pandas as pd
 
 from openai import OpenAI
-from anthropic import Anthropic, HUMAN_PROMPT, AI_PROMPT
+from anthropic import Anthropic
 
 from src.direct_recall.comparison import get_llm_completion
 from src.kimi_utils import normalize_kimi_sampling_params
@@ -539,11 +539,11 @@ def load_dataset_excerpt(
     return combined_text, meta
 
 
-def _build_sc_prompt_body(question: Dict[str, Any]) -> Tuple[str, str]:
-    """Create single-choice prompt body for both OpenAI and Anthropic evaluators.
+def _build_sc_prompt_body(question: Dict[str, Any]) -> str:
+    """Create a single-choice prompt for OpenAI and Anthropic evaluators.
 
     The downstream LLM must *never* see the source passage. We therefore follow
-    standard multiple-choice exam format where the evaluator only receives the 
+    standard multiple-choice exam format where the evaluator only receives the
     synthetic question plus four options and is forced to reply with a single letter.
     """
 
@@ -560,10 +560,7 @@ def _build_sc_prompt_body(question: Dict[str, Any]) -> Tuple[str, str]:
 
     options_block = "\n".join(option_lines)
     question_block = f"Question: {prompt_question}\nOptions:\n{options_block}\n"
-
-    openai_prompt = f"{SC_QA_PROMPT} {question_block}{ANSWER_PREFIX} "
-    anthropic_prompt = f"{HUMAN_PROMPT} {SC_QA_PROMPT} {question_block}{AI_PROMPT} {ANSWER_PREFIX} "
-    return openai_prompt, anthropic_prompt
+    return f"{SC_QA_PROMPT} {question_block}{ANSWER_PREFIX} "
 
 
 def _extract_option_from_text(text: str) -> str:
@@ -757,19 +754,19 @@ def evaluate_single_choice_question(
     temperature: float = 0.7,
     top_p: float = 0.9,
 ) -> Dict[str, Any]:
-    openai_prompt, anthropic_prompt = _build_sc_prompt_body(question)
+    prompt = _build_sc_prompt_body(question)
 
     if provider in {"OpenAI", "OpenRouter", "Kimi"}:
-        result = _try_openai_style_completion(openai_prompt, api_key, model_choice, provider, temperature, top_p)
+        result = _try_openai_style_completion(prompt, api_key, model_choice, provider, temperature, top_p)
         if result:
             return result
 
     if provider == "Anthropic":
-        result = _try_anthropic_style_completion(anthropic_prompt, api_key, model_choice)
+        result = _try_anthropic_style_completion(prompt, api_key, model_choice)
         if result:
             return result
 
-    return _evaluate_with_basic_completion(openai_prompt, api_key, model_choice, provider, temperature, top_p)
+    return _evaluate_with_basic_completion(prompt, api_key, model_choice, provider, temperature, top_p)
 
 
 def run_single_choice_evaluation(
