@@ -271,15 +271,6 @@ In **Representational Analysis (Unlearning Detection)**, provide the **absolute 
 
 ---
 
-> This project is licensed under the **Creative Commons Attribution-NonCommercial 4.0 International License**.
-> 
-> **Summary of Terms:**
-> 1.  **Attribution** — You must give appropriate credit.
-> 2.  **NonCommercial** — You may **NOT** use this material for commercial purposes.
-> 
-> To view a copy of this license, visit http://creativecommons.org/licenses/by-nc/4.0/
-
-
 ## 📝 Citation
 If you find this project useful for your research, please consider citing our paper:
 
