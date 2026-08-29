@@ -267,7 +267,7 @@ In **Representational Analysis (Unlearning Detection)**, provide the **absolute 
 >
 > This software is strictly **non-commercial**, created solely for **research purposes**. No commercial gain is intended or realized.
 >
-> If you are a trademark owner and have any concerns, please contact the author directly at **ch0703@ustc.edu** before taking further action. I am open to cooperation to resolve any potential confusion.
+> If you are a trademark owner and have any concerns, please contact the author directly at **changhu1633@gmail.com** before taking further action. I am open to cooperation to resolve any potential confusion.
 
 ---
 
