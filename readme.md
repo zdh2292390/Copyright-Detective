@@ -22,7 +22,7 @@
 
 ## How to Run
 
-Analyze potential text copyright infringement in LLM applications. Follow the steps below to set up your environment and run the application.
+Analyze potential text copyright infringement in LLM applications. Follow the steps below to set up your environment and run the application of Copyright-Detective.
 
 ## 🚀 Quick Start (Local)
 
