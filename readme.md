@@ -10,7 +10,7 @@
 [![Project Page](https://img.shields.io/badge/Project-Homepage-blue)](https://changhu73.github.io/projects/copyright-detective)
 [![Demo](https://img.shields.io/badge/Streamlit-Live%20Demo-FF4B4B)](https://copyright-detective.streamlit.app)
 [![Video](https://img.shields.io/badge/YouTube-Video-FF0000)](https://youtu.be/8jYL4CJ-jks)
-[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://github.com/zdh2292390/Copyright-Detective/blob/main/LICENSE)
+[![License: GPL v3](https://img.shields.io/badge/License-GPL_v3-blue.svg)](https://github.com/zdh2292390/Copyright-Detective/blob/main/LICENSE)
 
 *For more details, please refer to [Copyright Detective: A Forensic System to Evidence LLMs Flickering Copyright Leakage Risks](https://aclanthology.org/2026.acl-demo.2.pdf)*
 
