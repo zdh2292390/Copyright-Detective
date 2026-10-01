@@ -11,6 +11,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
+from .layer_matching import matches_layer
 from .types import FeatureAnalysisResult, VisualizationItem
 
 
@@ -104,7 +105,7 @@ def _get_layer_key_pattern(model: AutoModelForCausalLM) -> str:
     for pattern in patterns:
         # Check if any param matches the pattern with layer_idx=0
         test_key = pattern.format(layer_idx=0)
-        if any(test_key in name for name in param_names):
+        if any(matches_layer(name, test_key) for name in param_names):
             return pattern
     
     # Fallback: try to find any pattern with numbers
@@ -258,7 +259,11 @@ def run_fim_analysis(
         raise RuntimeError(f"Failed to load model from {weights_path} after trying all loading strategies.")
 
     def _compute_fim_diagonal(model: AutoModelForCausalLM, layer_key: str) -> np.ndarray:
-        params = [(name, param) for name, param in model.named_parameters() if param.requires_grad and layer_key in name]
+        params = [
+            (name, param)
+            for name, param in model.named_parameters()
+            if param.requires_grad and matches_layer(name, layer_key)
+        ]
         if not params:
             raise ValueError(f"Layer key '{layer_key}' did not match any trainable parameters.")
 
@@ -267,7 +272,7 @@ def run_fim_analysis(
         original_requires_grad = {}
         for name, param in model.named_parameters():
             original_requires_grad[name] = param.requires_grad
-            if layer_key in name:
+            if matches_layer(name, layer_key):
                 param.requires_grad = True
             else:
                 param.requires_grad = False
