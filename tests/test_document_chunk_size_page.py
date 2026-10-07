@@ -106,7 +106,8 @@ class DocumentChunkSizePageTests(unittest.TestCase):
         calls = app.session_state['mock_document_control']['calls']
         self.assertEqual(len(calls), count)
         self.assertEqual(len({call['upper'] for call in calls}), count)
-        for index, call in enumerate(calls):
+        source_order = sorted(calls, key=lambda call: int(call['upper'].split()[0].removeprefix('word')))
+        for index, call in enumerate(source_order):
             self.assertEqual(call['settings']['chunk_size'], size)
             self.assertEqual(call['settings']['overlap'], overlap)
             self.assertEqual(call['upper'].split()[0], 'word' + str(index * (size - overlap)))

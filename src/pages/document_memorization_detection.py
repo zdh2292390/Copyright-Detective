@@ -246,6 +246,12 @@ def _render_chunk_count_preview(document_file, chunk_size: int) -> None:
             f"({total_words:,} words total · chunk size {chunk_size} words · {overlap}-word overlap). "
             f"Each chunk triggers one LLM call."
         )
+        concurrency = DOCUMENT_JOBS.concurrency_for(pair_count)
+        if concurrency > 1:
+            st.caption(
+                f"Large documents use up to {concurrency} concurrent chunk requests. "
+                "Analysis slows down automatically if the provider rate-limits requests."
+            )
     else:
         st.warning(
             "⚠️ The document is too short to form chunk pairs with the current chunk size. "
@@ -323,15 +329,27 @@ def _poll_document_job(token, owner_id) -> None:
         st.rerun()
     completed = len(state["results"])
     total = state["total_chunks"]
-    st.progress(
-        completed / max(total, 1),
-        text=f"Analyzing chunk {state.get('current_chunk') or 1}/{total} · {completed} succeeded · {len(state['failures'])} failed",
-    )
+    limit = state.get("concurrency_limit", 1)
+    effective = state.get("effective_concurrency", limit)
+    if limit > 1:
+        progress_text = (
+            f"{completed}/{total} chunks succeeded · {len(state['failures'])} failed "
+            f"· {len(state.get('active_chunks', []))} active chunks · concurrency limit {effective}"
+        )
+    else:
+        progress_text = f"Analyzing chunk {state.get('current_chunk') or 1}/{total} · {completed} succeeded · {len(state['failures'])} failed"
+    st.progress(completed / max(total, 1), text=progress_text)
     st.caption("Analysis continues in the background if you refresh or switch pages. Progress is saved after each chunk.")
     if state.get("retry_in_seconds"):
-        st.caption(f"Temporary API error; retry {state.get('retry_attempt')} after {state['retry_in_seconds']:.1f} seconds.")
+        if limit > 1:
+            st.caption(
+                f"Temporary API error; new chunk requests are paused for up to "
+                f"{state['retry_in_seconds']:.1f} seconds before retrying."
+            )
+        else:
+            st.caption(f"Temporary API error; retry {state.get('retry_attempt')} after {state['retry_in_seconds']:.1f} seconds.")
     if state.get("stop_requested"):
-        st.info("Stop requested. Analysis will stop when the current API request finishes; completed chunks are kept.")
+        st.info("Stop requested. Analysis will stop when the in-flight API requests finish; completed chunks are kept.")
     if st.button("Stop analysis", key="stop_pdf_analysis", disabled=bool(state.get("stop_requested"))):
         DOCUMENT_JOBS.stop(token, owner_id=owner_id)
         st.info("Stop requested; completed chunks will be preserved.")

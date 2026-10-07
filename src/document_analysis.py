@@ -8,9 +8,12 @@ import math
 import random
 import re
 import time
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import CancelledError, Executor, FIRST_COMPLETED, ThreadPoolExecutor, wait
 from email.utils import parsedate_to_datetime
 from numbers import Real
+from threading import Event
 from typing import Any
 
 
@@ -185,6 +188,257 @@ def _retry_delay(message: str, attempt: int, rng: Callable[[], float]) -> float:
     return min(MAX_RETRY_DELAY, max(base + jitter, provider_delay))
 
 
+
+def _rate_limited_error(message: str) -> bool:
+    lowered = message.lower()
+    return bool(re.search(r"\b429\b", lowered)) or any(
+        marker in lowered
+        for marker in ("rate limit", "resource_exhausted", "too many concurrent")
+    )
+
+
+def _run_parallel_chunk_analysis(
+    chunk_pairs, analyze_chunk, state, *, on_update, max_attempts,
+    max_concurrency, executor, sleep, rng, should_stop,
+):
+    """Coordinate bounded calls; only this thread mutates and publishes state."""
+    missing = deque(index for index in range(len(chunk_pairs)) if index not in state["results"])
+    pending = {}
+    retries = {}
+    halted = Event()
+    skipped = object()
+    fatal_error = None
+    cooldown_until = 0.0
+    effective_concurrency = max_concurrency
+    owned_executor = executor is None
+
+    def clear_retry():
+        state["retry_in_seconds"] = 0.0
+        state["retry_attempt"] = None
+
+    def publish():
+        nonlocal fatal_error
+        if fatal_error is not None:
+            return
+        try:
+            if on_update is not None:
+                on_update(state)
+        except BaseException as exc:
+            fatal_error = exc
+            halted.set()
+
+    def requested_stop():
+        nonlocal fatal_error
+        if halted.is_set():
+            return True
+        try:
+            requested = should_stop is not None and should_stop()
+        except BaseException as exc:
+            fatal_error = exc
+            halted.set()
+            return True
+        if requested:
+            halted.set()
+            state["status"] = "incomplete"
+            state["error"] = "Analysis stopped by request."
+            clear_retry()
+            return True
+        return False
+
+    def call_chunk(index):
+        # A shared executor may leave our small window queued behind other jobs.
+        # Cancelled/paused work must never start an outbound call from that queue.
+        if halted.is_set() or (should_stop is not None and should_stop()):
+            return skipped
+        return analyze_chunk(*chunk_pairs[index])
+
+    def restore_unstarted_attempt(index, previous, existed):
+        if existed:
+            state["attempts"][index] = previous
+        else:
+            state["attempts"].pop(index, None)
+
+    def submit(index, attempt):
+        nonlocal fatal_error
+        if requested_stop():
+            return
+        previous = state["attempts"].get(index, 0)
+        existed = index in state["attempts"]
+        state["current_chunk"] = index + 1
+        state["current_attempt"] = attempt + 1
+        state["attempts"][index] = previous + 1
+        state["active_chunks"] = sorted([meta[0] + 1 for meta in pending.values()] + [index + 1])
+        clear_retry()
+        # Commit the single index before sending it to the provider.
+        publish()
+        if requested_stop():
+            restore_unstarted_attempt(index, previous, existed)
+            return
+        try:
+            future = executor.submit(call_chunk, index)
+        except BaseException as exc:
+            restore_unstarted_attempt(index, previous, existed)
+            fatal_error = exc
+            halted.set()
+            return
+        pending[future] = (index, attempt, previous, existed)
+
+    def collect(future):
+        nonlocal cooldown_until, effective_concurrency, fatal_error
+        index, attempt, previous, existed = pending.pop(future)
+        state["current_chunk"] = index + 1
+        state["current_attempt"] = attempt + 1
+        state["active_chunks"] = sorted(meta[0] + 1 for meta in pending.values())
+        try:
+            result = future.result()
+        except CancelledError:
+            restore_unstarted_attempt(index, previous, existed)
+            publish()
+            return
+        except Exception as exc:
+            result = None
+            error = f"Error analyzing chunk: {type(exc).__name__}: {exc}"
+        except BaseException as exc:
+            if fatal_error is None:
+                fatal_error = exc
+            halted.set()
+            return
+        else:
+            if result is skipped:
+                restore_unstarted_attempt(index, previous, existed)
+                publish()
+                return
+            try:
+                error = _comparison_error(result)
+            except Exception as exc:
+                error = f"Error analyzing chunk: {type(exc).__name__}: {exc}"
+        if error is None:
+            upper, lower = chunk_pairs[index]
+            generated, metrics = result
+            state["results"][index] = (upper, lower, generated, dict(metrics))
+            state["failures"].pop(index, None)
+            if not state["failures"] and not halted.is_set():
+                state["error"] = None
+            publish()
+            return
+
+        state["failures"][index] = error
+        # Preserve the reason that first paused the job while draining other calls.
+        if not halted.is_set():
+            state["error"] = f"Chunk {index + 1}: {error}"
+        transient = _transient_error(error)
+        rate_limited = False
+        if transient and not halted.is_set():
+            delay = _retry_delay(error, attempt, rng)
+            rate_limited = _rate_limited_error(error)
+            if rate_limited:
+                effective_concurrency = max(1, effective_concurrency // 2)
+                state["effective_concurrency"] = effective_concurrency
+                cooldown_until = max(cooldown_until, time.monotonic() + delay)
+            if attempt + 1 < max_attempts:
+                retries[index] = (attempt + 1, time.monotonic() + delay)
+                state["retry_in_seconds"] = delay
+                state["retry_attempt"] = attempt + 2
+            else:
+                halted.set()
+                state["status"] = "incomplete"
+                clear_retry()
+        elif not halted.is_set() and not _chunk_specific_error(error):
+            halted.set()
+            state["status"] = "incomplete"
+            clear_retry()
+        # Publish the original failed index before changing any queued indices.
+        publish()
+        if rate_limited and not halted.is_set():
+            # A shared pool may not have begun the rest of this window yet.
+            # Cancel those calls during the shared cooldown and retain their
+            # original attempt: no outbound request consumed that retry budget.
+            for queued in list(pending):
+                if queued.cancel():
+                    queued_index, queued_attempt, _, _ = pending[queued]
+                    collect(queued)
+                    if halted.is_set():
+                        break
+                    retries[queued_index] = (queued_attempt, cooldown_until)
+
+    state["status"] = "running"
+    state["error"] = None
+    state["active_chunks"] = []
+    state["concurrency_limit"] = max_concurrency
+    state["effective_concurrency"] = effective_concurrency
+    clear_retry()
+    publish()
+    try:
+        if executor is None and not halted.is_set():
+            executor = ThreadPoolExecutor(max_workers=max_concurrency, thread_name_prefix="document-chunk")
+        while missing or retries or pending:
+            requested_stop()
+            if halted.is_set():
+                retries.clear()
+                missing.clear()
+                # Some calls are queued in the shared pool and have not started.
+                for future in list(pending):
+                    if future.cancel() or future.cancelled():
+                        collect(future)
+            else:
+                now = time.monotonic()
+                while len(pending) < effective_concurrency and now >= cooldown_until:
+                    ready = [index for index, (_, deadline) in retries.items() if deadline <= now]
+                    if ready:
+                        index = min(ready)
+                        attempt, _ = retries.pop(index)
+                    elif missing and len(pending) + len(retries) < effective_concurrency:
+                        index = missing.popleft()
+                        attempt = 0
+                    else:
+                        break
+                    submit(index, attempt)
+                    if halted.is_set():
+                        break
+                    now = time.monotonic()
+
+            if pending:
+                finished, _ = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
+                for future in sorted(finished, key=lambda item: pending[item][0]):
+                    collect(future)
+                continue
+            if halted.is_set():
+                break
+            if retries:
+                next_index = min(retries, key=lambda index: retries[index][1])
+                attempt, ready_at = retries[next_index]
+                remaining = max(0.0, max(ready_at, cooldown_until) - time.monotonic())
+                state["retry_in_seconds"] = remaining
+                state["retry_attempt"] = attempt + 1
+                if remaining:
+                    # Event.wait-backed sleep can wake immediately for cancellation.
+                    sleep(min(1.0, remaining) if should_stop is not None else remaining)
+    except BaseException as exc:
+        if fatal_error is None:
+            fatal_error = exc
+        halted.set()
+        # Unforeseen coordinator failures still retain already running successes.
+        for future in pending:
+            future.cancel()
+        for future in list(pending):
+            collect(future)
+    finally:
+        if owned_executor and executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
+
+    state["active_chunks"] = []
+    clear_retry()
+    state["status"] = (
+        "complete" if len(state["results"]) == len(chunk_pairs) else "incomplete"
+    )
+    if state["status"] == "complete":
+        state["error"] = None
+    publish()
+    if fatal_error is not None:
+        raise fatal_error
+    return state
+
+
 def run_chunk_analysis(
     chunk_pairs: Sequence[tuple[str, str]],
     analyze_chunk: Callable[[str, str], Any],
@@ -195,6 +449,8 @@ def run_chunk_analysis(
     sleep: Callable[[float], None] = time.sleep,
     rng: Callable[[], float] = random.random,
     should_stop: Callable[[], bool] | None = None,
+    max_concurrency: int = 1,
+    executor: Executor | None = None,
 ) -> dict[str, Any]:
     """Analyze missing chunks, retry temporary failures, and retain checkpoints.
 
@@ -203,10 +459,21 @@ def run_chunk_analysis(
     callers can fix the cause and resume without repeating successful calls.
     Rerun/stop signals (BaseException) intentionally escape, leaving a checkpoint.
     Cancellation pauses cooperatively; an in-flight provider call cannot be stopped.
+    Concurrent runs keep a bounded window and publish each completed index from
+    the coordinator. An injected executor is also used for a one-call window
+    and remains owned by the caller.
     """
     validate_analysis_state(chunk_pairs, state)
     if type(max_attempts) is not int or max_attempts < 1:
         raise ValueError("max_attempts must be at least one.")
+    if type(max_concurrency) is not int or not 1 <= max_concurrency <= 8:
+        raise ValueError("max_concurrency must be an integer between one and eight.")
+    if max_concurrency > 1 or executor is not None:
+        return _run_parallel_chunk_analysis(
+            chunk_pairs, analyze_chunk, state, on_update=on_update,
+            max_attempts=max_attempts, max_concurrency=max_concurrency,
+            executor=executor, sleep=sleep, rng=rng, should_stop=should_stop,
+        )
 
     def publish() -> None:
         if on_update is not None:
@@ -221,12 +488,16 @@ def run_chunk_analysis(
             return False
         state["status"] = "incomplete"
         state["error"] = "Analysis stopped by request."
+        state["active_chunks"] = []
         clear_retry()
         publish()
         return True
 
     state["status"] = "running"
     state["error"] = None
+    state["active_chunks"] = []
+    state["concurrency_limit"] = 1
+    state["effective_concurrency"] = 1
     clear_retry()
     publish()
     for index, (upper, lower) in enumerate(chunk_pairs):
@@ -241,6 +512,7 @@ def run_chunk_analysis(
             clear_retry()
             state["current_attempt"] = attempt + 1
             state["attempts"][index] = state["attempts"].get(index, 0) + 1
+            state["active_chunks"] = [index + 1]
             # Persist the active chunk and attempt before the outbound call.
             publish()
             if stop_requested():
@@ -251,6 +523,7 @@ def run_chunk_analysis(
             except Exception as exc:
                 # An empty TimeoutError / ConnectionError still needs retry handling.
                 error = f"Error analyzing chunk: {type(exc).__name__}: {exc}"
+            state["active_chunks"] = []
 
             if error is None:
                 generated, metrics = result
@@ -293,6 +566,7 @@ def run_chunk_analysis(
     state["status"] = (
         "complete" if len(state["results"]) == len(chunk_pairs) else "incomplete"
     )
+    state["active_chunks"] = []
     clear_retry()
     if state["status"] == "complete":
         state["error"] = None

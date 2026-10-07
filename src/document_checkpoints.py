@@ -34,6 +34,7 @@ METADATA_KEYS = frozenset({
     "fingerprint", "settings", "total_chunks", "status", "error",
     "current_chunk", "current_attempt", "retry_in_seconds", "retry_attempt",
     "started_at", "updated_at", "completed_at", "owner_id", "revision", "stop_requested",
+    "active_chunks", "concurrency_limit", "effective_concurrency",
 })
 TOKEN_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 MAX_CHUNKS = 500_000
@@ -139,6 +140,19 @@ def _metadata(state: Any) -> dict[str, Any]:
     clean["error"] = _text(clean.get("error"), "error", nullable=True, limit=100_000)
     if "stop_requested" in clean and not isinstance(clean["stop_requested"], bool):
         raise CheckpointError("Checkpoint has an invalid stop request.")
+    if "active_chunks" in clean:
+        active = clean["active_chunks"]
+        if not isinstance(active, list) or len(active) > total:
+            raise CheckpointError("Checkpoint has an invalid active chunk list.")
+        for index in active:
+            _integer(index, "active chunk", minimum=1, maximum=total)
+        if len(set(active)) != len(active):
+            raise CheckpointError("Checkpoint has duplicate active chunks.")
+        if clean["status"] == "complete" and active:
+            raise CheckpointError("A complete checkpoint cannot contain active chunks.")
+    for key in ("concurrency_limit", "effective_concurrency"):
+        if key in clean:
+            _integer(clean[key], key, minimum=1, maximum=8)
     for key in ("started_at", "updated_at", "completed_at", "owner_id"):
         if key in clean:
             _text(clean[key], key, nullable=True, limit=1024)

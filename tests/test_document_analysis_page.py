@@ -28,6 +28,7 @@ if "mock_control" not in st.session_state:
     st.session_state["mock_service"] = DocumentAnalysisJobs(
         DocumentCheckpointStore(st.session_state["mock_directory"].name),
         analyze_chunk=compare,
+        chunk_concurrency=1,
     )
 
 page.DOCUMENT_JOBS = st.session_state["mock_service"]

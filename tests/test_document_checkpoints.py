@@ -64,6 +64,98 @@ class DocumentCheckpointTests(unittest.TestCase):
             self.assertEqual(self.root.stat().st_mode & 0o777, 0o700)
             self.assertEqual(self.store.db_path.stat().st_mode & 0o777, 0o600)
 
+    def test_parallel_metadata_round_trips_without_changing_generation_settings(self):
+        state, pairs = fixture(4)
+        original_settings = deepcopy(state["settings"])
+        original_fingerprint = state["fingerprint"]
+        state.update(status="running", active_chunks=[4, 2], concurrency_limit=8, effective_concurrency=2)
+        token = self.store.create(state, pairs)
+        self.assertEqual(DocumentCheckpointStore(self.root).load(token)[0], state)
+        state.update(active_chunks=[4], concurrency_limit=4, effective_concurrency=1)
+        self.store.save_progress(token, state)
+        self.assertEqual(self.store.load(token)[0], state)
+        state.update(active_chunks=[], concurrency_limit=1, effective_concurrency=1)
+        self.store.save(token, state)
+        loaded, _ = self.store.load(token)
+        self.assertEqual(loaded, state)
+        self.assertEqual(loaded["settings"], original_settings)
+        self.assertEqual(loaded["fingerprint"], original_fingerprint)
+        self.assertFalse({"active_chunks", "concurrency_limit", "effective_concurrency"} & loaded["settings"].keys())
+
+    def test_old_metadata_does_not_require_parallel_defaults_or_schema_migration(self):
+        state, pairs = fixture()
+        token = self.store.create(state, pairs)
+        loaded, _ = DocumentCheckpointStore(self.root).load(token)
+        self.assertEqual(loaded, state)
+        for key in ("active_chunks", "concurrency_limit", "effective_concurrency"):
+            self.assertNotIn(key, loaded)
+        with self.connect() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 1)
+
+    def test_invalid_parallel_metadata_is_rejected_before_creating_storage(self):
+        state, pairs = fixture()
+        invalid_values = {
+            "active_chunks": (None, {}, (), "1", [0], [-1], [4], [True], [1.0], ["1"], [1, 1], [1, 2, 3, 3], [[]]),
+            "concurrency_limit": (None, 0, -1, 9, True, 1.0, "2"),
+            "effective_concurrency": (None, 0, -1, 9, False, 1.0, "2"),
+        }
+        for key, values in invalid_values.items():
+            for value in values:
+                invalid = deepcopy(state)
+                invalid[key] = value
+                with self.subTest(key=key, value=value), self.assertRaises(CheckpointError):
+                    self.store.create(invalid, pairs)
+                self.assertFalse(self.root.exists())
+        empty, empty_pairs = fixture(0)
+        empty.update(active_chunks=[], concurrency_limit=1, effective_concurrency=1)
+        token = self.store.create(empty, empty_pairs)
+        self.assertEqual(self.store.load(token)[0], empty)
+
+    def test_invalid_parallel_updates_preserve_persisted_results_and_metadata(self):
+        state, pairs = fixture(2)
+        for index in range(2):
+            succeed(state, pairs, index)
+        state.update(status="running", active_chunks=[], concurrency_limit=2, effective_concurrency=2)
+        token = self.store.create(state, pairs)
+        for save in (self.store.save, lambda token, value: self.store.save_progress(token, value, 1)):
+            for update in ({"active_chunks": [2, 2]}, {"concurrency_limit": 9}, {"effective_concurrency": 0}, {"status": "complete", "active_chunks": [2]}):
+                invalid = deepcopy(state)
+                invalid.update(update)
+                invalid["results"][1][3]["rouge_l"] = 0.8
+                with self.subTest(update=update), self.assertRaises(CheckpointError):
+                    save(token, invalid)
+                self.assertEqual(self.store.load(token)[0], state)
+        state["status"] = "complete"
+        self.store.save_progress(token, state, 1)
+        self.assertEqual(self.store.load(token)[0], state)
+
+    def test_corrupt_parallel_metadata_with_matching_hash_is_rejected(self):
+        state, pairs = fixture()
+        token = self.store.create(state, pairs)
+        for field, value in (("active_chunks", [1, 1]), ("concurrency_limit", 9), ("effective_concurrency", True)):
+            with self.connect() as connection:
+                metadata = json.loads(connection.execute("SELECT metadata FROM jobs WHERE token = ?", (token,)).fetchone()[0])
+                metadata.update({"active_chunks": [], "concurrency_limit": 1, "effective_concurrency": 1})
+                metadata[field] = value
+                data = json.dumps(metadata)
+                digest = hashlib.sha256(data.encode()).hexdigest()
+                connection.execute("UPDATE jobs SET metadata = ?, metadata_hash = ? WHERE token = ?", (data, digest, token))
+            with self.subTest(field=field), self.assertRaises(CheckpointError):
+                self.store.load(token)
+
+    def test_out_of_order_progress_preserves_successes_and_clears_active_chunks(self):
+        state, pairs = fixture(3)
+        state.update(status="running", active_chunks=[1, 2, 3], concurrency_limit=3, effective_concurrency=3)
+        token = self.store.create(state, pairs)
+        for index in (2, 0, 1):
+            succeed(state, pairs, index)
+            state["current_chunk"] = index + 1
+            state["active_chunks"].remove(index + 1)
+            state["status"] = "complete" if not state["active_chunks"] else "running"
+            self.store.save_progress(token, state, index)
+            self.assertEqual(self.store.load(token)[0], state)
+        self.assertEqual(set(self.store.load(token)[0]["results"]), {0, 1, 2})
+
     def test_no_api_keys_or_arbitrary_state_fields_are_persisted(self):
         state, pairs = fixture()
         secret = "private-api-key-do-not-persist"
