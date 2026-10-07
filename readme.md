@@ -48,6 +48,8 @@ Shared provider requests default to a 120-second request timeout; internal calle
 
 ## Document analysis completion and recovery
 
+Document chunk sizes range from 50 to 2000 words. A 50-word chunk uses a 25-word overlap; larger chunks retain the usual 50-word overlap. The preview, execution, and saved analysis settings use the same overlap.
+
 The chunk preview is the planned number of comparisons. Results and PDF reports show successful, failed, and pending chunks separately; only a run with every planned comparison successful is marked complete. A partial report describes only the analyzed scope.
 
 Document analysis runs in a bounded background worker pool. Refreshing, switching pages, or reconnecting does not interrupt a running task while the app server stays up. Duplicate submissions of an active task are rejected. **Stop analysis** stops before the next API call, or immediately during retry backoff; an in-flight request finishes first and its successful result is kept.

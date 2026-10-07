@@ -40,7 +40,7 @@ class Document:
 page._list_example_documents = lambda: [("Test document", None)]
 page._resolve_active_document = lambda *args: Document()
 page.extract_text_from_document = lambda document: "source contents"
-page.split_text_into_chunks = lambda text, chunk_size: [(str(i), "target") for i in range(st.session_state.get("mock_total", 1974))]
+page.split_text_into_chunks = lambda text, chunk_size, overlap=50: [(str(i), "target") for i in range(st.session_state.get("mock_total", 1974))]
 page.render_prompt_preview = lambda prompt: None
 
 def render_results(results, document, model, **kwargs):

@@ -157,6 +157,7 @@ def _clear_pdf_cache() -> None:
     st.session_state.pop("pdf_active_document_name", None)
     st.session_state.pop("_pdf_prev_source_mode", None)
     clear_upload_cache(PDF_UPLOAD_CACHE_KEY)
+    st.session_state.pop("pdf_chunk_size_input", None)
     st.session_state["pdf_chunk_size"] = 200
     st.session_state["pdf_continuation_method_index"] = 0
     st.session_state["pdf_temperature"] = 0.7
@@ -202,6 +203,20 @@ def _get_document_text_preview(document_file) -> str | None:
     return text
 
 
+def _normalise_document_chunk_size(value) -> int:
+    """Repair stale widget state before Streamlit validates its bounds and type."""
+    if type(value) is not int:
+        return 200
+    return max(50, min(2000, value))
+
+
+def _document_chunk_overlap(chunk_size: int) -> int:
+    """Keep the usual overlap while allowing the supported 50-word boundary."""
+    if type(chunk_size) is not int or not 50 <= chunk_size <= 2000:
+        raise ValueError("Chunk size must be an integer between 50 and 2000 words.")
+    return 25 if chunk_size == 50 else 50
+
+
 def _render_chunk_count_preview(document_file, chunk_size: int) -> None:
     """Show how many chunks will be processed before the user clicks Run."""
     if document_file is None or not chunk_size:
@@ -214,14 +229,21 @@ def _render_chunk_count_preview(document_file, chunk_size: int) -> None:
         st.error(f"❌ {preview_text}")
         return
 
-    chunk_pairs = split_text_into_chunks(preview_text, chunk_size=chunk_size)
+    try:
+        overlap = _document_chunk_overlap(chunk_size)
+        chunk_pairs = split_text_into_chunks(
+            preview_text, chunk_size=chunk_size, overlap=overlap
+        )
+    except (TypeError, ValueError) as exc:
+        st.error(f"Could not preview document chunks: {exc}")
+        return
     total_words = len(preview_text.split())
     pair_count = len(chunk_pairs)
 
     if pair_count > 0:
         st.info(
             f"📊 **{pair_count:,}** chunk{'s' if pair_count != 1 else ''} will be processed "
-            f"({total_words:,} words total · chunk size {chunk_size} words · 50-word overlap). "
+            f"({total_words:,} words total · chunk size {chunk_size} words · {overlap}-word overlap). "
             f"Each chunk triggers one LLM call."
         )
     else:
@@ -357,8 +379,19 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
     job_running = bool(token and DOCUMENT_JOBS.is_running(token))
 
     # Initialize session state for PDF Analysis
-    if 'pdf_chunk_size' not in st.session_state:
-        st.session_state['pdf_chunk_size'] = 200
+    st.session_state['pdf_chunk_size'] = _normalise_document_chunk_size(
+        st.session_state.get('pdf_chunk_size', 200)
+    )
+    cached_chunk_size = st.session_state.get(
+        'pdf_chunk_size_input', st.session_state['pdf_chunk_size']
+    )
+    normalised_chunk_size = _normalise_document_chunk_size(cached_chunk_size)
+    if (
+        'pdf_chunk_size_input' not in st.session_state
+        or type(cached_chunk_size) is not int
+        or cached_chunk_size != normalised_chunk_size
+    ):
+        st.session_state['pdf_chunk_size_input'] = normalised_chunk_size
     if 'pdf_continuation_method_index' not in st.session_state:
         st.session_state['pdf_continuation_method_index'] = 0
     if 'pdf_temperature' not in st.session_state:
@@ -464,25 +497,16 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
     with config_col1:
         chunk_size = st.number_input(
             'Change chunk size (words):',
-            min_value=75,
+            min_value=50,
             max_value=2000,
-            value=max(75, st.session_state['pdf_chunk_size']),
             step=25,
-            help='Number of words per text chunk (must be between 75 and 2000)',
+            help='Number of words per text chunk (must be between 50 and 2000)',
             key='pdf_chunk_size_input'
         )
-        # Custom validation with English error message
-        if chunk_size > 2000:
-            st.error("⚠️ Chunk size cannot exceed 2000 words. Please enter a value between 75 and 2000.")
-            chunk_size = 2000
-            st.session_state['pdf_chunk_size'] = 2000
-        elif chunk_size < 75:
-            st.error("⚠️ Chunk size must be at least 75 words. Please enter a value between 75 and 2000.")
-            chunk_size = 75
-            st.session_state['pdf_chunk_size'] = 75
-        else:
-            st.session_state['pdf_chunk_size'] = chunk_size
-        st.caption("Chunk size must be between 75 and 2000 words to run document analysis.")
+        st.session_state['pdf_chunk_size'] = chunk_size
+        st.caption("Chunk size must be between 50 and 2000 words to run document analysis.")
+        if chunk_size == 50:
+            st.caption("50-word chunks use a 25-word overlap so analysis can advance through the document.")
     with config_col2:
         continuation_method = st.selectbox(
             'Choose a prompting method',
@@ -553,7 +577,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         "model": model_choice,
         "provider": provider,
         "chunk_size": chunk_size,
-        "overlap": 50,
+        "overlap": _document_chunk_overlap(chunk_size),
         "continuation_method": continuation_method,
         "temperature": temperature,
         "top_p": top_p,
@@ -620,7 +644,10 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                 st.error("⚠️ Please provide a custom prompt template before running the analysis.")
                 return
             if not resume_analysis:
-                chunk_pairs = split_text_into_chunks(document_text, chunk_size=chunk_size)
+                chunk_pairs = split_text_into_chunks(
+                    document_text, chunk_size=chunk_size,
+                    overlap=analysis_settings["overlap"],
+                )
                 if not chunk_pairs:
                     st.warning("⚠️ Could not split the document into enough text chunks for analysis.")
                     return
@@ -632,7 +659,10 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                 st.query_params[PDF_JOB_QUERY_KEY] = token
             elif not token:
                 # Upgrade the preceding in-session checkpoint to a durable task.
-                chunk_pairs = split_text_into_chunks(document_text, chunk_size=chunk_size)
+                chunk_pairs = split_text_into_chunks(
+                    document_text, chunk_size=chunk_size,
+                    overlap=analysis_settings["overlap"],
+                )
                 token = DOCUMENT_JOBS.create(
                     saved_analysis, chunk_pairs, owner_id=st.session_state.get("user_id")
                 )
