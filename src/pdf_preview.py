@@ -7,6 +7,7 @@ for various detection analyses.
 """
 
 import base64
+import hashlib
 import html
 import io
 import random
@@ -833,6 +834,18 @@ def generate_text_memorization_pdf_report(results_data: Dict[str, Any], prompt_t
             'metrics': key_metrics
         })
 
+    progress = results_data.get('analysis_progress', {})
+    requested = progress.get('requested_runs', user_inputs.get('inference_runs'))
+    completed = progress.get('completed_runs', len(results_data.get('generated_texts', [])) if results_data.get('type') == 'multiple' else 1)
+    if requested is not None and completed < requested:
+        scope = f"PARTIAL ANALYSIS: {completed}/{requested} requested runs completed. Findings cover successful runs only."
+        summary = scope + " " + summary
+        conclusions_text = scope + " " + conclusions_text
+        key_metrics['Requested Runs'] = requested
+        key_metrics['Completed Runs'] = completed
+        if progress.get('error'):
+            findings_list.append({'title': 'Run interruption', 'content': str(progress['error']), 'metrics': {}})
+
     # Add sections to PDF (in correct order: Executive Summary first, then Methodology)
     _add_executive_summary_section(pdf, summary, key_metrics)
     
@@ -1054,7 +1067,11 @@ def generate_single_choice_question_pdf_report(results_data: Dict[str, Any], mod
         key_metrics['Average Correct Answer Confidence'] = avg_correct_confidence
     
     # Executive Summary
-    if accuracy >= 0.75:
+    if accuracy is None:
+        summary = "No valid model responses were evaluated. No memorization assessment is available."
+        conclusions_text = summary
+        recommendations = ["Resolve the reported request failures and rerun the evaluation."]
+    elif accuracy >= 0.75:
         summary = (
             f"This audit evaluated {total_runs} single-choice question responses and detected HIGH memorization "
             f"indicator with an overall accuracy of {fmt_pct(accuracy)}. The model consistently prefers the verbatim option, "
@@ -1103,6 +1120,13 @@ def generate_single_choice_question_pdf_report(results_data: Dict[str, Any], mod
             "Consider expanding test coverage to additional question types."
         ]
     
+    failed_attempts = metrics.get('failed_attempts', 0)
+    if failed_attempts:
+        coverage = f"Partial evaluation: {metrics.get('successful_attempts', 0)}/{metrics.get('total_attempts', 0)} successful responses; {failed_attempts} failed. Scores cover successful responses only. "
+        summary = coverage + summary
+        conclusions_text = coverage + conclusions_text
+        key_metrics['Failed Attempts'] = failed_attempts
+
     # Methodology Section
     methodology_text = (
         "This audit employs single-choice question evaluation to detect memorization by presenting the model with "
@@ -1129,7 +1153,7 @@ def generate_single_choice_question_pdf_report(results_data: Dict[str, Any], mod
         'title': 'Memorization Risk Assessment',
         'content': (
             f"Evaluation across {total_runs} runs with {len(generated_mcqs) if generated_mcqs else 0} questions "
-            f"revealed an overall accuracy of {accuracy:.1f}%. This metric indicates the model's tendency to select "
+            f"revealed an overall accuracy of {fmt_pct(accuracy)}. This metric indicates the model's tendency to select "
             f"verbatim options over paraphrased alternatives."
         ),
         'metrics': key_metrics
@@ -1166,7 +1190,9 @@ def generate_single_choice_question_pdf_report(results_data: Dict[str, Any], mod
         pdf.set_font("Times", style='B', size=12)
         pdf.cell(200, 8, txt="Memorization Risk Assessment:", ln=True)
         pdf.set_font("Times", size=11)
-        if accuracy >= 0.75:
+        if accuracy is None:
+            pdf.cell(200, 8, txt="UNAVAILABLE - No valid responses were scored.", ln=True)
+        elif accuracy >= 0.75:
             pdf.cell(200, 8, txt="ELEVATED INDICATOR - Model consistently prefers the verbatim option.", ln=True)
         elif accuracy >= 0.5:
             pdf.cell(200, 8, txt="MODERATE INDICATOR - Model shows noticeable bias toward the verbatim option.", ln=True)
@@ -1192,7 +1218,7 @@ def generate_single_choice_question_pdf_report(results_data: Dict[str, Any], mod
             question_preview = _sanitize_text_for_pdf(item['question'][:40] + ('...' if len(item['question']) > 40 else ''))
             pdf.cell(15, 5, txt=str(item['index'] + 1), border=1)
             pdf.cell(50, 5, txt=question_preview, border=1)
-            pdf.cell(15, 5, txt=f"{item['accuracy'] * 100:.1f}%", border=1)
+            pdf.cell(15, 5, txt=fmt_pct(item.get("accuracy")), border=1)
             pdf.cell(15, 5, txt=str(item['attempts']), border=1)
             pdf.ln()
 
@@ -1241,6 +1267,9 @@ def generate_single_choice_question_pdf_report(results_data: Dict[str, Any], mod
             for run_idx, run_results in enumerate(results):
                 if qa_idx < len(run_results):
                     eval_result = run_results[qa_idx]
+                    if eval_result.get('error'):
+                        pdf.multi_cell(0, 5, txt=_sanitize_text_for_pdf(f"Run {run_idx + 1} failed: {eval_result['error']}"))
+                        continue
                     choice = eval_result.get('llm_choice', '?')
                     is_correct = eval_result.get('is_correct', False)
                     status = "[x]" if is_correct else "[ ]"
@@ -1302,6 +1331,23 @@ def generate_min_k_prob_pdf_report(
             'Total Examples': evaluation_results.get('num_examples', 0)
         }
         
+    scope = evaluation_results.get('analysis_progress') or {}
+    completed = len(batch_results)
+    total = scope.get('total')
+    if not isinstance(total, int) or isinstance(total, bool) or total < completed:
+        total = None
+    failures = scope.get('failures') or {}
+    failed = len(failures)
+    pending = max(0, total - completed - failed) if total is not None else None
+    complete = scope.get('status') == 'complete' and total == completed and not failures
+    key_metrics.update({
+        'Analysis Status': 'Complete' if complete else ('Incomplete' if total is not None else 'Completion unverified'),
+        'Planned Examples': total if total is not None else 'Unknown',
+        'Analyzed Examples': completed,
+        'Failed or Skipped Examples': failed,
+        'Pending Examples': pending if pending is not None else 'Unknown',
+    })
+
     # Methodology
     methodology_text = (
         "This audit utilizes the Min-K% Prob methodology to identify potential training data memorization. "
@@ -1323,6 +1369,22 @@ def generate_min_k_prob_pdf_report(
     else:
         summary = "Low memorization signals detected. The model's behavior is close to baseline expectations."
         
+    if 'error' in evaluation_results:
+        summary = f"Evaluation metrics are unavailable: {evaluation_results['error']}"
+    conclusions = "The Min-K% Prob analysis provides a probabilistic estimate of memorization risk within the analyzed examples."
+    recommendations = ["Maintain data deduplication.", "Regularly audit model updates."]
+    if not complete:
+        scope_note = (
+            f"INCOMPLETE ANALYSIS: {completed} of {total} requested examples were analyzed; {failed} failed or were skipped and {pending} remain pending. "
+            if total is not None else "COMPLETION UNVERIFIED: The original requested example count was not recorded. "
+        )
+        summary = scope_note + "Findings cover successful examples only. " + summary
+        conclusions += " These findings do not establish results for failed, skipped, or pending examples."
+        recommendations.insert(0, "Complete all requested examples before making a full-batch assessment.")
+    if failures:
+        summary += " Failures: " + "; ".join(str(error)[:300] for error in list(failures.values())[:3])
+    for warning in evaluation_results.get('warnings', []):
+        summary += f" Metric availability: {warning}"
     _add_executive_summary_section(pdf, summary, key_metrics)
     
     _add_methodology_section(pdf, methodology_text, methodology_params)
@@ -1343,9 +1405,63 @@ def generate_min_k_prob_pdf_report(
             })
         _add_findings_section(pdf, "Comparative Metric Analysis", findings_list)
         
-    _add_conclusions_section(pdf, "The Min-K% Prob analysis provides a probabilistic estimate of memorization risk.", ["Maintain data deduplication.", "Regularly audit model updates."])
+    _add_conclusions_section(pdf, conclusions, recommendations)
     
     return pdf.output(dest='S').encode('latin-1', errors='replace')
+
+
+def _document_analysis_scope(results_data, analysis_progress=None) -> Dict[str, Any]:
+    """Describe coverage without treating a saved partial result as a full audit."""
+    progress = analysis_progress or {}
+    completed = len(results_data)
+    total = progress.get("total_chunks")
+    if not isinstance(total, int) or isinstance(total, bool) or total < completed:
+        total = None
+    failures = progress.get("failures") or {}
+    failed = len(failures)
+    status = progress.get("status", "unknown")
+    complete = status == "complete" and total == completed and failed == 0
+    pending = max(total - completed - failed, 0) if total is not None else None
+    return {
+        "completed": completed,
+        "total": total,
+        "failed": failed,
+        "pending": pending,
+        "coverage": completed / total if total else None,
+        "complete": complete,
+        "status": "Complete" if complete else (
+            "Running" if status == "running" else (
+                "Incomplete" if total is not None else "Completion unverified"
+            )
+        ),
+        "error": progress.get("error") or "",
+    }
+
+
+def _render_document_report_preview(
+    results_data, uploaded_file, model_choice, continuation_method,
+    temperature, top_p, chunk_size, analysis_progress,
+) -> None:
+    """Invalidate saved PDF bytes when results, run scope, or settings change."""
+    filename = uploaded_file.name if uploaded_file else "document.pdf"
+    report_inputs = (
+        results_data, filename, model_choice, continuation_method,
+        temperature, top_p, chunk_size, analysis_progress,
+    )
+    fingerprint = hashlib.sha256(repr(report_inputs).encode("utf-8")).hexdigest()
+    if (
+        "pdf_report_bytes" not in st.session_state
+        or st.session_state.get("pdf_report_fingerprint") != fingerprint
+    ):
+        st.session_state["pdf_report_bytes"] = generate_document_memorization_pdf_report(
+            results_data, model_choice, continuation_method, temperature,
+            top_p, chunk_size, filename, analysis_progress=analysis_progress,
+        )
+        st.session_state["pdf_report_fingerprint"] = fingerprint
+    render_pdf_preview_with_blob(
+        st.session_state["pdf_report_bytes"],
+        title="📋 Audit Report Preview", iframe_height=450,
+    )
 
 
 def render_pdf_results_section(
@@ -1358,11 +1474,37 @@ def render_pdf_results_section(
     continuation_method: str,
     temperature: float,
     top_p: float,
+    analysis_progress: Optional[Dict[str, Any]] = None,
+    chunk_size: Optional[int] = None,
 ) -> None:
     """Render ranked document chunk results with adjustable controls."""
 
+    scope = _document_analysis_scope(results_data, analysis_progress)
+    report_chunk_size = chunk_size if chunk_size is not None else st.session_state.get("pdf_chunk_size", 200)
+    if scope["total"] is not None:
+        coverage_text = f"{scope['coverage']:.1%}" if scope["coverage"] is not None else "0.0%"
+        coverage_message = (
+            f"{scope['status']} analysis: {scope['completed']:,}/{scope['total']:,} chunks analyzed "
+            f"({coverage_text} coverage); {scope['failed']:,} failed; {scope['pending']:,} pending."
+        )
+        if scope["complete"]:
+            st.success(coverage_message)
+        else:
+            st.warning(coverage_message + " The report covers the analyzed chunks only.")
+    else:
+        st.warning(
+            f"Completion unverified: {scope['completed']:,} saved chunks are available, "
+            "but the original planned count was not recorded. The report covers these chunks only."
+        )
+    if scope["error"]:
+        st.caption(f"Last interruption or failure: {scope['error']}")
+
     if not results_data:
         st.info("No comparable chunks were produced for ranking.")
+        _render_document_report_preview(
+            results_data, uploaded_file, model_choice, continuation_method,
+            temperature, top_p, report_chunk_size, analysis_progress,
+        )
         return
 
     metrics_options = [
@@ -1478,24 +1620,10 @@ def render_pdf_results_section(
                 metrics=metrics_for_display,
             )
 
-    # Generate PDF Report
-    if 'pdf_report_bytes' not in st.session_state:
-        filename = uploaded_file.name if uploaded_file else "document.pdf"
-        pdf_bytes = generate_document_memorization_pdf_report(
-            results_data,
-            model_choice,
-            continuation_method,
-            temperature,
-            top_p,
-            st.session_state.get('pdf_chunk_size', 200),
-            filename
-        )
-        st.session_state['pdf_report_bytes'] = pdf_bytes
-    else:
-        pdf_bytes = st.session_state['pdf_report_bytes']
-
-    # PDF Preview
-    render_pdf_preview_with_blob(pdf_bytes, title="📋 Audit Report Preview", iframe_height=450)
+    _render_document_report_preview(
+        results_data, uploaded_file, model_choice, continuation_method,
+        temperature, top_p, report_chunk_size, analysis_progress,
+    )
 
 
 def generate_jailbreak_detection_pdf_report(
@@ -1655,7 +1783,9 @@ def generate_document_memorization_pdf_report(
     top_p: float,
     chunk_size: int,
     filename: str,
-    plots: Dict[str, bytes] = None
+    plots: Dict[str, bytes] = None,
+    *,
+    analysis_progress: Optional[Dict[str, Any]] = None,
 ) -> bytes:
     """Generate an audit-style PDF report for document memorization detection results."""
     
@@ -1672,20 +1802,29 @@ def generate_document_memorization_pdf_report(
         reverse=True
     )
     
-    # Calculate key metrics
+    # Record the planned scope separately from successful chunk results.
+    scope = _document_analysis_scope(results_data, analysis_progress)
+    top_rouge_l = 0.0
+    key_metrics = {
+        'Analysis Status': scope['status'],
+        'Total Chunks Planned': scope['total'] if scope['total'] is not None else 'Unknown',
+        'Total Chunks Analyzed': scope['completed'],
+        'Failed Chunks': scope['failed'],
+        'Pending Chunks': scope['pending'] if scope['pending'] is not None else 'Unknown',
+        'Document Coverage': f"{scope['coverage']:.1%}" if scope['coverage'] is not None else 'Unknown',
+    }
     if sorted_results:
         top_rouge_l = sorted_results[0][3].get("rouge_l", 0.0)
         avg_rouge_l = sum(entry[3].get("rouge_l", 0.0) for entry in sorted_results) / len(sorted_results)
-        key_metrics = {
-            'Total Chunks Analyzed': len(results_data),
+        key_metrics.update({
             'Peak ROUGE-L Score': top_rouge_l,
             'Average ROUGE-L Score': avg_rouge_l,
-        }
+        })
         
         # Executive Summary
         if top_rouge_l > 0.7 or avg_rouge_l > 0.5:
             summary = (
-                f"Document-wide analysis across {len(results_data)} segments identifies an ELEVATED similarity indicator. "
+                f"Analysis of {len(results_data)} processed segments identifies an ELEVATED similarity indicator. "
                 f"Peak ROUGE-L of {top_rouge_l:.4f} suggests localized spans with unusually high overlap to the source."
             )
             conclusions_text = (
@@ -1698,25 +1837,44 @@ def generate_document_memorization_pdf_report(
             ]
         else:
             summary = (
-                f"Document-wide analysis across {len(results_data)} segments indicates LOW to MODERATE memorization risk. "
+                f"Analysis of {len(results_data)} processed segments indicates LOW to MODERATE memorization risk within the tested scope. "
                 f"The model primarily demonstrates generative behavior."
             )
             conclusions_text = (
-                "Within the tested scope, no systematic verbatim reproduction was observed across the document. "
+                "Within the analyzed segments, no systematic verbatim reproduction was observed. "
                 "Continue monitoring as behavior can vary across prompts and sampling settings."
             )
             recommendations = ["Continue standard compliance monitoring."]
     else:
-        key_metrics = {'Total Chunks Analyzed': 0}
         summary = "No data available for analysis."
         conclusions_text = "Audit could not be completed due to lack of input data."
         recommendations = ["Check document processing pipeline."]
-    
+
+    if not scope['complete']:
+        if scope['total'] is not None:
+            coverage_note = (
+                f"INCOMPLETE ANALYSIS: {scope['completed']} of {scope['total']} planned chunks were analyzed; "
+                f"{scope['failed']} failed and {scope['pending']} remain pending. "
+            )
+        else:
+            coverage_note = (
+                "COMPLETION UNVERIFIED: The original planned chunk count was not recorded. "
+            )
+        summary = coverage_note + "Findings apply only to the processed segments. " + summary
+        conclusions_text += (
+            " This report does not establish findings for unprocessed portions of the document. "
+            "Complete all planned chunks before making a document-wide assessment."
+        )
+        recommendations.insert(0, "Resume the analysis and retry failed chunks until all planned chunks have been analyzed.")
+    if scope['error']:
+        summary += f" Last interruption or failure: {scope['error']}"
+
     # Methodology Section
     methodology_text = (
         "This audit evaluates document-level memorization by segmenting the source text into fixed-size chunks "
         "and using each prefix to probe the model for verbatim continuations. Multi-metric similarity analysis "
-        "is then applied to quantify the degree of memorization across the entire document."
+        "is then applied to quantify similarity within the successfully analyzed segments. "
+        "Coverage counters distinguish processed chunks from failed and pending chunks."
     )
     methodology_params = {
         'Continuation Method': _sanitize_text_for_pdf(continuation_method),
@@ -1732,14 +1890,20 @@ def generate_document_memorization_pdf_report(
     
     # Findings Section
     top_n = min(10, len(sorted_results))
-    findings_list = [{
-        'title': f'Top {top_n} Highest Risk Segments',
-        'content': f"The following segments exhibited the highest similarity to the source document, indicating localized memorization hotspots.",
-        'metrics': {
-            'Max ROUGE-L': top_rouge_l,
-            'Mean ROUGE-L (Top Chunks)': sum(entry[3].get("rouge_l", 0.0) for entry in sorted_results[:top_n]) / top_n if top_n > 0 else 0.0,
-        }
-    }]
+    if sorted_results:
+        findings_list = [{
+            'title': f'Top {top_n} Highest Risk Segments',
+            'content': "The following analyzed segments exhibited the highest similarity to the source document, indicating localized memorization hotspots.",
+            'metrics': {
+                'Max ROUGE-L': top_rouge_l,
+                'Mean ROUGE-L (Top Chunks)': sum(entry[3].get("rouge_l", 0.0) for entry in sorted_results[:top_n]) / top_n,
+            }
+        }]
+    else:
+        findings_list = [{
+            'title': 'No analyzed segments',
+            'content': "No successful chunk comparisons are available. Process failed and pending chunks before assessing similarity findings.",
+        }]
     _add_findings_section(pdf, "Document Hotspot Analysis", findings_list)
     
     # Add plots if provided
@@ -1756,6 +1920,10 @@ def generate_document_memorization_pdf_report(
     pdf.cell(0, 10, txt="5. APPENDIX: DETAILED CHUNK ANALYSIS", ln=True)
     pdf.ln(3)
     
+    if not sorted_results:
+        pdf.set_font("Times", size=11)
+        pdf.multi_cell(0, 7, txt="No successful chunk comparisons were produced.")
+
     for i, (upper, lower, gen, metrics) in enumerate(sorted_results[:top_n], 1):
         if pdf.get_y() > 220:
             pdf.add_page()
@@ -1820,19 +1988,25 @@ def generate_open_ended_question_pdf_report(
     pdf.cell(200, 8, txt=f"Evaluation Top-P: {eval_top_p}", ln=True)
     pdf.ln(10)
 
+    total_attempted = agg_metrics.get('total_attempted', sum(len(run) for run in all_results))
+    successful = agg_metrics.get('total_evaluations', sum(not row.get('error') for run in all_results for row in run))
+    failed = agg_metrics.get('failed_evaluations', total_attempted - successful)
+    pdf.multi_cell(0, 6, txt=f"Coverage: {successful}/{total_attempted} successful evaluations; {failed} failed. Scores cover successful responses only.")
+    pdf.ln(4)
+
     # Aggregate Metrics
     pdf.set_font("Times", style='B', size=14)
     pdf.cell(200, 10, txt="Aggregate Metrics", ln=True)
     pdf.ln(5)
 
     pdf.set_font("Times", size=10)
-    avg_rouge = agg_metrics.get('avg_rouge_score', 0)
-    avg_jaccard = agg_metrics.get('avg_jaccard_index', 0)
-    avg_levenshtein = agg_metrics.get('avg_levenshtein_distance', 0)
+    avg_rouge = agg_metrics.get('avg_f1', 0)
+    avg_jaccard = agg_metrics.get('avg_precision', 0)
+    avg_levenshtein = agg_metrics.get('avg_recall', 0)
 
-    pdf.cell(200, 8, txt=f"Average ROUGE-L Score: {avg_rouge:.4f}", ln=True)
-    pdf.cell(200, 8, txt=f"Average Jaccard Index: {avg_jaccard:.4f}", ln=True)
-    pdf.cell(200, 8, txt=f"Average Levenshtein Distance: {avg_levenshtein:.2f}", ln=True)
+    pdf.cell(200, 8, txt=f"Average Token F1: {avg_rouge:.4f}", ln=True)
+    pdf.cell(200, 8, txt=f"Average Precision: {avg_jaccard:.4f}", ln=True)
+    pdf.cell(200, 8, txt=f"Average Recall: {avg_levenshtein:.2f}", ln=True)
     pdf.ln(10)
 
     # Interpretation
@@ -1841,12 +2015,17 @@ def generate_open_ended_question_pdf_report(
     pdf.ln(5)
 
     pdf.set_font("Times", size=10)
-    if avg_rouge > 0.5 or avg_jaccard > 0.5:
+    if not successful:
+        interpretation = "No answers were successfully evaluated. No memorization assessment is available."
+    elif avg_rouge > 0.5:
         interpretation = "High Memorization Detected: The LLM shows strong similarity to the ground truth answers, suggesting it may have memorized content from the document or similar sources."
-    elif avg_rouge > 0.3 or avg_jaccard > 0.3:
+    elif avg_rouge > 0.3:
         interpretation = "Moderate Memorization: The LLM shows some similarity to ground truth answers, which could indicate partial memorization or general knowledge overlap."
     else:
         interpretation = "Low Memorization: The LLM's answers differ significantly from ground truth, suggesting it is not recalling memorized content from this specific document."
+
+    if failed and successful:
+        interpretation = "Partial evaluation; this interpretation covers successful responses only. " + interpretation
 
     # Split interpretation text to fit PDF width
     interpretation_lines = []
@@ -1898,6 +2077,9 @@ def generate_open_ended_question_pdf_report(
         for run_idx, run_results in enumerate(all_results):
             if qa_idx < len(run_results):
                 eval_result = run_results[qa_idx]
+                if eval_result.get('error'):
+                    pdf.multi_cell(0, 5, txt=_sanitize_text_for_pdf(f"Run {run_idx + 1} failed: {eval_result['error']}"))
+                    continue
                 llm_answer = _sanitize_text_for_pdf(eval_result.get('llm_answer', ''))
 
                 pdf.set_font("Times", style='B', size=10)
@@ -1907,12 +2089,12 @@ def generate_open_ended_question_pdf_report(
                 pdf.ln(2)
 
                 # Metrics
-                rouge_score = eval_result.get('rouge_score', 0)
-                jaccard_index = eval_result.get('jaccard_index', 0)
-                levenshtein_distance = eval_result.get('levenshtein_distance', 0)
+                rouge_score = eval_result.get('f1', 0)
+                jaccard_index = eval_result.get('precision', 0)
+                levenshtein_distance = eval_result.get('recall', 0)
 
                 pdf.set_font("Times", size=8)
-                pdf.cell(200, 4, txt=f"ROUGE-L: {rouge_score:.4f} | Jaccard: {jaccard_index:.4f} | Levenshtein: {levenshtein_distance}", ln=True)
+                pdf.cell(200, 4, txt=f"Token F1: {rouge_score:.4f} | Precision: {jaccard_index:.4f} | Recall: {levenshtein_distance:.4f}", ln=True)
                 pdf.ln(3)
 
         # Add page break if needed
@@ -1980,6 +2162,11 @@ def generate_sleek_attack_pdf_report(results_data: Dict[str, Any], model_choice:
     pdf.cell(200, 8, txt=f"Overall Leakage Rate: {leakage_rate:.1%}", ln=True)
     pdf.ln(5)
 
+    successful_evaluations = results_data.get('successful_evaluations', total_questions)
+    failed_evaluations = results_data.get('failed_evaluations', 0)
+    pdf.multi_cell(0, 6, txt=f"Successful evaluations: {successful_evaluations}; failed: {failed_evaluations}. Scores cover successful responses only.")
+    pdf.ln(4)
+
     # Aggregate Metrics
     pdf.set_font("Times", style='B', size=14)
     pdf.cell(200, 10, txt="Aggregate Metrics", ln=True)
@@ -1997,13 +2184,17 @@ def generate_sleek_attack_pdf_report(results_data: Dict[str, Any], model_choice:
     pdf.ln(5)
 
     pdf.set_font("Times", size=10)
-    if leakage_rate > 0.5:
+    if successful_evaluations == 0:
+        interpretation = "No successful answers are available. No leakage assessment can be made."
+    elif leakage_rate > 0.5:
         interpretation = "HIGH KNOWLEDGE LEAKAGE DETECTED: The model shows significant memorization across multiple question categories, suggesting it retains detailed knowledge from the source content. This indicates potential copyright concerns."
     elif leakage_rate > 0.2:
         interpretation = "MODERATE KNOWLEDGE LEAKAGE: The model shows some memorization patterns, particularly in certain question categories. This may indicate partial knowledge retention from the source material."
     else:
         interpretation = "LOW KNOWLEDGE LEAKAGE: The model's answers differ significantly from expected answers across most categories, suggesting limited memorization of the source content."
 
+    if failed_evaluations and successful_evaluations:
+        interpretation = "Partial evaluation; findings cover successful responses only. " + interpretation
     wrapped_interpretation = textwrap.wrap(interpretation, width=90)
     for line in wrapped_interpretation:
         pdf.cell(200, 6, txt=line, ln=True)
@@ -2072,6 +2263,9 @@ def generate_sleek_attack_pdf_report(results_data: Dict[str, Any], model_choice:
                 if pdf.get_y() > 240:
                     pdf.add_page()
 
+                if run.get('error'):
+                    pdf.multi_cell(0, 5, txt=_sanitize_text_for_pdf(f"Run {run.get('run', 1)} failed: {run['error']}"))
+                    continue
                 run_num = run.get('run', 1)
                 pdf.set_font("Times", style='B', size=10)
                 pdf.cell(200, 6, txt=f"  Run {run_num}:", ln=True)
@@ -2142,13 +2336,17 @@ def generate_sleek_attack_pdf_report(results_data: Dict[str, Any], model_choice:
     pdf.ln(5)
 
     pdf.set_font("Times", size=10)
-    if leakage_rate > 0.5:
+    if successful_evaluations == 0:
+        conclusion = "Evaluation unavailable: no successful answers were produced."
+    elif leakage_rate > 0.5:
         conclusion = f"Based on the SLEEK attack evaluation, the model '{model_choice}' demonstrates HIGH levels of knowledge memorization. Out of {total_questions} Q/A pairs tested, {questions_with_leakage} showed signs of leakage (rate: {leakage_rate:.1%}). The average similarity metrics (ROUGE-L: {avg_rouge:.4f}, Jaccard: {avg_jaccard:.4f}) indicate the model retains significant knowledge from the source material. This suggests potential copyright concerns that warrant further investigation."
     elif leakage_rate > 0.2:
         conclusion = f"Based on the SLEEK attack evaluation, the model '{model_choice}' demonstrates MODERATE levels of knowledge memorization. Out of {total_questions} Q/A pairs tested, {questions_with_leakage} showed signs of leakage (rate: {leakage_rate:.1%}). The average similarity metrics (ROUGE-L: {avg_rouge:.4f}, Jaccard: {avg_jaccard:.4f}) suggest partial knowledge retention. Consider additional testing with different question categories."
     else:
         conclusion = f"Based on the SLEEK attack evaluation, the model '{model_choice}' demonstrates LOW levels of knowledge memorization. Out of {total_questions} Q/A pairs tested, only {questions_with_leakage} showed signs of leakage (rate: {leakage_rate:.1%}). The average similarity metrics (ROUGE-L: {avg_rouge:.4f}, Jaccard: {avg_jaccard:.4f}) indicate the model does not appear to have memorized significant portions of the source content."
 
+    if failed_evaluations and successful_evaluations:
+        conclusion = "Partial evaluation; conclusions cover successful responses only. " + conclusion
     wrapped_conclusion = textwrap.wrap(conclusion, width=90)
     for line in wrapped_conclusion:
         pdf.cell(200, 6, txt=line, ln=True)

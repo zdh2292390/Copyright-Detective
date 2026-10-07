@@ -324,8 +324,10 @@ def _default_mutation() -> Callable[..., Any]:
 
 
 def _completion_text(result: Any) -> str:
-    value = result[0] if isinstance(result, tuple) else result
-    text = str(value or "").strip()
+    value = result[0] if isinstance(result, tuple) and result else result
+    if not isinstance(value, str):
+        raise GameRunError("The model returned an invalid response; no official score was submitted.")
+    text = value.strip()
     if not text:
         raise GameRunError("The model returned an empty response.")
     if text.lower().startswith("error"):

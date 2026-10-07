@@ -6,15 +6,20 @@ to detect if an LLM has been trained on specific copyrighted materials.
 """
 
 import os
+import math
+import tempfile
+import re
 import sys
 import pandas as pd
 from pathlib import Path
+from threading import Lock
 from typing import Dict, List, Tuple, Optional
 import torch
 from torch import nn
 from openai import OpenAI
 from anthropic import Anthropic
 from tqdm import tqdm
+from src.api_concurrency import limit_api_concurrency
 
 # Add the data directory to the path
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -64,7 +69,10 @@ def _parse_chat_top_logprobs(response) -> Dict[str, float]:
             token = getattr(item, "token", None)
             logprob = getattr(item, "logprob", None)
             if token is not None and logprob is not None:
-                dict_probs[str(token)] = float(logprob)
+                value = float(logprob)
+                label = str(token).strip().upper()
+                if label in mapping.values() and math.isfinite(value) and value <= 0:
+                    dict_probs[label] = value
     except Exception:
         pass
     return dict_probs
@@ -95,16 +103,20 @@ def query_llm_chatgpt(
         'Answer: '
     )
     
-    response = client.chat.completions.create(
-        model=DECOP_OPENAI_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=1,
-        temperature=0,
-        logprobs=True,
-        top_logprobs=4,
-    )
+    with limit_api_concurrency(timeout=120):
+        response = client.chat.completions.create(
+            model=DECOP_OPENAI_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1,
+            temperature=0,
+            logprobs=True,
+            top_logprobs=4,
+        )
+
 
     dict_probs = _parse_chat_top_logprobs(response)
+    if not dict_probs:
+        raise ValueError('Model returned no valid A/B/C/D log probabilities.')
     logits = torch.tensor([
         dict_probs.get("A", -100),
         dict_probs.get("B", -100),
@@ -142,17 +154,47 @@ def query_llm_claude(
         'D. ' + str(query_data['Example_D'])
     )
     
-    response = anthropic_client.messages.create(
-        model=DECOP_ANTHROPIC_MODEL,
-        max_tokens=1,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0,
-    )
+    with limit_api_concurrency(timeout=120):
+        response = anthropic_client.messages.create(
+            model=DECOP_ANTHROPIC_MODEL,
+            max_tokens=1,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+        )
 
-    return response.content[0].text.strip()
+
+    blocks = getattr(response, "content", None) or []
+    answer = "".join(getattr(block, "text", "") or "" for block in blocks).strip()
+    match = re.fullmatch(r"[A-D][.)]?", answer, flags=re.IGNORECASE)
+    if not match:
+        raise ValueError("Model returned no valid single-choice answer.")
+    return answer[0].upper()
+
+
+_DATASET_EVALUATION_LOCK = Lock()
 
 
 def run_dataset_evaluation(
+    data_type: str,
+    model_name: str,
+    api_key: str,
+    passage_size: Optional[str] = None,
+    progress_callback=None,
+) -> Tuple[bool, str, Optional[Path]]:
+    """Evaluate a dataset without overlapping writes to its result workbooks."""
+    if not _DATASET_EVALUATION_LOCK.acquire(blocking=False):
+        return False, "Another dataset evaluation is writing results. Retry after it finishes.", None
+    try:
+        return _run_dataset_evaluation(
+            data_type, model_name, api_key, passage_size, progress_callback
+        )
+    except Exception as exc:
+        return False, f"Evaluation failed: {type(exc).__name__}: {exc}", None
+    finally:
+        _DATASET_EVALUATION_LOCK.release()
+
+
+def _run_dataset_evaluation(
     data_type: str,
     model_name: str,
     api_key: str,
@@ -186,15 +228,6 @@ def run_dataset_evaluation(
     if data_type == "BookTection" and passage_size not in ["small", "medium", "large"]:
         return False, "Invalid passage size. Choose small, medium, or large.", None
     
-    # Initialize API client
-    try:
-        if model_name == "ChatGPT":
-            client = OpenAI(api_key=api_key)
-        else:
-            anthropic_client = Anthropic(api_key=api_key)
-    except Exception as e:
-        return False, f"Failed to initialize API client: {str(e)}", None
-    
     # Load dataset
     data_path = DATA_DIR / f"{data_type}.csv"
     if not data_path.exists():
@@ -205,11 +238,18 @@ def run_dataset_evaluation(
     except Exception as e:
         return False, f"Failed to load dataset: {str(e)}", None
     
+    required = {'ID', 'Example_A', 'Example_B', 'Example_C', 'Example_D', 'Answer'}
+    if not required.issubset(document.columns) or (data_type == "BookTection" and "Length" not in document.columns):
+        return False, "Dataset is missing required columns.", None
+
     # Filter by passage size for BookTection
     if data_type == "BookTection":
         document = document[document['Length'] == passage_size]
         document = document.reset_index(drop=True)
     
+    required = {'ID', 'Example_A', 'Example_B', 'Example_C', 'Example_D', 'Answer'}
+    if not required.issubset(document.columns) or document.empty:
+        return False, "Dataset has no matching questions or is missing required columns.", None
     # Get unique document IDs
     unique_ids = document['ID'].unique().tolist()
     
@@ -221,79 +261,103 @@ def run_dataset_evaluation(
     
     out_dir.mkdir(exist_ok=True)
     
-    # Process each document
-    total_docs = len(unique_ids)
-    for i, document_id in enumerate(unique_ids):
-        if progress_callback:
-            progress_callback(i / total_docs, f"Processing document {i+1}/{total_docs}: {document_id}")
-        
-        # Prepare output file
-        if data_type == "BookTection":
-            file_out = out_dir / f'{document_id}_Paraphrases_Oversampling_{passage_size}.xlsx'
-        else:
-            file_out = out_dir / f'{document_id}_Paraphrases_Oversampling.xlsx'
-        
-        # Check if already processed
-        if file_out.exists():
-            document_aux = pd.read_excel(file_out)
-        else:
-            document_aux = document[document['ID'] == document_id]
-            document_aux = document_aux.reset_index(drop=True)
-            document_aux = generate_permutations(document_df=document_aux)
-        
-        # Extract document name and author
-        if data_type == "BookTection":
-            parts = document_id.split('_-_')
-            doc_name = parts[0].replace('_', ' ')
-            author_name = parts[1].replace('_', ' ') if len(parts) > 1 else ""
-        else:
-            doc_name = document_id
-            author_name = ""
-        
-        # Query LLM for each question
+    # Initialize API client
+    try:
         if model_name == "ChatGPT":
-            A_probs, B_probs, C_probs, D_probs, max_labels = [], [], [], [], []
-            
-            for j in range(len(document_aux)):
-                probabilities = query_llm_chatgpt(
-                    document_aux.iloc[j],
-                    doc_name,
-                    author_name,
-                    data_type,
-                    client
-                )
-                A_probs.append(probabilities[0].item())
-                B_probs.append(probabilities[1].item())
-                C_probs.append(probabilities[2].item())
-                D_probs.append(probabilities[3].item())
-                max_labels.append(mapping.get(torch.argmax(probabilities).item(), 'Unknown'))
-            
-            document_aux["A_Probability"] = A_probs
-            document_aux["B_Probability"] = B_probs
-            document_aux["C_Probability"] = C_probs
-            document_aux["D_Probability"] = D_probs
-            document_aux["Max_Label_NoDebias"] = max_labels
+            client = OpenAI(api_key=api_key, timeout=120, max_retries=0)
         else:
-            max_labels = []
-            for j in range(len(document_aux)):
-                answer = query_llm_claude(
-                    document_aux.iloc[j],
-                    doc_name,
-                    author_name,
-                    data_type,
-                    anthropic_client
-                )
-                max_labels.append(answer)
-            
-            document_aux["Claude2.1"] = max_labels
-        
-        # Save results
-        document_aux.to_excel(file_out, index=False)
+            client = anthropic_client = Anthropic(api_key=api_key, timeout=120, max_retries=0)
+    except Exception as e:
+        return False, f"Failed to initialize API client: {str(e)}", None
     
-    if progress_callback:
-        progress_callback(1.0, f"Completed! Processed {total_docs} documents.")
-    
-    return True, f"Successfully processed {total_docs} documents. Results saved to {out_dir}", out_dir
+    try:
+        # Process each document
+        total_docs = len(unique_ids)
+        for i, document_id in enumerate(unique_ids):
+            if progress_callback:
+                progress_callback(i / total_docs, f"Processing document {i+1}/{total_docs}: {document_id}")
+
+            # Prepare output file
+            if data_type == "BookTection":
+                file_out = out_dir / f'{document_id}_Paraphrases_Oversampling_{passage_size}.xlsx'
+            else:
+                file_out = out_dir / f'{document_id}_Paraphrases_Oversampling.xlsx'
+
+            source = document[document['ID'] == document_id].reset_index(drop=True)
+            expected = generate_permutations(document_df=source)
+            document_aux = pd.read_excel(file_out) if file_out.exists() else expected
+            source_columns = list(expected.columns)
+            if (not set(source_columns).issubset(document_aux.columns)
+                or not document_aux[source_columns].fillna("").astype(str).reset_index(drop=True).equals(
+                    expected[source_columns].fillna("").astype(str).reset_index(drop=True))):
+                document_aux = expected
+
+            # Extract document name and author
+            if data_type == "BookTection":
+                parts = document_id.split('_-_')
+                doc_name = parts[0].replace('_', ' ')
+                author_name = parts[1].replace('_', ' ') if len(parts) > 1 else ""
+            else:
+                doc_name = document_id
+                author_name = ""
+
+            # Query LLM for each question
+            if model_name == "ChatGPT":
+                A_probs, B_probs, C_probs, D_probs, max_labels = [], [], [], [], []
+
+                for j in range(len(document_aux)):
+                    probabilities = query_llm_chatgpt(
+                        document_aux.iloc[j],
+                        doc_name,
+                        author_name,
+                        data_type,
+                        client
+                    )
+                    A_probs.append(probabilities[0].item())
+                    B_probs.append(probabilities[1].item())
+                    C_probs.append(probabilities[2].item())
+                    D_probs.append(probabilities[3].item())
+                    max_labels.append(mapping.get(torch.argmax(probabilities).item(), 'Unknown'))
+
+                document_aux["A_Probability"] = A_probs
+                document_aux["B_Probability"] = B_probs
+                document_aux["C_Probability"] = C_probs
+                document_aux["D_Probability"] = D_probs
+                document_aux["Max_Label_NoDebias"] = max_labels
+            else:
+                max_labels = []
+                for j in range(len(document_aux)):
+                    answer = query_llm_claude(
+                        document_aux.iloc[j],
+                        doc_name,
+                        author_name,
+                        data_type,
+                        anthropic_client
+                    )
+                    max_labels.append(answer)
+
+                document_aux["Claude2.1"] = max_labels
+
+            # Save results
+            with tempfile.NamedTemporaryFile(dir=out_dir, suffix=".xlsx", delete=False) as temporary:
+                temporary_path = Path(temporary.name)
+            try:
+                document_aux.to_excel(temporary_path, index=False)
+                os.replace(temporary_path, file_out)
+            finally:
+                temporary_path.unlink(missing_ok=True)
+
+        if progress_callback:
+            progress_callback(1.0, f"Completed! Processed {total_docs} documents.")
+
+        return True, f"Successfully processed {total_docs} documents. Results saved to {out_dir}", out_dir
+    except Exception as exc:
+        return False, f"Evaluation failed: {type(exc).__name__}: {exc}", out_dir
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
 
 
 def calculate_results(

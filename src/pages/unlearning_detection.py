@@ -10,6 +10,8 @@ import textwrap
 import zipfile
 import math
 import json
+import hashlib
+from numbers import Real
 import random
 import zlib
 from pathlib import Path
@@ -393,14 +395,14 @@ def render_min_k_prob_page(api_key, model_choice, provider):
         if uploaded_file is not None:
             try:
                 # Check if file is new or parameters changed
-                file_id = f"{uploaded_file.name}_{uploaded_file.size}"
+                raw_bytes = uploaded_file.getvalue()
+                file_id = f"{uploaded_file.name}_{hashlib.sha256(raw_bytes).hexdigest()}"
                 current_chunk_size = int(st.session_state.get(_get_mode_key(input_mode, 'chunk_size'), 200))
                 current_chunk_count = int(st.session_state.get(_get_mode_key(input_mode, 'chunk_count'), 10))
                 
                 # Parse file if it's new or not cached
                 if (st.session_state.get(_get_mode_key(input_mode, 'uploaded_file_id')) != file_id or 
                     st.session_state.get(_get_mode_key(input_mode, 'uploaded_text')) is None):
-                    raw_bytes = uploaded_file.read()
                     text = ""
                     
                     # Parse based on file type
@@ -417,7 +419,7 @@ def render_min_k_prob_page(api_key, model_choice, provider):
                                     pdf_reader = PyPDF2.PdfReader(pdf_file)
                                     text_parts = []
                                     for page in pdf_reader.pages:
-                                        text_parts.append(page.extract_text())
+                                        text_parts.append(page.extract_text() or "")
                                     text = "\n".join(text_parts)
                                 except:
                                     # Fallback to pdfplumber
@@ -425,7 +427,7 @@ def render_min_k_prob_page(api_key, model_choice, provider):
                                     with pdfplumber.open(BytesIO(raw_bytes)) as pdf:
                                         text_parts = []
                                         for page in pdf.pages:
-                                            text_parts.append(page.extract_text())
+                                            text_parts.append(page.extract_text() or "")
                                         text = "\n".join(text_parts)
                             except Exception as e:
                                 st.error(f"❌ Failed to parse PDF: {str(e)}")
@@ -914,6 +916,11 @@ def render_min_k_prob_page(api_key, model_choice, provider):
                     k_percentage, max_tokens, input_mode,
                 )
     
+    batch_progress = st.session_state.get(_get_mode_key(input_mode, 'batch_progress'))
+    if batch_progress and batch_progress['status'] != 'complete':
+        failed = len(batch_progress['failures'])
+        pending = max(0, batch_progress['total'] - batch_progress['completed'] - failed)
+        st.warning(f"Incomplete MIN-K% PROB batch: {batch_progress['completed']}/{batch_progress['total']} examples analyzed; {failed} failed or skipped; {pending} pending. Metrics cover successful examples only.")
     # Display results using mode-specific keys
     if input_mode == "User Input":
         result = st.session_state.get(_get_mode_key(input_mode, 'last_result'))
@@ -949,6 +956,9 @@ def _run_single_analysis(
     k_percentage, temperature, top_p, max_tokens, input_mode: str = "User Input",
 ):
     """Run single prompt analysis."""
+    st.session_state[_get_mode_key(input_mode, 'last_result')] = None
+    st.session_state.pop(_get_mode_key(input_mode, 'analysis_context'), None)
+    st.session_state.pop(_get_mode_key(input_mode, 'batch_progress'), None)
     # Auto-deploy model if Deployment Agent URL is configured
     agent_url = st.session_state.get('min_k_deploy_agent_url', '').strip()
     agent_key = st.session_state.get('min_k_deploy_agent_key', '').strip()
@@ -1036,6 +1046,9 @@ def _run_single_analysis(
                         agent_key=agent_key if agent_key else None,
                     )
                     st.session_state[_get_mode_key(input_mode, 'last_result')] = result
+                    st.session_state[_get_mode_key(input_mode, 'analysis_context')] = {
+                        "model_choice": effective_model_name, "provider": provider, "k_percentage": k_percentage,
+                    }
                 except Exception as e:
                     st.error(f"❌ Error running analysis: {str(e)}")
                     st.session_state[_get_mode_key(input_mode, 'last_result')] = None
@@ -1046,6 +1059,11 @@ def _run_batch_evaluation(
     k_percentage, max_tokens, input_mode: str = "Predefined Examples",
 ):
     """Run batch evaluation on multiple examples."""
+    st.session_state[_get_mode_key(input_mode, 'batch_results')] = []
+    st.session_state[_get_mode_key(input_mode, 'evaluation_results')] = None
+    st.session_state.pop(_get_mode_key(input_mode, 'analysis_context'), None)
+    batch_progress = {"total": len(batch_data), "completed": 0, "failures": {}, "status": "incomplete"}
+    st.session_state[_get_mode_key(input_mode, 'batch_progress')] = batch_progress
     # Fixed decoding parameters (temperature/top_p not configurable)
     temperature = 1.0
     top_p = 1.0
@@ -1071,13 +1089,18 @@ def _run_batch_evaluation(
         status_text = st.empty()
 
         for idx, ex in enumerate(batch_data):
+            if not isinstance(ex, dict):
+                batch_progress["failures"][idx] = "Example is not a valid record."
+                continue
             text = ex.get('text', '')
             label = ex.get('label', None)
 
             if not text:
+                batch_progress["failures"][idx] = "Example has no text."
                 continue
 
             if label is None:
+                batch_progress["failures"][idx] = "Example has no label."
                 st.warning(f"⚠️ Example {idx+1} missing 'label' field. Skipping.")
                 continue
 
@@ -1102,6 +1125,9 @@ def _run_batch_evaluation(
                     agent_key=agent_key if agent_key else None,
                 )
 
+                if not isinstance(result, dict) or not isinstance(result.get('min_k_prob'), Real) or not math.isfinite(result['min_k_prob']):
+                    raise ValueError("Analysis returned an invalid MIN-K% PROB score.")
+
                 pred_dict = {
                     "ppl": result.get('perplexity', 0.0),
                     "Min_k%_Prob": result['min_k_prob'],
@@ -1123,15 +1149,27 @@ def _run_batch_evaluation(
                     "result": result,
                 })
                 st.session_state[_get_mode_key(input_mode, 'batch_results')] = list(all_output)
+                batch_progress["completed"] = len(all_output)
+                st.session_state[_get_mode_key(input_mode, 'analysis_context')] = {
+                    "model_choice": effective_model_name, "provider": provider, "k_percentage": k_percentage,
+                    "dataset_name": st.session_state.get(_get_mode_key(input_mode, 'dataset_name'), input_mode),
+                }
             except Exception as e:
-                st.warning(f"⚠️ Error processing example {idx+1}: {str(e)}")
+                error = str(e)
+                for secret in (api_key, st.session_state.get('min_k_deploy_agent_key')):
+                    if secret:
+                        error = error.replace(secret, "[redacted]")
+                batch_progress["failures"][idx] = error
+                st.warning(f"⚠️ Error processing example {idx+1}: {error}")
                 continue
 
         progress_bar.empty()
         status_text.empty()
 
+        batch_progress["status"] = "complete" if len(all_output) == len(batch_data) else "incomplete"
         if all_output:
             evaluation_results = compute_evaluation_metrics(all_output)
+            evaluation_results["analysis_progress"] = dict(batch_progress)
             st.session_state[_get_mode_key(input_mode, 'evaluation_results')] = evaluation_results
             st.session_state[_get_mode_key(input_mode, 'batch_results')] = all_output
         else:
@@ -1225,7 +1263,11 @@ def compute_evaluation_metrics(all_output):
     
     # Compute metrics for each metric type
     results = {}
+    metric_warnings = []
     for metric, predictions in metric2predictions.items():
+        if len(predictions) != len(answers) or any(not isinstance(value, Real) or not math.isfinite(value) for value in predictions):
+            metric_warnings.append(f"{metric} could not be evaluated because some examples have missing or non-finite scores.")
+            continue
         legend, auc_score, acc, low, fpr, tpr = do_plot(
             predictions, answers, legend=metric, metric='auc'
         )
@@ -1239,7 +1281,9 @@ def compute_evaluation_metrics(all_output):
         }
     
     # Use the first metric's results as primary
-    primary_metric = list(metric2predictions.keys())[0]
+    if not results:
+        return {"error": "No complete finite metric predictions were available.", "warnings": metric_warnings, "num_examples": len(answers)}
+    primary_metric = next(iter(results))
     primary_results = results[primary_metric]
     
     return {
@@ -1252,11 +1296,13 @@ def compute_evaluation_metrics(all_output):
         "answers": answers,
         "num_examples": len(answers),
         "all_metrics": results,
+        "warnings": metric_warnings,
     }
 
 
 def _display_single_result(result, k_percentage):
     """Display single analysis result (simplified for User Input mode)."""
+    k_percentage = result.get('k_percentage', k_percentage)
     st.divider()
     st.markdown('<p class="analysis-step-label">Results</p>', unsafe_allow_html=True)
     
@@ -1359,6 +1405,19 @@ def _display_evaluation_results(evaluation_results, model_choice: str, provider:
         input_mode: Input mode (User Input, Upload Document, or Predefined Examples)
         model_path: Optional custom model path (e.g., from cloudflared). If provided, this will be used in PDF instead of model_choice.
     """
+    context = st.session_state.get(_get_mode_key(input_mode or "Predefined Examples", 'analysis_context'), {})
+    model_choice = context.get("model_choice", model_choice)
+    provider = context.get("provider", provider)
+    dataset_name = context.get("dataset_name", dataset_name)
+    k_percentage = context.get("k_percentage", k_percentage)
+    if context:
+        model_path = None  # model_choice already contains the recorded effective model.
+    for warning in evaluation_results.get("warnings", []):
+        st.warning(warning)
+    scope = evaluation_results.get("analysis_progress")
+    if scope and scope.get("status") != "complete":
+        st.warning(f"This evaluation covers {scope['completed']}/{scope['total']} requested examples. Failed or skipped examples are excluded.")
+
     if "error" in evaluation_results:
         batch_results = st.session_state.get(_get_mode_key(input_mode or "User Input", 'batch_results'), [])
         # For User Input and Upload Document, just show per-example metrics without warning
@@ -1634,115 +1693,54 @@ def _display_evaluation_results(evaluation_results, model_choice: str, provider:
             st.warning(f"⚠️ Could not generate PDF report: {str(e)}")
 
 
+def _validate_logprob(value):
+    if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or value > 0:
+        raise ValueError("The API returned an invalid token log probability.")
+    return value
+
+
 def _get_completion_logprobs(prompt: str, api_key: str, model_name: str, base_url: Optional[str] = None, progress_message: Optional[str] = None) -> Tuple[List[float], Optional[str]]:
-    """Get logprobs using Completion API (echo=True, max_tokens=0) to get prompt logprobs.
-    
-    This follows the reference implementation which uses Completion API with echo=True
-    to get logprobs for the entire prompt, not just generated tokens.
-    
-    Important: The prompt is used directly as-is, without any special wrapping for Instruct/Chat models.
-    This ensures that Base and Instruct models are treated identically - we compute the natural
-    likelihood of the text sequence, not the model's response to an instruction about the text.
-    
-    Args:
-        prompt: Input text to analyze (used directly, no special prompt wrapping).
-        api_key: API key for the LLM provider.
-        model_name: Name of the model to use.
-        base_url: Optional base URL for the API (for custom endpoints).
-        progress_message: Optional progress message to display.
-    
-    Returns:
-        Tuple of (list of logprobs, error_message). If error_message is not None, the call failed.
-    """
+    """Get prompt log probabilities with bounded requests and validated responses."""
     if not OPENAI_AVAILABLE:
         return [], "OpenAI library not available"
-    
-    # Initialize progress tracking variables
-    label_placeholder = None
-    bar_placeholder = None
-    progress_bar = None
-    
+    label_placeholder = bar_placeholder = progress_bar = None
+    client = None
     try:
-        # Show progress message if provided
         if progress_message:
-            from src.direct_recall.comparison import start_llm_progress, update_llm_progress, complete_llm_progress
+            from src.direct_recall.comparison import start_llm_progress, update_llm_progress
             label_placeholder, bar_placeholder, progress_bar = start_llm_progress(progress_message)
             update_llm_progress(progress_bar, value=15)
-        
-        client_kwargs = {"api_key": api_key}
+        client_kwargs = {"api_key": api_key, "timeout": 120, "max_retries": 0}
         if base_url:
             client_kwargs["base_url"] = base_url
-        
         client = openai.OpenAI(**client_kwargs)
-        
-        # Use Completion API with echo=True and max_tokens=0 to get prompt logprobs
-        # This matches the reference implementation: calculatePerplexity_gpt3
-        prompt_clean = prompt.replace('\x00', '')  # Remove null bytes
-        
-        try:
-            response = client.completions.create(
-                model=model_name,
-                prompt=prompt_clean,
-                max_tokens=0,  # Don't generate new tokens
-                temperature=1.0,
-                logprobs=5,  # Top 5 logprobs
-                echo=True,  # Echo the prompt back with logprobs
-            )
-            
-            # Extract logprobs from response
-            logprobs_content = response.choices[0].logprobs
-            if not logprobs_content or not hasattr(logprobs_content, 'token_logprobs'):
-                if progress_message and label_placeholder:
-                    from src.direct_recall.comparison import complete_llm_progress
-                    complete_llm_progress(
-                        label_placeholder,
-                        bar_placeholder,
-                        progress_bar,
-                        final_message="No logprobs in response",
-                        success=False,
-                    )
-                return [], "No logprobs in response"
-            
-            # Extract token logprobs (filter out None values)
-            all_logprobs = [lp for lp in logprobs_content.token_logprobs if lp is not None]
-            
-            # Complete progress if shown
-            if progress_message and label_placeholder:
-                from src.direct_recall.comparison import complete_llm_progress
-                complete_llm_progress(
-                    label_placeholder,
-                    bar_placeholder,
-                    progress_bar,
-                    final_message=f"Completed ({progress_message})",
-                    success=True,
-                )
-            
-            return all_logprobs, None
-            
-        except Exception as e:
-            # Completion API might not be available, return error
-            if progress_message and label_placeholder:
-                from src.direct_recall.comparison import complete_llm_progress
-                complete_llm_progress(
-                    label_placeholder,
-                    bar_placeholder,
-                    progress_bar,
-                    final_message="Completion API error",
-                    success=False,
-                )
-            return [], f"Completion API error: {str(e)}"
-            
-    except Exception as e:
-        if progress_message and label_placeholder:
+        response = client.completions.create(
+            model=model_name, prompt=prompt.replace('\x00', ''), max_tokens=0,
+            temperature=1.0, logprobs=5, echo=True,
+        )
+        choices = getattr(response, "choices", None)
+        if not choices:
+            raise ValueError("Completion API returned no choices.")
+        content = getattr(choices[0], "logprobs", None)
+        values = getattr(content, "token_logprobs", None)
+        if not isinstance(values, (list, tuple)):
+            raise ValueError("Completion API returned no token log probabilities.")
+        logprobs = [_validate_logprob(value) for value in values if value is not None]
+        if not logprobs:
+            raise ValueError("Completion API returned no usable token log probabilities.")
+        if label_placeholder is not None:
             from src.direct_recall.comparison import complete_llm_progress
-            complete_llm_progress(
-                label_placeholder,
-                bar_placeholder,
-                progress_bar,
-                final_message="Error calling Completion API",
-                success=False,
-            )
-        return [], f"Error calling Completion API: {str(e)}"
+            complete_llm_progress(label_placeholder, bar_placeholder, progress_bar, final_message=f"Completed ({progress_message})", success=True)
+        return logprobs, None
+    except Exception as exc:
+        if label_placeholder is not None:
+            from src.direct_recall.comparison import complete_llm_progress
+            complete_llm_progress(label_placeholder, bar_placeholder, progress_bar, final_message="Completion API error", success=False)
+        message = str(exc).replace(api_key, "[redacted]") if api_key else str(exc)
+        return [], f"Completion API error: {message}"
+    finally:
+        if client is not None:
+            client.close()
 
 
 def run_min_k_prob_analysis(
@@ -1845,7 +1843,7 @@ def run_min_k_prob_analysis(
             progress_message=custom_progress_message,  # Use custom message for server deployment
         )
         
-        if isinstance(result, tuple):
+        if isinstance(result, tuple) and len(result) == 2:
             generated_text, logprobs_data = result
         else:
             # Error case
@@ -1854,16 +1852,21 @@ def run_min_k_prob_analysis(
             generated_text = result
             logprobs_data = None
         
-        if not logprobs_data:
+        if isinstance(generated_text, str) and generated_text.startswith("Error"):
+            raise ValueError(generated_text)
+        if not isinstance(logprobs_data, (list, tuple)) or not logprobs_data:
             raise ValueError("The API did not return logprobs. This feature requires logprobs support (OpenAI/OpenRouter).")
         
         # Extract log probabilities from ChatCompletion response
         log_probs = []
         token_details = []
         for token_info in logprobs_data:
-            logprob = token_info.get('logprob', 0.0)
-            # Filter out None values (some tokens may not have logprobs)
+            if not isinstance(token_info, dict) or 'logprob' not in token_info:
+                raise ValueError("The API returned a token without a log probability.")
+            logprob = token_info['logprob']
+            # A missing first-token likelihood is allowed; fabricated zero scores are not.
             if logprob is not None:
+                logprob = _validate_logprob(logprob)
                 log_probs.append(logprob)
                 token_details.append({
                     'token': token_info.get('token', ''),
@@ -1880,6 +1883,7 @@ def run_min_k_prob_analysis(
         # Successfully got logprobs from Completion API
         # The logprobs are for the entire prompt (echo=True)
         generated_text = prompt
+        log_probs = [_validate_logprob(value) for value in log_probs]
         token_details = [
             {
                 'token': '',  # We don't have token strings from Completion API
@@ -1896,8 +1900,11 @@ def run_min_k_prob_analysis(
     overall_avg_logprob = sum(log_probs) / len(log_probs) if log_probs else 0.0
     overall_avg_prob = math.exp(overall_avg_logprob) if overall_avg_logprob > -100 else 0.0
     
-    # Calculate perplexity (exp of mean negative log probability)
-    perplexity = math.exp(-overall_avg_logprob) if overall_avg_logprob < 0 else float('inf')
+    # Preserve the perplexity formula; represent exponent overflow explicitly.
+    try:
+        perplexity = math.exp(-overall_avg_logprob) if overall_avg_logprob < 0 else float('inf')
+    except OverflowError:
+        perplexity = float('inf')
     
     # Calculate perplexity for lowercase version (if using Completion API)
     ppl_lowercase = None
@@ -1910,9 +1917,12 @@ def run_min_k_prob_analysis(
         )
         if log_probs_lower:
             avg_logprob_lower = sum(log_probs_lower) / len(log_probs_lower) if log_probs_lower else 0.0
-            ppl_lower = math.exp(-avg_logprob_lower) if avg_logprob_lower < 0 else float('inf')
+            try:
+                ppl_lower = math.exp(-avg_logprob_lower) if avg_logprob_lower < 0 else float('inf')
+            except OverflowError:
+                ppl_lower = float('inf')
             # Ratio of log ppl of lower-case and normal-case
-            if perplexity > 0 and ppl_lower > 0:
+            if math.isfinite(perplexity) and math.isfinite(ppl_lower) and perplexity > 0 and ppl_lower > 0 and math.log(perplexity) != 0:
                 ppl_lowercase = -(math.log(ppl_lower) / math.log(perplexity))
     
     # Calculate zlib compression entropy
@@ -2193,6 +2203,10 @@ def render_representational_analysis_page(api_key, model_choice, provider):
     # Only run analysis when button is clicked
     if submit_run:
             set_active_clear_cache_id(REPRESENTATIONAL_CLEAR_CACHE_ID)
+            rep_result = None
+            analysis_request = None
+            st.session_state['unlearn_last_result'] = None
+            st.session_state['unlearn_last_request'] = None
             queries = query_preview
             if not reference_model_path.strip():
                 st.warning("⚠️ Provide the reference model path before running representational analysis.")
@@ -2336,14 +2350,16 @@ def render_representational_analysis_page(api_key, model_choice, provider):
                             try:
                                 rep_result = run_representational_analysis(**analysis_request)
                                 st.session_state['unlearn_last_result'] = rep_result
-                                st.session_state['unlearn_last_request'] = analysis_request
+                                st.session_state['unlearn_last_request'] = {key: value for key, value in analysis_request.items() if key != 'agent_key'}
                             except ValueError as exc:
                                 st.error(f"❌ {exc}")
                                 rep_result = None
                                 st.session_state['unlearn_last_result'] = None
                                 st.session_state['unlearn_last_request'] = None
-                            except RuntimeError as exc:
+                            except Exception as exc:
                                 err_text = str(exc)
+                                if agent_key:
+                                    err_text = err_text.replace(agent_key, "[redacted]")
                                 st.error("❌ Representational analysis failed. Expand for full diagnostics below.")
                                 sections = []
                                 parts = err_text.split("--- Captured stdout ---")
@@ -2385,13 +2401,16 @@ def render_representational_analysis_page(api_key, model_choice, provider):
     # Display results if available (either from new run or from session state)
     if rep_result:
                 st.markdown("---")
-                st.success(
-                    f"Completed {rep_result.feature_name} analysis. Review the generated artifacts below."
-                )
+                if rep_result.error:
+                    st.error(rep_result.error)
+                elif rep_result.has_artifacts:
+                    st.success(f"Completed {rep_result.feature_name} analysis. Review the generated artifacts below.")
+                else:
+                    st.warning(f"{rep_result.feature_name} analysis produced no usable artifacts; completion could not be verified.")
 
                 if analysis_request:
                     st.markdown("##### Parameters sent to the backend")
-                    st.json(analysis_request)
+                    st.json({key: value for key, value in analysis_request.items() if key != 'agent_key'})
 
                 if rep_result.warnings:
                     for warning in rep_result.warnings:

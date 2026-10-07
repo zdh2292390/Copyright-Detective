@@ -9,6 +9,7 @@ This module implements Q&A-based knowledge memorization detection for LLMs:
 
 from typing import List, Dict, Tuple, Optional, Any, Callable
 import json
+import math
 from src.direct_recall.comparison import get_llm_completion
 from src.direct_recall.pdf_utils import extract_text_from_document
 from src.common.metrics.logger import normalize_answer, get_tokens, compute_token_f1, llm_judge_evaluate
@@ -70,7 +71,7 @@ Only output the JSON array, nothing else."""
         max_output_tokens=2000,
     )
     
-    if isinstance(response, str) and response.startswith("Error"):
+    if not isinstance(response, str) or response.strip().startswith("Error"):
         return []
     
     # Parse JSON response
@@ -90,7 +91,9 @@ Only output the JSON array, nothing else."""
             if isinstance(qa_pairs, list):
                 validated_pairs = []
                 for pair in qa_pairs:
-                    if isinstance(pair, dict) and 'question' in pair and 'answer' in pair:
+                    if (isinstance(pair, dict)
+                        and isinstance(pair.get('question'), str) and pair['question'].strip()
+                        and isinstance(pair.get('answer'), str) and pair['answer'].strip()):
                         validated_pairs.append({
                             'question': str(pair['question']).strip(),
                             'answer': str(pair['answer']).strip()
@@ -209,23 +212,22 @@ Question: {question}
 Answer:"""
     
     completion = completion_fn or get_llm_completion
-    response = completion(
-        prompt,
-        api_key,
-        model_choice,
-        provider,
-        temperature=temperature,
-        top_p=top_p,
-        max_output_tokens=max_tokens,
-        stop_sequences=["\n\n", "\nQuestion"],
-    )
-    
-    if isinstance(response, str):
-        # Clean up the response
-        response = response.strip()
-        # Remove "Answer:" prefix if present
-        if response.lower().startswith("answer:"):
-            response = response[7:].strip()
+    try:
+        response = completion(
+            prompt, api_key, model_choice, provider,
+            temperature=temperature, top_p=top_p,
+            max_output_tokens=max_tokens,
+            stop_sequences=["\n\n", "\nQuestion"],
+        )
+    except Exception as exc:
+        return f"Error answering question: {type(exc).__name__}: {exc}"
+    if not isinstance(response, str) or not response.strip():
+        return "Error: Model returned empty or invalid answer."
+    response = response.strip()
+    if response.lower().startswith("answer:"):
+        response = response[7:].strip()
+    if not response:
+        return "Error: Model returned empty answer."
     
     return response
 
@@ -252,6 +254,8 @@ def evaluate_qa_comparison(
         Dictionary with evaluation metrics (f1, precision, recall, token counts)
     """
     
+    if not isinstance(llm_answer, str) or not llm_answer.strip() or llm_answer.strip().startswith("Error"):
+        raise ValueError("Cannot score an empty, invalid, or failed model answer.")
     # Compute Token-level F1 Score using the shared implementation
     f1_scores = compute_token_f1(llm_answer, ground_truth_answer)
     
@@ -318,59 +322,46 @@ def run_knowledge_qa_evaluation(
     all_results = []
     total_items = num_runs * len(qa_pairs)
     current_item = 0
-    
+
     for run_idx in range(num_runs):
         run_results = []
-        
         for qa_idx, qa_pair in enumerate(qa_pairs):
-            question = qa_pair['question']
-            ground_truth = qa_pair['answer']
-            
-            # Get LLM answer
-            llm_answer = answer_question_with_llm(
-                question,
-                api_key,
-                model_choice,
-                provider,
-                temperature=temperature,
-                top_p=top_p,
-                completion_fn=completion_fn,
-            )
-            
-            # Skip if error
-            if isinstance(llm_answer, str) and llm_answer.startswith("Error"):
-                current_item += 1
-                if progress_callback:
-                    progress_callback(current_item, total_items, run_idx + 1, qa_idx + 1, len(qa_pairs))
-                continue
-            
-            # Evaluate comparison
-            evaluation = evaluate_qa_comparison(
-                question,
-                ground_truth,
-                llm_answer,
-            )
-            
-            # LLM Judge evaluation if enabled
-            if llm_judge_fn is not None:
-                judge_result = llm_judge_evaluate(
-                    question=question,
-                    ground_truth=ground_truth,
-                    prediction=llm_answer,
-                    llm_call_fn=llm_judge_fn,
+            question = qa_pair.get('question', '') if isinstance(qa_pair, dict) else ''
+            ground_truth = qa_pair.get('answer', '') if isinstance(qa_pair, dict) else ''
+            if not isinstance(question, str) or not question.strip() or not isinstance(ground_truth, str) or not ground_truth.strip():
+                llm_answer = "Error: Invalid question or ground-truth answer."
+            else:
+                llm_answer = answer_question_with_llm(
+                    question, api_key, model_choice, provider,
+                    temperature=temperature, top_p=top_p, completion_fn=completion_fn,
                 )
-                evaluation['llm_judge_score'] = judge_result['score']
-                evaluation['llm_judge_reasoning'] = judge_result['reasoning']
-            
+            if llm_answer.startswith("Error"):
+                evaluation = {
+                    'question': question if isinstance(question, str) else '',
+                    'ground_truth': ground_truth if isinstance(ground_truth, str) else '',
+                    'llm_answer': llm_answer, 'error': llm_answer,
+                }
+            else:
+                evaluation = evaluate_qa_comparison(question, ground_truth, llm_answer)
+                if llm_judge_fn is not None:
+                    judge_result = llm_judge_evaluate(
+                        question=question, ground_truth=ground_truth,
+                        prediction=llm_answer, llm_call_fn=llm_judge_fn,
+                    )
+                    score = judge_result.get('score')
+                    judge_error = judge_result.get('error')
+                    if judge_error or not isinstance(score, (int, float)) or isinstance(score, bool) or not math.isfinite(score) or not 0 <= score <= 1:
+                        evaluation['llm_judge_error'] = judge_error or judge_result.get('reasoning') or "Invalid judge result."
+                    else:
+                        evaluation['llm_judge_score'] = score
+                        evaluation['llm_judge_reasoning'] = judge_result.get('reasoning', '')
+            evaluation['qa_index'] = qa_idx
             run_results.append(evaluation)
-            
-            # Update progress
             current_item += 1
             if progress_callback:
                 progress_callback(current_item, total_items, run_idx + 1, qa_idx + 1, len(qa_pairs))
-        
         all_results.append(run_results)
-    
+
     return all_results
 
 
@@ -387,11 +378,15 @@ def calculate_aggregate_metrics(
         Dictionary with aggregate statistics (F1, Precision, Recall, and optionally LLM Judge)
     """
     
-    if not all_results or not all_results[0]:
+    if not all_results:
         return {}
     
     # Flatten all results
-    all_evals = [eval_item for run in all_results for eval_item in run]
+    attempted = [eval_item for run in all_results for eval_item in run]
+    all_evals = [item for item in attempted if not item.get('error')]
+    if not all_evals:
+        return {'total_runs': len(all_results), 'total_attempted': len(attempted),
+                'total_evaluations': 0, 'failed_evaluations': len(attempted)}
     
     # Calculate F1, Precision, Recall averages
     avg_f1 = sum(e['f1'] for e in all_evals) / len(all_evals)
@@ -406,6 +401,8 @@ def calculate_aggregate_metrics(
     result = {
         'total_runs': len(all_results),
         'total_evaluations': len(all_evals),
+        'total_attempted': len(attempted),
+        'failed_evaluations': len(attempted) - len(all_evals),
         # Token-level F1 metrics
         'avg_f1': avg_f1,
         'avg_precision': avg_precision,

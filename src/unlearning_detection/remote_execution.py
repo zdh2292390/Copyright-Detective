@@ -3,10 +3,15 @@
 import base64
 import io
 import json
+import math
+import time
+import xml.etree.ElementTree as ET
+from urllib.parse import quote
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import requests
+from PIL import Image
 
 from .representational_toolkit.types import FeatureAnalysisResult, VisualizationItem
 
@@ -120,241 +125,159 @@ def execute_analysis_remotely(
         FeatureAnalysisResult with visualizations and warnings
     """
     
-    # Optimize parameters for FIM analysis
+    if not isinstance(agent_url, str) or not agent_url.strip():
+        raise ValueError("A deployment agent URL is required.")
+    agent_url = agent_url.strip().rstrip("/")
+    for name, value in (("timeout", timeout), ("poll_interval", poll_interval), ("max_poll_time", max_poll_time)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+            raise ValueError(f"{name} must be a positive finite number.")
+
+    # Preserve the existing FIM resource limits.
     if feature.lower() == "fim":
-        if batch_size > 1:
-            print(f"⚠️ FIM analysis: Reducing batch_size from {batch_size} to 1")
-            batch_size = 1
-        if num_batches > 3:
-            print(f"⚠️ FIM analysis: Reducing num_batches from {num_batches} to 3")
-            num_batches = 3
-    
-    # Read analysis code from frontend
-    try:
-        code_files = read_analysis_code_files(feature)
-    except Exception as e:
-        raise RuntimeError(
-            f"Failed to read analysis code files from frontend: {str(e)}\n"
-            f"This is a frontend issue. Please check if representational_toolkit files exist."
-        ) from e
-    
-    # Step 1: Submit analysis request and get task_id
-    # Use a shorter timeout for the initial request (should be fast)
-    # Cloudflare has a 100s timeout, so we use 90s to get a clearer error
+        batch_size = min(batch_size, 1)
+        num_batches = min(num_batches, 3)
+    code_files = read_analysis_code_files(feature)
+    headers = {"X-API-Key": api_key} if api_key else {}
     submit_timeout = min(90, timeout)
-    
     try:
-        print(f"📤 Submitting analysis request to {agent_url}/run_analysis...")
-        code_size = len(json.dumps(code_files))
-        print(f"📦 Request size: {code_size} bytes of code")
-        
-        # Prepare headers with API key if provided
-        headers = {}
-        if api_key:
-            headers["X-API-Key"] = api_key
-        
         response = requests.post(
             f"{agent_url}/run_analysis",
             json={
-                "feature": feature,
-                "model_reference_path": model_reference_path,
-                "model_path": model_path,
-                "query": query,
-                "device": device,
-                "batch_size": batch_size,
-                "num_batches": num_batches,
-                "max_length": max_length,
-                "analysis_code": json.dumps(code_files),
+                "feature": feature, "model_reference_path": model_reference_path,
+                "model_path": model_path, "query": query, "device": device,
+                "batch_size": batch_size, "num_batches": num_batches,
+                "max_length": max_length, "analysis_code": json.dumps(code_files),
             },
-            headers=headers,
-            timeout=submit_timeout,
+            headers=headers, timeout=submit_timeout,
         )
-        
-        if response.status_code == 202:
-            # Async task created
-            result = response.json()
-            task_id = result.get("task_id")
-            if not task_id:
-                raise RuntimeError("Server returned 202 but no task_id in response")
-            
-            print(f"✅ Task created: {task_id}")
-            print(f"⏳ Polling for results (polling every {poll_interval}s, max {max_poll_time}s)...")
-        elif response.status_code == 200:
-            # Legacy synchronous response (for backward compatibility)
-            result = response.json()
-            if result.get("status") == "error":
-                raise RuntimeError(
-                    f"Remote execution error: {result.get('msg', 'Unknown error')}"
-                )
-            # Process synchronous result
-            data = result.get("data", {})
-            return _parse_analysis_result(data)
-        elif response.status_code == 401:
-            raise RuntimeError(
-                f"Authentication failed (401): Missing or invalid API key. "
-                f"Please check that you've entered the correct API key in the 'Key' field. "
-                f"The key should match the YOUR_API_KEY environment variable set on your server."
-            )
-        elif response.status_code == 403:
-            raise RuntimeError(
-                f"Access denied (403): Invalid API key. "
-                f"Please check that you've entered the correct API key in the 'Key' field. "
-                f"The key should match the YOUR_API_KEY environment variable set on your server."
-            )
-        elif response.status_code == 524:
-            # Cloudflare timeout - this shouldn't happen with async, but handle it
-            raise RuntimeError(
-                f"Cloudflare timeout (524) while submitting request. This usually means:\n"
-                f"1. The request body is too large (code files are too big: {code_size} bytes)\n"
-                f"2. Network connectivity issues\n"
-                f"3. Server is overloaded\n\n"
-                f"Solutions:\n"
-                f"- Check network connection\n"
-                f"- Try again (may be temporary)\n"
-                f"- Contact server administrator if problem persists\n"
-                f"- Consider reducing the size of analysis code files"
-            )
-        else:
-            raise RuntimeError(
-                f"Failed to submit analysis request. Status code: {response.status_code}, "
-                f"Response: {response.text[:500]}"
-            )
-    except requests.exceptions.ConnectionError as e:
-        raise RuntimeError(
-            f"Unable to connect to deployment agent at {agent_url}. "
-            f"Please check if the server is running and the URL is correct. Error: {str(e)}"
-        )
-    except requests.exceptions.Timeout:
-        raise RuntimeError(
-            f"Request to server timed out after {submit_timeout} seconds while submitting task. "
-            f"This may indicate:\n"
-            f"- Request body is too large (code files are very large)\n"
-            f"- Network connectivity issues\n"
-            f"- Server is not responding quickly enough\n\n"
-            f"Note: This timeout is for submitting the task, not for the analysis itself. "
-            f"The analysis will run asynchronously once submitted."
-        )
-    except RuntimeError:
-        # Re-raise RuntimeError as-is (already has proper error message)
-        raise
-    
-    # Step 2: Poll for task status
-    import time
-    start_time = time.time()
-    last_status = None
-    
+    except requests.exceptions.RequestException as exc:
+        # A submission timeout may still have created a task. Never resubmit it automatically.
+        raise RuntimeError("Unable to submit representational analysis. The server may have accepted the request; check the server before starting another task.") from exc
+    try:
+        if response.status_code not in (200, 202):
+            raise RuntimeError(f"Analysis submission failed with HTTP {response.status_code}. Check deployment agent connectivity and credentials.")
+        result = _response_object(response, "Analysis submission")
+        if response.status_code == 200:
+            return _completed_result(result, api_key=api_key)
+        task_id = result.get("task_id")
+        if not isinstance(task_id, str) or not task_id.strip() or len(task_id) > 256:
+            raise RuntimeError("Server returned 202 without a valid task_id.")
+    finally:
+        response.close()
+
+    deadline = time.monotonic() + max_poll_time
+    last_error = ""
     while True:
-        elapsed = time.time() - start_time
-        if elapsed > max_poll_time:
-            raise RuntimeError(
-                f"Polling timeout: Analysis did not complete within {max_poll_time} seconds. "
-                f"Task {task_id} may still be running on the server."
-            )
-        
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            detail = f" Last status error: {last_error}" if last_error else ""
+            raise RuntimeError(f"Polling timeout after {max_poll_time} seconds. Task {task_id} may still be running on the server.{detail}")
         try:
-            # Prepare headers with API key if provided
-            headers = {}
-            if api_key:
-                headers["X-API-Key"] = api_key
-            
             status_response = requests.get(
-                f"{agent_url}/task_status/{task_id}",
-                headers=headers,
-                timeout=timeout,
+                f"{agent_url}/task_status/{quote(task_id, safe='')}",
+                headers=headers, timeout=min(timeout, 30, remaining),
             )
-            
-            if status_response.status_code == 401:
-                raise RuntimeError(
-                    f"Authentication failed (401): Missing or invalid API key. "
-                    f"Please check that you've entered the correct API key in the 'Key' field."
-                )
-            elif status_response.status_code == 403:
-                raise RuntimeError(
-                    f"Access denied (403): Invalid API key. "
-                    f"Please check that you've entered the correct API key in the 'Key' field."
-                )
-            elif status_response.status_code == 404:
-                raise RuntimeError(f"Task {task_id} not found on server")
-            
-            status_data = status_response.json()
-            current_status = status_data.get("status")
-            
-            # Print status updates (only when status changes)
-            if current_status != last_status:
-                if current_status == "pending":
-                    print(f"⏳ Task {task_id}: Queued (waiting to start)...")
-                elif current_status == "running":
-                    started_at = status_data.get("started_at", "unknown")
-                    print(f"🔄 Task {task_id}: Running (started at {started_at})...")
-                last_status = current_status
-            
-            if current_status == "completed":
-                print(f"✅ Task {task_id}: Completed!")
-                result_data = status_data.get("result", {})
-                if result_data.get("status") == "error":
-                    raise RuntimeError(
-                        f"Analysis failed: {result_data.get('msg', 'Unknown error')}"
-                    )
-                return _parse_analysis_result(result_data.get("data", {}))
-            
-            elif current_status == "failed":
-                error_info = status_data.get("error", {})
-                error_msg = error_info.get("msg", "Unknown error")
-                error_traceback = error_info.get("traceback", "")
-                raise RuntimeError(
-                    f"Analysis task failed: {error_msg}\n"
-                    f"{error_traceback[:1000] if error_traceback else ''}"
-                )
-            
-            # Task is still pending or running, wait and poll again
-            time.sleep(poll_interval)
-            
-        except requests.exceptions.Timeout:
-            print(f"⚠️ Status poll timed out, retrying...")
-            time.sleep(poll_interval)
-            continue
-        except requests.exceptions.ConnectionError as e:
-            raise RuntimeError(
-                f"Lost connection to server while polling task {task_id}. "
-                f"Error: {str(e)}"
-            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            last_error = "The deployment agent could not be reached during the last status check."
+        except requests.exceptions.RequestException as exc:
+            raise RuntimeError(f"Unable to check analysis task {task_id} status.") from exc
+        else:
+            try:
+                code = status_response.status_code
+                if code in (408, 429, 500, 502, 503, 504, 524, 530):
+                    last_error = f"HTTP {code} while checking task status."
+                elif code not in (200, 202):
+                    raise RuntimeError(f"Task {task_id} status check failed with HTTP {code}. Check server availability and credentials.")
+                else:
+                    status_data = _response_object(status_response, "Task status")
+                    status = status_data.get("status")
+                    if status == "completed":
+                        return _completed_result(status_data.get("result"), api_key=api_key)
+                    if status == "failed":
+                        error = status_data.get("error")
+                        message = error.get("msg", "Unknown error") if isinstance(error, dict) else str(error or "Unknown error")
+                        if api_key:
+                            message = str(message).replace(api_key, "[redacted]")
+                        raise RuntimeError(f"Analysis task {task_id} failed: {str(message)[:1000]}")
+                    if status not in ("pending", "running"):
+                        raise RuntimeError(f"Task {task_id} returned an invalid or missing task status.")
+                    last_error = ""
+            finally:
+                status_response.close()
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(poll_interval, remaining))
+
+
+def _response_object(response, context: str) -> Dict[str, Any]:
+    try:
+        data = response.json()
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"{context} returned invalid JSON.") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"{context} returned an invalid response object.")
+    return data
+
+
+def _completed_result(result, api_key=None) -> FeatureAnalysisResult:
+    if not isinstance(result, dict):
+        raise RuntimeError("Completed analysis did not include a valid result object.")
+    if result.get("status") == "error":
+        message = str(result.get('msg', 'Unknown error'))
+        if api_key:
+            message = message.replace(api_key, "[redacted]")
+        raise RuntimeError(f"Remote execution error: {message[:1000]}")
+    if "data" not in result:
+        raise RuntimeError("Completed analysis did not include result data.")
+    return _parse_analysis_result(result["data"])
 
 
 def _parse_analysis_result(data: Dict[str, Any]) -> FeatureAnalysisResult:
-    """Parse analysis result data into FeatureAnalysisResult."""
+    """Validate artifacts rather than presenting malformed bytes as visualizations."""
+    if not isinstance(data, dict):
+        raise RuntimeError("Analysis result data must be an object.")
+    viz_list = data.get("visualizations", [])
+    warnings = data.get("warnings", [])
+    if not isinstance(viz_list, list) or not isinstance(warnings, list) or any(not isinstance(item, str) for item in warnings):
+        raise RuntimeError("Analysis result contains invalid visualizations or warnings.")
     visualizations = []
-    warnings = []
-    
-    if isinstance(data, dict):
-        viz_list = data.get("visualizations", [])
-        for viz in viz_list:
-            if isinstance(viz, dict):
-                title = viz.get("title", "Visualization")
-                image_data = viz.get("data", "")
-                description = viz.get("description")
-                
-                # Decode base64 image if needed
-                if isinstance(image_data, str):
-                    try:
-                        image_bytes = base64.b64decode(image_data)
-                    except Exception:
-                        image_bytes = image_data.encode() if isinstance(image_data, str) else b""
-                else:
-                    image_bytes = image_data
-                
-                visualizations.append(
-                    VisualizationItem(
-                        title=title,
-                        data=image_bytes,
-                        mime_type=viz.get("mime_type", "image/png"),
-                        description=description,
-                    )
-                )
-        
-        warnings = data.get("warnings", [])
-    
-    return FeatureAnalysisResult(
-        visualizations=visualizations,
-        warnings=warnings,
-    )
-
+    warnings = list(warnings)
+    for index, viz in enumerate(viz_list, start=1):
+        try:
+            if not isinstance(viz, dict):
+                raise ValueError("artifact is not an object")
+            title = viz.get("title", "Visualization")
+            mime_type = viz.get("mime_type", "image/png")
+            description = viz.get("description")
+            if not isinstance(title, str) or not isinstance(mime_type, str) or not mime_type or (description is not None and not isinstance(description, str)):
+                raise ValueError("invalid artifact metadata")
+            encoded = viz.get("data")
+            if isinstance(encoded, str):
+                image_bytes = base64.b64decode(encoded, validate=True)
+            elif isinstance(encoded, (bytes, bytearray)):
+                image_bytes = bytes(encoded)
+            else:
+                raise ValueError("invalid artifact data")
+            if not image_bytes:
+                raise ValueError("empty artifact data")
+            normalized_mime = mime_type.split(';', 1)[0].strip().lower()
+            if normalized_mime.startswith("image/"):
+                try:
+                    if normalized_mime == "image/svg+xml":
+                        root = ET.fromstring(image_bytes)
+                        if root.tag not in ('svg', '{http://www.w3.org/2000/svg}svg'):
+                            raise ValueError("artifact does not contain an SVG document")
+                    else:
+                        with Image.open(io.BytesIO(image_bytes)) as decoded:
+                            decoded.verify()
+                except Exception as exc:
+                    raise ValueError("image data could not be decoded") from exc
+        except (ValueError, TypeError) as exc:
+            warnings.append(f"Visualization {index} was not usable: {exc}.")
+            continue
+        visualizations.append(VisualizationItem(title=title, data=image_bytes, mime_type=mime_type, description=description))
+    if viz_list and not visualizations:
+        raise RuntimeError("Analysis returned visualizations, but none contained usable artifact data.")
+    if not visualizations:
+        warnings.append("Analysis returned no visualization artifacts; completion could not be verified from outputs.")
+    return FeatureAnalysisResult(visualizations=visualizations, warnings=warnings)

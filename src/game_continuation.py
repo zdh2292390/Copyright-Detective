@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
+import math
+from collections.abc import Mapping
+from numbers import Real
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from rouge_score import rouge_scorer
@@ -138,8 +142,10 @@ def _default_completion() -> Callable[..., Any]:
 
 
 def _response_text(result: Any) -> str:
-    value = result[0] if isinstance(result, tuple) else result
-    text = str(value or "").strip()
+    value = result[0] if isinstance(result, tuple) and result else result
+    if not isinstance(value, str):
+        raise ContinuationRunError("The model returned an invalid response.")
+    text = value.strip()
     if not text:
         raise ContinuationRunError("The model returned an empty response.")
     if text.lower().startswith("error"):
@@ -199,22 +205,33 @@ def run_provider_scaling(
                 max_output_tokens=MAX_OUTPUT_TOKENS,
             )
             response = _response_text(raw)
+            metrics = calculate(GROUND_TRUTH, response)
+            if not isinstance(metrics, Mapping) or not metrics or 'rouge_l' not in metrics or any(
+                isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value)
+                for value in metrics.values()
+            ):
+                raise ContinuationRunError("No valid finite similarity metrics were produced.")
             attempts.append(
                 ContinuationAttempt(
                     run=index,
                     response=response,
-                    metrics=calculate(GROUND_TRUTH, response),
+                    metrics=dict(metrics),
                 )
             )
         except Exception as exc:
-            errors.append(f"Run {index}: {exc}")
-            if not attempts:
-                raise ContinuationRunError(str(exc)) from exc
-            break
+            detail = str(exc).strip() or type(exc).__name__
+            errors.append(f"Run {index}: {detail}")
+            if re.search(r"\b(?:400|401|403|404)\b|invalid api key|authentication|unauthorized|permission denied|model not found", detail, re.IGNORECASE):
+                break
+            # One failed generation must not silently cancel the remaining
+            # requested runs. Each success retains its original run number.
+            continue
         finally:
             if on_progress is not None:
                 on_progress(index, runs)
 
+    if not attempts:
+        raise ContinuationRunError("No usable responses were produced. " + "; ".join(errors))
     return ScalingBatch(
         provider=provider,
         model=model,

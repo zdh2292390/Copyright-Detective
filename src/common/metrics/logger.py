@@ -118,54 +118,56 @@ def compute_token_f1(prediction: str, ground_truth: str) -> Dict[str, float]:
 
 
 def parse_llm_judge_response(response: str) -> Dict[str, Any]:
-    """
-    Parse the LLM judge response to extract score and reasoning.
-    
-    Args:
-        response: The raw response from the LLM judge.
-    
-    Returns:
-        A dictionary containing score and reasoning.
-    """
+    """Parse a valid judge score; failure cannot be mistaken for a zero score."""
     import json
-    
+    import math
+
+    def unavailable(message):
+        return {'score': None, 'reasoning': message, 'error': message}
+
+    def scored(value, reasoning):
+        if isinstance(value, bool):
+            raise ValueError("Judge score must be numeric.")
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("Judge score must be finite.")
+        return {'score': max(0.0, min(1.0, number)), 'reasoning': str(reasoning or '')}
+
+    def structured(result):
+        try:
+            return scored(result['score'], result.get('reasoning', ''))
+        except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
+            return unavailable('Failed to parse a valid LLM judge score')
+
+    if not isinstance(response, str) or not response.strip() or response.strip().lower().startswith('error'):
+        return unavailable(str(response or 'Empty judge response'))
+
     try:
-        # Try to parse as JSON directly
         result = json.loads(response.strip())
-        score = float(result.get('score', 0.0))
-        reasoning = result.get('reasoning', '')
-        # Clamp score to [0, 1]
-        score = max(0.0, min(1.0, score))
-        return {'score': score, 'reasoning': reasoning}
-    except (json.JSONDecodeError, ValueError, TypeError):
+    except (json.JSONDecodeError, ValueError):
         pass
-    
-    # Try to extract JSON from the response
-    json_pattern = r'\{[^{}]*"score"[^{}]*\}'
-    match = re.search(json_pattern, response, re.DOTALL)
+    else:
+        # A parsed but invalid score must not fall back to numbers found in its
+        # reasoning text (for example "example score: 0.8").
+        return structured(result)
+
+    match = re.search(r'\{[^{}]*"score"[^{}]*\}', response, re.DOTALL)
     if match:
         try:
             result = json.loads(match.group())
-            score = float(result.get('score', 0.0))
-            reasoning = result.get('reasoning', '')
-            score = max(0.0, min(1.0, score))
-            return {'score': score, 'reasoning': reasoning}
-        except (json.JSONDecodeError, ValueError, TypeError):
+        except (json.JSONDecodeError, ValueError):
             pass
-    
-    # Try to extract just the score using regex
-    score_pattern = r'"?score"?\s*[:\s]+\s*([0-9]*\.?[0-9]+)'
-    score_match = re.search(score_pattern, response, re.IGNORECASE)
-    if score_match:
+        else:
+            return structured(result)
+
+    pattern = r'"?score"?\s*[:\s]+\s*([-+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?)(?![\w.])'
+    match = re.search(pattern, response, re.IGNORECASE)
+    if match:
         try:
-            score = float(score_match.group(1))
-            score = max(0.0, min(1.0, score))
-            return {'score': score, 'reasoning': 'Score extracted from response'}
-        except ValueError:
+            return scored(match.group(1), 'Score extracted from response')
+        except (ValueError, TypeError, OverflowError):
             pass
-    
-    # Default fallback
-    return {'score': 0.0, 'reasoning': 'Failed to parse LLM judge response'}
+    return unavailable('Failed to parse LLM judge response')
 
 
 def llm_judge_evaluate(
@@ -201,8 +203,9 @@ def llm_judge_evaluate(
         return result
     except Exception as e:
         return {
-            'score': 0.0,
-            'reasoning': f'LLM Judge evaluation failed: {str(e)}'
+            'score': None,
+            'reasoning': f'LLM Judge evaluation failed: {str(e).strip() or type(e).__name__}',
+            'error': str(e).strip() or type(e).__name__
         }
 
 
@@ -256,7 +259,10 @@ class FactRecallLogger:
                 prediction=pred,
                 llm_call_fn=self.llm_judge_fn,
             )
-            entry['llm_judge_score'] = judge_result['score']
+            if judge_result.get('score') is not None and not judge_result.get('error'):
+                entry['llm_judge_score'] = judge_result['score']
+            else:
+                entry['llm_judge_error'] = judge_result.get('error') or judge_result['reasoning']
             entry['llm_judge_reasoning'] = judge_result['reasoning']
         
         self.entries.append(entry)
@@ -276,7 +282,7 @@ class FactRecallLogger:
                 'entries': []
             }
             if self.use_llm_judge:
-                result['mean_llm_judge_score'] = 0.0
+                result['mean_llm_judge_score'] = None
             return result
         
         precision_scores = [e['precision'] for e in self.entries]
@@ -292,8 +298,9 @@ class FactRecallLogger:
         
         # Include LLM Judge mean score if enabled
         if self.use_llm_judge:
-            llm_judge_scores = [e.get('llm_judge_score', 0.0) for e in self.entries]
-            result['mean_llm_judge_score'] = sum(llm_judge_scores) / len(llm_judge_scores)
+            llm_judge_scores = [e['llm_judge_score'] for e in self.entries if e.get('llm_judge_score') is not None]
+            result['mean_llm_judge_score'] = sum(llm_judge_scores) / len(llm_judge_scores) if llm_judge_scores else None
+            result['failed_judge_evaluations'] = sum(bool(e.get('llm_judge_error')) for e in self.entries)
         
         return result
 

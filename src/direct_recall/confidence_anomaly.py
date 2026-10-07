@@ -26,11 +26,14 @@ import re
 import statistics
 from typing import Any, Dict, List, Optional, Tuple
 from collections import Counter
+from collections.abc import Mapping
+from numbers import Real
 
 import openai
 import anthropic
 import google.genai as genai
 
+from src.api_concurrency import limit_api_concurrency
 from src.common.progress import (
     start_llm_progress,
     update_llm_progress,
@@ -289,7 +292,10 @@ def _calculate_perplexity(tokens: List[TokenLogprob]) -> float:
         return float('inf')
     
     avg_logprob = statistics.mean(t.logprob for t in tokens)
-    return math.exp(-avg_logprob)
+    try:
+        return math.exp(-avg_logprob)
+    except OverflowError:
+        return float('inf')
 
 
 def _detect_zscore_outliers(
@@ -569,6 +575,19 @@ def _calculate_memorization_score(
     return memorization_score, high_confidence_ratio, spike_coverage, longest_spike_length
 
 
+def _validated_logprob_token(token, logprob, linear_prob=None, *, require_linear=False):
+    if not isinstance(token, str) or not token:
+        raise ValueError("The API returned an invalid token in its logprobs.")
+    if isinstance(logprob, bool) or not isinstance(logprob, Real) or not math.isfinite(logprob) or logprob > 0:
+        raise ValueError("Token logprobs must be finite non-positive numbers.")
+    if require_linear:
+        if isinstance(linear_prob, bool) or not isinstance(linear_prob, Real) or not math.isfinite(linear_prob) or not 0 <= linear_prob <= 1:
+            raise ValueError("Token probabilities must be finite numbers from 0 to 1.")
+    else:
+        linear_prob = math.exp(logprob) if logprob > -100 else 0.0
+    return TokenLogprob(token=token, logprob=logprob, linear_prob=linear_prob)
+
+
 def get_completion_with_logprobs_openai(
     prompt: str,
     api_key: str,
@@ -588,88 +607,95 @@ def get_completion_with_logprobs_openai(
     if missing_key:
         return "", [], missing_key
 
+    generated_text = ""
     try:
-        client_kwargs = {"api_key": str(api_key).strip()}
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("Enter a non-empty prompt before running confidence analysis.")
+        if not isinstance(model_name, str) or not model_name.strip():
+            raise ValueError("Select a model before running confidence analysis.")
+        for name, value, maximum in (("temperature", temperature, 2.0), ("top_p", top_p, 1.0)):
+            if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or not 0 <= value <= maximum:
+                raise ValueError(f"{name} must be a finite number from 0 to {maximum}.")
+        if type(max_tokens) is not int or max_tokens < 1:
+            raise ValueError("max_tokens must be a positive integer.")
+        client_kwargs = {"api_key": str(api_key).strip(), "timeout": 120.0, "max_retries": 0}
         if base_url:
             client_kwargs["base_url"] = base_url
-        
-        client = openai.OpenAI(**client_kwargs)
-        
-        # For OpenRouter, check if it's a Gemma model and merge system message
-        # For other providers (OpenAI), use standard system/user messages
-        is_openrouter = base_url and "openrouter" in base_url.lower()
-        if is_openrouter and _is_gemma_model(model_name):
-            # Merge system message into user message for Gemma models on OpenRouter
-            combined_content = f"You are a helpful assistant.\n\n{prompt}"
-            messages = [{"role": "user", "content": combined_content}]
-        else:
-            # Standard format for other models
-            messages = [
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": prompt}
-            ]
-        
-        request_kwargs = {
-            "model": model_name,
-            "messages": messages,
-            "temperature": temperature,
-            "top_p": top_p,
-            "max_tokens": max_tokens,
-            "logprobs": True,
-            "top_logprobs": 5,
-        }
-        
-        if extra_headers:
-            request_kwargs["extra_headers"] = extra_headers
-        
-        # Try the original model first
-        try:
-            response = create_openai_chat_completion(client, request_kwargs)
-        except Exception as e:
-            # Handle 429 rate limit error for gemma-4-31b by falling back to gemma-4-26b
-            error_str = str(e)
-            if "429" in error_str and "gemma-4-31b" in model_name.lower():
-                # Automatically switch to gemma-4-26b as fallback
-                fallback_model = "google/gemma-4-26b-a4b-it:free"
-                request_kwargs["model"] = fallback_model
-                # Rebuild messages for the fallback model
-                if is_openrouter and _is_gemma_model(fallback_model):
-                    combined_content = f"You are a helpful assistant.\n\n{prompt}"
-                    messages = [{"role": "user", "content": combined_content}]
-                else:
-                    messages = [
-                        {"role": "system", "content": "You are a helpful assistant."},
-                        {"role": "user", "content": prompt}
-                    ]
-                request_kwargs["messages"] = messages
-                # Retry with fallback model
-                response = create_openai_chat_completion(client, request_kwargs)
+        with limit_api_concurrency(timeout=120.0), openai.OpenAI(**client_kwargs) as client:
+            # For OpenRouter, check if it's a Gemma model and merge system message
+            # For other providers (OpenAI), use standard system/user messages
+            is_openrouter = base_url and "openrouter" in base_url.lower()
+            if is_openrouter and _is_gemma_model(model_name):
+                # Merge system message into user message for Gemma models on OpenRouter
+                combined_content = f"You are a helpful assistant.\n\n{prompt}"
+                messages = [{"role": "user", "content": combined_content}]
             else:
-                # Re-raise if it's not a 429 for gemma-4-31b
-                raise
+                # Standard format for other models
+                messages = [
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": prompt}
+                ]
         
-        generated_text = _extract_chat_message_text(response)
-        if generated_text.startswith("Error"):
-            return generated_text, [], generated_text
+            request_kwargs = {
+                "model": model_name,
+                "messages": messages,
+                "temperature": temperature,
+                "top_p": top_p,
+                "max_tokens": max_tokens,
+                "logprobs": True,
+                "top_logprobs": 5,
+            }
         
-        # Extract logprobs
-        tokens: List[TokenLogprob] = []
-        logprobs_content = response.choices[0].logprobs
+            if extra_headers:
+                request_kwargs["extra_headers"] = extra_headers
         
-        if logprobs_content and hasattr(logprobs_content, 'content') and logprobs_content.content:
-            for token_info in logprobs_content.content:
-                logprob = token_info.logprob
-                linear_prob = math.exp(logprob) if logprob > -100 else 0.0
-                tokens.append(TokenLogprob(
-                    token=token_info.token,
-                    logprob=logprob,
-                    linear_prob=linear_prob,
-                ))
+            # Try the original model first
+            try:
+                response = create_openai_chat_completion(client, request_kwargs)
+            except Exception as e:
+                # Handle 429 rate limit error for gemma-4-31b by falling back to gemma-4-26b
+                error_str = str(e)
+                if "429" in error_str and "gemma-4-31b" in model_name.lower():
+                    # Automatically switch to gemma-4-26b as fallback
+                    fallback_model = "google/gemma-4-26b-a4b-it:free"
+                    request_kwargs["model"] = fallback_model
+                    # Rebuild messages for the fallback model
+                    if is_openrouter and _is_gemma_model(fallback_model):
+                        combined_content = f"You are a helpful assistant.\n\n{prompt}"
+                        messages = [{"role": "user", "content": combined_content}]
+                    else:
+                        messages = [
+                            {"role": "system", "content": "You are a helpful assistant."},
+                            {"role": "user", "content": prompt}
+                        ]
+                    request_kwargs["messages"] = messages
+                    # Retry with fallback model
+                    response = create_openai_chat_completion(client, request_kwargs)
+                else:
+                    # Re-raise if it's not a 429 for gemma-4-31b
+                    raise
         
-        return generated_text.strip(), tokens, None
-        
-    except Exception as e:
-        return "", [], f"Error calling API: {str(e)}"
+            choices = getattr(response, 'choices', None)
+            if not choices:
+                return "", [], "Error: The API returned no response choices."
+            generated_text = _extract_chat_message_text(response)
+            if generated_text.startswith("Error:"):
+                return generated_text, [], generated_text
+            if not generated_text.strip():
+                return "", [], "Error: The model returned empty content."
+            logprobs_content = getattr(choices[0], 'logprobs', None) if choices else None
+            content = getattr(logprobs_content, 'content', None)
+            if not content:
+                return generated_text, [], "Error: The API did not return token logprobs. The model may not support confidence analysis."
+            tokens = [
+                _validated_logprob_token(getattr(item, 'token', None), getattr(item, 'logprob', None))
+                for item in content
+            ]
+            return generated_text.strip(), tokens, None
+    except Exception as exc:
+        message = str(exc) or type(exc).__name__
+        message = message.replace(str(api_key).strip(), '[redacted]')
+        return generated_text, [], f"Error calling API: {message}"
 
 
 def run_confidence_anomaly_detection(
@@ -1002,17 +1028,28 @@ def analyze_logprobs_for_confidence(
             error_message="No logprobs data available. This may be due to model limitations or API settings.",
         )
     
-    # Convert logprobs data to TokenLogprob objects
+    # Validate external probability data before applying the existing detector.
     tokens: List[TokenLogprob] = []
-    for item in logprobs_data:
-        token = TokenLogprob(
-            token=item.get("token", ""),
-            logprob=item.get("logprob", 0.0),
-            linear_prob=item.get("linear_prob", 0.0),
+    try:
+        if not isinstance(generated_text, str) or not generated_text.strip():
+            raise ValueError("Confidence analysis requires non-empty generated text.")
+        if not isinstance(logprobs_data, (list, tuple)):
+            raise ValueError("Token logprobs must be a list of probability records.")
+        for item in logprobs_data:
+            if not isinstance(item, Mapping):
+                raise ValueError("Token logprobs contain an invalid probability record.")
+            token = _validated_logprob_token(
+                item.get('token'), item.get('logprob'), item.get('linear_prob'), require_linear=True,
+            )
+            _classify_token(token)
+            tokens.append(token)
+    except (TypeError, ValueError, OverflowError) as exc:
+        return ConfidenceAnalysisResult(
+            tokens=[], spikes=[], overall_avg_confidence=0.0, overall_std_confidence=0.0,
+            memorization_score=0.0, generated_text=generated_text, analysis_available=False,
+            error_message=f"Invalid confidence analysis data: {exc}",
         )
-        _classify_token(token)
-        tokens.append(token)
-    
+
     # Calculate overall statistics
     linear_probs = [t.linear_prob for t in tokens]
     overall_avg = statistics.mean(linear_probs) if linear_probs else 0.0

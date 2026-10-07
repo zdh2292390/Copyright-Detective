@@ -12,6 +12,10 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 from src.pages.sampling_controls import render_temperature_top_p
+from src.text_analysis import (
+    TextAnalysisError, run_text_inferences, safe_numeric_setting,
+    safe_selection_index, text_report_fingerprint, validate_text_parameters,
+)
 
 from src.adversarial_persuasion_detection import run_persuasion_probe
 from src.components import render_direct_recall_diff, render_prompt_preview
@@ -27,7 +31,6 @@ from src.job_guard import detection_job, finish_detection_job, render_run_button
 from src.floating_clear_cache import (
     build_reset_and_rerun_handler,
     set_active_clear_cache_id,
-    show_api_failure_if_needed,
     show_error_with_clear_cache,
 )
 
@@ -43,6 +46,21 @@ TEXT_CACHE_KEYS = [
     "text_top_p",
     "text_analysis_results",
     "text_pdf_report",
+    "text_pdf_report_fingerprint",
+    "text_pdf_report_error",
+    "text_prompt_type_selectbox",
+    "text_input_method_selectbox",
+    "text_prompting_method_selectbox",
+    "text_prompting_method",
+    "text_prompting_method_index",
+    "text_inference_runs_input",
+    "text_text_temperature_slider",
+    "text_text_top_p_slider",
+    "custom_user_prompt",
+    "custom_continuation_prompt",
+    "continuation_method_selector",
+    "prompt_mode_selector",
+    "confidence_analysis_result",
     TEXT_API_FAILURE_KEY,
 ]
 
@@ -149,9 +167,15 @@ def _rerun_after_api_failure(message: str) -> None:
     """Unlock controls immediately and preserve the API error across the rerun."""
     display = message if message.startswith("❌") else f"❌ {message}"
     st.session_state[TEXT_API_FAILURE_KEY] = display
-    st.session_state["text_analysis_results"] = None
     finish_detection_job(show_clear_cache=False)
     st.rerun()
+
+def _show_text_report_failure(message: str) -> None:
+    st.warning(f"The analysis results are saved, but the PDF report could not be generated: {message}")
+    if st.button('Retry PDF report', key='text_retry_pdf_report'):
+        st.session_state.pop('text_pdf_report_error', None)
+        _trigger_rerun()
+
 
 def render_text_analysis_page(api_key, model_choice, provider, *, show_page_header: bool = True):
     """Render the text memorization detection workflow."""
@@ -174,14 +198,29 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     if 'text_analysis_results' not in st.session_state:
         st.session_state['text_analysis_results'] = None
 
+    for canonical, widget, default, minimum, maximum, integer in (
+        ("text_inference_runs", "text_inference_runs_input", 1, 1, 1000, True),
+        ("text_temperature", "text_text_temperature_slider", 0.7, 0.0, 1.2, False),
+        ("text_top_p", "text_text_top_p_slider", 0.9, 0.0, 1.0, False),
+    ):
+        st.session_state[canonical] = safe_numeric_setting(
+            st.session_state.get(canonical), default, minimum, maximum, integer=integer,
+        )
+        if widget in st.session_state:
+            st.session_state[widget] = safe_numeric_setting(
+                st.session_state[widget], default, minimum, maximum, integer=integer,
+            )
+
     set_active_clear_cache_id(TEXT_CLEAR_CACHE_ID)
     pending_api_failure = st.session_state.pop(TEXT_API_FAILURE_KEY, None)
     if pending_api_failure:
         show_error_with_clear_cache(str(pending_api_failure))
+    clear_text_keys = TEXT_CACHE_KEYS + [
+        key for key in st.session_state
+        if key.startswith(("text_input_", "text_custom_", "text_example_input_", "text_literal_"))
+    ]
     clear_text_cache = build_reset_and_rerun_handler(
-        TEXT_CLEAR_CACHE_ID,
-        TEXT_CACHE_KEYS,
-        rerun=_trigger_rerun,
+        TEXT_CLEAR_CACHE_ID, clear_text_keys, rerun=_trigger_rerun,
     )
 
     if show_page_header:
@@ -212,7 +251,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     prompt_type = st.selectbox(
         "Choose the recall type",
         prompt_type_options,
-        index=min(st.session_state['text_prompt_type_index'], len(prompt_type_options) - 1),
+        index=safe_selection_index(st.session_state['text_prompt_type_index'], len(prompt_type_options)),
         help="Select the recall mode to guide the Text Memorization Detection. (Choose only; typing custom values is not allowed.)",
         key="text_prompt_type_selectbox",
     )
@@ -292,7 +331,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 input_method = st.selectbox(
                     "Choose an input type",
                     input_options,
-                    index=min(st.session_state.get('text_input_method_index', 0), len(input_options) - 1),
+                    index=safe_selection_index(st.session_state.get('text_input_method_index', 0), len(input_options)),
                     help="Select custom input or choose from predefined book examples.",
                     key="text_input_method_selectbox",
                 )
@@ -302,7 +341,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 prompting_method = st.selectbox(
                     "Choose a prompting method",
                     prompting_method_options,
-                    index=min(st.session_state.get('text_prompting_method_index', 0), len(prompting_method_options) - 1),
+                    index=safe_selection_index(st.session_state.get('text_prompting_method_index', 0), len(prompting_method_options)),
                     help="Select a prompt template (1-6) to use for the analysis.",
                     key="text_prompting_method_selectbox",
                 )
@@ -328,7 +367,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             input_method = st.selectbox(
                 "Choose an input type",
                 input_options,
-                index=min(st.session_state['text_input_method_index'], len(input_options) - 1),
+                index=safe_selection_index(st.session_state['text_input_method_index'], len(input_options)),
                 help="Select custom input or choose from examples.",
                 key="text_input_method_selectbox",
             )
@@ -440,7 +479,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     "Choose an example",
                     range(len(example_options)),
                     format_func=lambda x: example_options[x],
-                    index=st.session_state.get('text_literal_selected_index', 0),
+                    index=safe_selection_index(st.session_state.get('text_literal_selected_index', 0), len(literal_examples)),
                     key="text_literal_example_selector",
                 )
                 st.session_state['text_literal_selected_index'] = selected_example_idx
@@ -757,6 +796,12 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         col_top_p=col3,
     )
 
+    clear_text_keys.extend(
+        key for key in st.session_state
+        if key.startswith(("text_input_", "text_custom_", "text_example_input_", "text_literal_"))
+        and key not in clear_text_keys
+    )
+
     run_analysis = render_run_button(
         "Text Memorization Detection",
         "run_snippet_analysis_button",
@@ -768,10 +813,10 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         # Validation checks
         validation_error = False
         
-        if not api_key:
+        if not str(api_key or "").strip() and provider != "Local vLLM":
             show_error_with_clear_cache("⚠️ Please enter your API key in the sidebar.")
             validation_error = True
-        elif prompt_type == "User-Defined Evaluation" and not text2:
+        elif prompt_type == "User-Defined Evaluation" and not text2.strip():
             st.warning("⚠️ Please enter the ground truth.")
             validation_error = True
         elif prompt_type == "Direct Probing":
@@ -783,10 +828,16 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     validation_error = True
                 # Ground truth is optional for custom input (empty is allowed)
             # For predefined examples, text1 and text2 should already be set, so no additional validation needed
-        elif prompt_type != "User-Defined Evaluation" and (not text1 or not text2):
+        elif prompt_type != "User-Defined Evaluation" and (not text1.strip() or not text2.strip()):
             st.warning("⚠️ Please enter both input text and ground truth.")
             validation_error = True
         
+        try:
+            validate_text_parameters(inference_runs, temperature, top_p)
+        except TextAnalysisError as exc:
+            st.warning(str(exc))
+            validation_error = True
+
         # Only proceed with analysis if validation passed
         if not validation_error:
             # For Direct Probing Custom Input, text1 is already set from the input field
@@ -808,7 +859,8 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     if continuation_method == "Custom Prompt"
                     else None
                 )
-            prompt_mode = st.session_state.get("prompt_mode_selector", "Zero-Shot")
+            if prompt_type != "User-Defined Evaluation":
+                prompt_mode = st.session_state.get("prompt_mode_selector", "Zero-Shot")
             target_char_count = len(text2)
             chunk_size = len(text2.split())
             enforce_word_target = prompt_type != "Direct Probing"
@@ -821,285 +873,105 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 return
 
             with detection_job("Text Memorization Detection"):
-                st.session_state['text_analysis_results'] = None
+                generated_texts = []
+                similarity_scores = []
+                first_run_logprobs = None
+                captured_inputs = {
+                    'input_text': text1,
+                    'ground_truth': text2,
+                    'input_method': input_method if 'input_method' in locals() else 'Custom Input',
+                    'inference_runs': inference_runs,
+                    'temperature': temperature,
+                    'top_p': top_p,
+                    'continuation_method': continuation_method,
+                    'prompt_mode': prompt_mode,
+                    'prompt_type': prompt_type,
+                    'model': model_choice,
+                    'provider': provider,
+                    'word_count': ground_word_count,
+                    'char_count': ground_char_count,
+                    'input_word_count': input_word_count,
+                    'input_char_count': input_char_count,
+                    'run_timestamp': pd.Timestamp.now().isoformat(),
+                }
+                progress_bar = st.progress(0, text="Starting inference runs...") if inference_runs > 1 else None
+                should_get_logprobs = provider in ("OpenAI", "OpenRouter")
 
-                if inference_runs == 1:
-                    # Single run: Original Analysis Results
-                    with st.spinner(
-                        f"🔄 Generating text with {model_choice} and calculating scores..."
-                    ):
-                        # Determine if we should request logprobs (only for OpenAI/OpenRouter)
-                        should_get_logprobs = provider in ("OpenAI", "OpenRouter")
-                        logprobs_data = None
-                        
-                        if prompt_type == "Next-Passage Prediction" and continuation_method != "Normal Continuation":
-                            result = run_persuasion_probe(
-                                api_key,
-                                model_choice,
-                                provider,
-                                continuation_method,
-                                text1,
-                                text2,
-                                chunk_size=chunk_size,
-                                temperature=temperature,
-                                top_p=top_p,
-                                custom_template=custom_template,
-                                mode=prompt_mode,
-                                target_word_count=target_word_count,
-                                extra_prompt_instructions=prompt_instructions,
-                            )
-                        else:
-                            result = compare_texts(
-                                text1,
-                                text2,
-                                api_key,
-                                model_name=model_choice,
-                                provider=provider,
-                                prompt_type=prompt_type,
-                                chunk_size=chunk_size,
-                                temperature=temperature,
-                                top_p=top_p,
-                                continuation_method=continuation_method,
-                                custom_template=custom_template,
-                                mode=prompt_mode,
-                                target_word_count=target_word_count,
-                                extra_prompt_instructions=prompt_instructions,
-                                return_logprobs=should_get_logprobs,
-                            )
-                        
-                        # Handle potential errors from both functions
-                        error_occurred = False
-                        # Check if result is a tuple - handle both 2-tuple and 3-tuple (with logprobs)
-                        if isinstance(result, tuple):
-                            if len(result) == 3:
-                                generated_text, metrics, logprobs_data = result
-                            elif len(result) == 2:
-                                generated_text, metrics = result
-                            else:
-                                st.error(f"❌ Unexpected result format: {type(result)}")
-                                error_occurred = True
-                            
-                            if not error_occurred and isinstance(generated_text, str) and show_api_failure_if_needed(generated_text):
-                                _rerun_after_api_failure(generated_text)
-                        elif isinstance(result, str) and show_api_failure_if_needed(result):
-                            _rerun_after_api_failure(result)
-    
-                        if not error_occurred:
-                            metrics_map = metrics or {}
-                            rouge_score = float(metrics_map.get("rouge_l", 0.0) or 0.0)
-                            jaccard_index = float(metrics_map.get("jaccard_index", 0.0) or 0.0)
-                            if prompt_type not in {"Direct Probing"}:
-                                generated_text = enforce_exact_char_count(generated_text, target_char_count)
-    
-                            # Store results in session state
-                            st.session_state['text_analysis_results'] = {
-                                'type': 'single',
-                                'text2': text2,
-                                'generated_text': generated_text,
-                                'metrics_map': metrics_map,
-                                'rouge_score': rouge_score,
-                                'jaccard_index': jaccard_index,
-                                'user_inputs': {
-                                    'input_text': text1,
-                                    'ground_truth': text2,
-                                    'input_method': input_method if 'input_method' in locals() else 'Custom Input',
-                                    'inference_runs': inference_runs,
-                                    'temperature': temperature,
-                                    'top_p': top_p,
-                                    'continuation_method': continuation_method if 'continuation_method' in locals() else 'Normal Continuation',
-                                    'word_count': ground_word_count,
-                                    'char_count': ground_char_count,
-                                    'input_word_count': input_word_count,
-                                    'input_char_count': input_char_count,
-                                    'run_timestamp': pd.Timestamp.now().isoformat()
-                                }
-                            }
-                            
-                            # Run black-box memorization analysis using pre-existing logprobs
-                            _run_blackbox_analysis_auto(
-                                generated_text=generated_text,
-                                provider=provider,
-                                logprobs_data=logprobs_data,
-                            )
-                            
-                            # Generate and cache PDF report
-                            plots = None
-                            results_data = st.session_state['text_analysis_results']
-                            if results_data.get("type") == "multiple":
-                                plots = build_text_memorization_plots(results_data.get("similarity_scores") or []) or None
-                            pdf_bytes = generate_text_memorization_pdf_report(
-                                st.session_state['text_analysis_results'], 
-                                prompt_type, 
-                                model_choice, 
-                                api_key, 
-                                provider,
-                                plots=plots,
-                            )
-                            st.session_state['text_pdf_report'] = pdf_bytes
-                else:
-                    # Multiple runs: Inference Results Over Multiple Runs
-                    st.divider()
-                    st.markdown('<p class="analysis-step-label">Results</p>', unsafe_allow_html=True)
-                    st.markdown('<h3 class="multi-run-title">🔄 Inference Results Over Multiple Runs</h3>', unsafe_allow_html=True)
-                    similarity_scores = []
-                    generated_texts = []  # Store generated texts for each run
-                    first_run_logprobs = None  # Store logprobs from first run for confidence analysis
-                    progress_bar = st.progress(0, text="Starting inference runs...")
-                    
-                    # Determine if we should request logprobs (only for first run with OpenAI/OpenRouter)
-                    should_get_logprobs = provider in ("OpenAI", "OpenRouter")
-                    
-                    for i in range(inference_runs):
-                        progress_bar.progress(
-                            (i) / inference_runs,
-                            text=f"🔄 Generating text for run {i+1}/{inference_runs}...",
+                def analyze_run(index):
+                    if progress_bar is not None:
+                        progress_bar.progress(index / inference_runs, text=f"🔄 Generating text for run {index + 1}/{inference_runs}...")
+                    if prompt_type == "Next-Passage Prediction" and continuation_method != "Normal Continuation":
+                        return run_persuasion_probe(
+                            api_key, model_choice, provider, continuation_method, text1, text2,
+                            chunk_size=chunk_size, temperature=temperature, top_p=top_p,
+                            custom_template=custom_template, mode=prompt_mode,
+                            target_word_count=target_word_count, extra_prompt_instructions=prompt_instructions,
                         )
-                        
-                        # Only request logprobs for the first run
-                        get_logprobs_this_run = should_get_logprobs and (i == 0)
-                        
-                        if prompt_type == "Next-Passage Prediction" and continuation_method != "Normal Continuation":
-                            result = run_persuasion_probe(
-                                api_key,
-                                model_choice,
-                                provider,
-                                continuation_method,
-                                text1,
-                                text2,
-                                chunk_size=chunk_size,
-                                temperature=temperature,
-                                top_p=top_p,
-                                custom_template=custom_template,
-                                mode=prompt_mode,
-                                target_word_count=target_word_count,
-                                extra_prompt_instructions=prompt_instructions,
-                            )
-                        else:
-                            result = compare_texts(
-                                text1,
-                                text2,
-                                api_key,
-                                model_name=model_choice,
-                                provider=provider,
-                                prompt_type=prompt_type,
-                                chunk_size=chunk_size,
-                                temperature=temperature,
-                                top_p=top_p,
-                                continuation_method=continuation_method,
-                                custom_template=custom_template,
-                                mode=prompt_mode,
-                                target_word_count=target_word_count,
-                                extra_prompt_instructions=prompt_instructions,
-                                return_logprobs=get_logprobs_this_run,
-                            )
-    
-                        # Handle potential errors from both functions
-                        error_occurred = False
-                        logprobs_data = None
-                        
-                        # Check if result is a tuple - handle both 2-tuple and 3-tuple (with logprobs)
-                        if isinstance(result, tuple):
-                            if len(result) == 3:
-                                generated_text, metrics, logprobs_data = result
-                            elif len(result) == 2:
-                                generated_text, metrics = result
-                            else:
-                                st.error(f"❌ Unexpected result format: {type(result)}")
-                                error_occurred = True
-                                break
-                            
-                            if isinstance(generated_text, str) and show_api_failure_if_needed(generated_text):
-                                _rerun_after_api_failure(generated_text)
-                        elif isinstance(result, str) and show_api_failure_if_needed(result):
-                            _rerun_after_api_failure(result)
-                        
-                        if not error_occurred:
-                            metrics_map = metrics or {}
-                            if prompt_type not in {"Direct Probing"}:
-                                generated_text = enforce_exact_char_count(generated_text, target_char_count)
-                            similarity_scores.append(dict(metrics_map))
-                            generated_texts.append(generated_text)
-                            st.session_state['text_analysis_results'] = {
-                                'type': 'multiple',
-                                'text2': text2,
-                                'generated_texts': list(generated_texts),
-                                'similarity_scores': list(similarity_scores),
-                                'inference_runs': inference_runs,
-                                'user_inputs': {
-                                    'input_text': text1,
-                                    'ground_truth': text2,
-                                    'input_method': input_method if 'input_method' in locals() else 'Custom Input',
-                                    'inference_runs': inference_runs,
-                                    'temperature': temperature,
-                                    'top_p': top_p,
-                                    'continuation_method': continuation_method if 'continuation_method' in locals() else 'Normal Continuation',
-                                    'word_count': ground_word_count,
-                                    'char_count': ground_char_count,
-                                    'input_word_count': input_word_count,
-                                    'input_char_count': input_char_count,
-                                    'run_timestamp': pd.Timestamp.now().isoformat()
-                                }
-                            }
+                    return compare_texts(
+                        text1, text2, api_key, model_name=model_choice, provider=provider,
+                        prompt_type=prompt_type, chunk_size=chunk_size, temperature=temperature,
+                        top_p=top_p, continuation_method=continuation_method,
+                        custom_template=custom_template, mode=prompt_mode,
+                        target_word_count=target_word_count, extra_prompt_instructions=prompt_instructions,
+                        return_logprobs=should_get_logprobs and index == 0,
+                    )
 
-                            if i == 0 and logprobs_data:
-                                first_run_logprobs = logprobs_data
-
-                        progress_bar.progress(
-                            (i + 1) / inference_runs,
-                            text=f"✅ Run {i+1}/{inference_runs} completed",
-                        )
-    
-                    if similarity_scores:
-                        # Update progress for analysis phase
-                        progress_bar.progress(0.9, text="🔄 Running analysis...")
-                        
-                        # Store results in session state
-                        st.session_state['text_analysis_results'] = {
-                            'type': 'multiple',
-                            'text2': text2,
-                            'generated_texts': generated_texts,
-                            'similarity_scores': similarity_scores,
-                            'inference_runs': inference_runs,
-                            'user_inputs': {
-                                'input_text': text1,
-                                'ground_truth': text2,
-                                'input_method': input_method if 'input_method' in locals() else 'Custom Input',
-                                'inference_runs': inference_runs,
-                                'temperature': temperature,
-                                'top_p': top_p,
-                                'continuation_method': continuation_method if 'continuation_method' in locals() else 'Normal Continuation',
-                                'word_count': ground_word_count,
-                                'char_count': ground_char_count,
-                                'input_word_count': input_word_count,
-                                'input_char_count': input_char_count,
-                                'run_timestamp': pd.Timestamp.now().isoformat()
-                            }
+                def save_success(index, generated_text, metrics_map, logprobs_data):
+                    nonlocal first_run_logprobs
+                    if prompt_type != "Direct Probing":
+                        generated_text = enforce_exact_char_count(generated_text, target_char_count)
+                    generated_texts.append(generated_text)
+                    similarity_scores.append(metrics_map)
+                    if index == 0:
+                        first_run_logprobs = logprobs_data
+                        st.session_state.pop('confidence_analysis_result', None)
+                    if inference_runs == 1:
+                        results_data = {
+                            'type': 'single', 'text2': text2, 'generated_text': generated_text,
+                            'metrics_map': metrics_map,
+                            'rouge_score': float(metrics_map.get('rouge_l', 0.0) or 0.0),
+                            'jaccard_index': float(metrics_map.get('jaccard_index', 0.0) or 0.0),
+                            'user_inputs': dict(captured_inputs),
                         }
-                        
-                        # Run black-box memorization analysis using first run's logprobs
-                        _run_blackbox_analysis_auto(
-                            generated_text=generated_texts[0] if generated_texts else "",
-                            provider=provider,
-                            logprobs_data=first_run_logprobs,
-                        )
-                        
-                        # Update progress for PDF generation
-                        progress_bar.progress(0.95, text="🔄 Generating PDF report...")
-                        
-                        # Generate and cache PDF report
-                        plots = build_text_memorization_plots(similarity_scores) or None
-                        pdf_bytes = generate_text_memorization_pdf_report(
-                            st.session_state['text_analysis_results'], 
-                            prompt_type, 
-                            model_choice, 
-                            api_key, 
-                            provider,
-                            plots=plots,
-                        )
-                        st.session_state['text_pdf_report'] = pdf_bytes
-                        
-                        # All processing completed
-                        progress_bar.progress(1.0, text="✅ All runs completed!")
+                    else:
+                        results_data = {
+                            'type': 'multiple', 'text2': text2,
+                            'generated_texts': list(generated_texts),
+                            'similarity_scores': list(similarity_scores),
+                            'inference_runs': inference_runs,
+                            'user_inputs': dict(captured_inputs),
+                        }
+                    results_data['analysis_progress'] = {
+                        'requested_runs': inference_runs, 'completed_runs': index + 1,
+                        'status': 'complete' if index + 1 == inference_runs else 'incomplete',
+                    }
+                    st.session_state['text_analysis_results'] = results_data
+                    st.session_state.pop('text_pdf_report', None)
+                    st.session_state.pop('text_pdf_report_fingerprint', None)
+                    st.session_state.pop('text_pdf_report_error', None)
+                    if progress_bar is not None:
+                        progress_bar.progress((index + 1) / inference_runs, text=f"✅ Run {index + 1}/{inference_runs} completed")
+
+                try:
+                    with st.spinner(f"🔄 Generating text with {model_choice} and calculating scores..."):
+                        run_text_inferences(inference_runs, analyze_run, save_success)
+                except TextAnalysisError as exc:
+                    message = str(exc)
+                    if api_key:
+                        message = message.replace(str(api_key), '[redacted]')
+                    if generated_texts:
+                        st.session_state['text_analysis_results']['analysis_progress']['error'] = message
+                        message += f" Completed {len(generated_texts)}/{inference_runs} runs remain available below."
+                    elif st.session_state.get('text_analysis_results'):
+                        message += " The previous analysis results remain available below."
+                    _rerun_after_api_failure(message)
+                if generated_texts:
+                    _run_blackbox_analysis_auto(
+                        generated_text=generated_texts[0], provider=provider,
+                        logprobs_data=first_run_logprobs,
+                    )
+                if progress_bar is not None:
+                    progress_bar.progress(1.0, text="✅ All runs completed!")
         else:
             finish_detection_job()
 
@@ -1107,7 +979,10 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     # Display results section (outside of run_analysis block to preserve results)
     if st.session_state.get('text_analysis_results'):
         results_data = st.session_state['text_analysis_results']
-        
+        progress = results_data.get('analysis_progress') or {}
+        if progress.get('status') == 'incomplete':
+            st.warning(f"Partial analysis: {progress.get('completed_runs', 0)}/{progress.get('requested_runs', 0)} inference runs completed. Statistics below use the completed runs.")
+
         if results_data['type'] == 'single':
             # Single run results
             text2 = results_data['text2']
@@ -1267,27 +1142,40 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
 
                     plt.tight_layout()
                     st.pyplot(fig)
+                    plt.close(fig)
 
         # PDF Report Generation
         st.markdown("---")
         
-        # Use cached PDF if available, otherwise generate new one
-        if 'text_pdf_report' in st.session_state:
-            pdf_bytes = st.session_state['text_pdf_report']
-        else:
-            # Fallback: generate PDF if not cached (shouldn't happen in normal flow)
-            plots = None
-            if results_data.get("type") == "multiple":
-                plots = build_text_memorization_plots(results_data.get("similarity_scores") or []) or None
-            pdf_bytes = generate_text_memorization_pdf_report(
-                results_data,
-                prompt_type,
-                model_choice,
-                api_key,
-                provider,
-                plots=plots,
-            )
-            st.session_state['text_pdf_report'] = pdf_bytes
+        report_fingerprint = text_report_fingerprint(results_data)
+        if st.session_state.get('text_pdf_report_fingerprint') != report_fingerprint:
+            st.session_state.pop('text_pdf_report', None)
+        pdf_bytes = st.session_state.get('text_pdf_report')
+        report_error = st.session_state.get('text_pdf_report_error') or {}
+        if not pdf_bytes and report_error.get('fingerprint') == report_fingerprint:
+            _show_text_report_failure(report_error.get('message', 'Unknown report generation error.'))
+            return
+        if not pdf_bytes:
+            captured = results_data.get('user_inputs') or {}
+            try:
+                plots = None
+                if results_data.get('type') == 'multiple':
+                    plots = build_text_memorization_plots(results_data.get('similarity_scores') or []) or None
+                pdf_bytes = generate_text_memorization_pdf_report(
+                    results_data, captured.get('prompt_type', prompt_type),
+                    captured.get('model', model_choice), api_key,
+                    captured.get('provider', provider), plots=plots,
+                )
+                st.session_state['text_pdf_report'] = pdf_bytes
+                st.session_state['text_pdf_report_fingerprint'] = report_fingerprint
+                st.session_state.pop('text_pdf_report_error', None)
+            except Exception as exc:
+                message = str(exc) or type(exc).__name__
+                if api_key:
+                    message = message.replace(str(api_key), '[redacted]')
+                st.session_state['text_pdf_report_error'] = {'fingerprint': report_fingerprint, 'message': message}
+                _show_text_report_failure(message)
+                return
 
         # PDF Preview
         render_pdf_preview_with_blob(pdf_bytes, title="📋 Audit Report Preview", iframe_height=450)

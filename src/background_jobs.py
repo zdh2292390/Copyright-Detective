@@ -48,52 +48,81 @@ def submit_background_job(key: str, label: str, runner: JobRunner) -> bool:
             "result": None,
         }
 
-    def report(current: int, total: int, message: str = "") -> None:
+    # Capture this exact record so callbacks from an older run cannot overwrite
+    # a newer run using the same key.
+    with _LOCK:
+        record = _JOBS[key]
+
+    def fail(exc: BaseException) -> None:
         with _LOCK:
-            state = _JOBS.get(key)
-            if state is None:
+            if _JOBS.get(key) is not record:
                 return
-            state["current"] = max(0, int(current))
-            state["total"] = max(1, int(total))
+            record.update(
+                status="failed",
+                error=str(exc).strip() or type(exc).__name__,
+                message="Run failed",
+                finished_at=_now(),
+                result=None,
+            )
+
+    def report(current: int, total: int, message: str = "") -> None:
+        # Convert before taking the lock; invalid progress must be reported as
+        # a failed run rather than leaving a permanently running job.
+        total_count = max(1, int(total))
+        current_count = min(total_count, max(0, int(current)))
+        with _LOCK:
+            if _JOBS.get(key) is not record or record["status"] not in {"queued", "running"}:
+                return
+            record["current"] = current_count
+            record["total"] = total_count
             if message:
-                state["message"] = str(message)
+                record["message"] = str(message)
 
     def execute() -> None:
-        # A worker must not retain a ScriptRunContext after the app reruns. Doing
-        # so makes Streamlit UI calls target fragment IDs from the previous run.
+        # Workers remain UI-free after their originating Streamlit run ends.
         try:
             with _LOCK:
-                _JOBS[key]["status"] = "running"
-                _JOBS[key]["message"] = "Starting"
-            try:
-                result = runner(report)
-            except Exception as exc:
-                with _LOCK:
-                    state = _JOBS[key]
-                    state["status"] = "failed"
-                    state["error"] = str(exc)
-                    state["message"] = "Run failed"
-                    state["finished_at"] = _now()
-            else:
-                with _LOCK:
-                    state = _JOBS[key]
-                    state["status"] = "completed"
-                    state["result"] = deepcopy(result)
-                    state["current"] = state["total"]
-                    state["message"] = "Completed"
-                    state["finished_at"] = _now()
-        finally:
-            # Keep cleanup explicit without introducing Streamlit UI work here.
-            pass
+                if _JOBS.get(key) is not record:
+                    return
+                record["status"] = "running"
+                record["message"] = "Starting"
+            result = runner(report)
+            # Snapshotting is part of execution and can itself fail. Publish
+            # completed only after the result can be safely delivered.
+            saved_result = deepcopy(result)
+            with _LOCK:
+                if _JOBS.get(key) is not record:
+                    return
+                record.update(
+                    status="completed",
+                    result=saved_result,
+                    current=record["total"],
+                    message="Completed",
+                    finished_at=_now(),
+                )
+        except BaseException as exc:
+            # SystemExit in a worker must also release the UI's active-job lock.
+            fail(exc)
 
-    _EXECUTOR.submit(execute)
+    def on_done(future: Any) -> None:
+        if future.cancelled():
+            fail(RuntimeError("The background task was cancelled before it could finish."))
+
+    try:
+        future = _EXECUTOR.submit(execute)
+        future.add_done_callback(on_done)
+    except Exception as exc:
+        fail(exc)
+    # True means this request was accepted, including an immediately visible
+    # submission failure. False is reserved for an already active job.
     return True
 
 
 def get_background_job(key: str) -> Optional[Dict[str, Any]]:
     with _LOCK:
         state = _JOBS.get(key)
-        return deepcopy(state) if state is not None else None
+        snapshot = dict(state) if state is not None else None
+    return deepcopy(snapshot) if snapshot is not None else None
 
 
 def forget_background_job(key: str) -> bool:
@@ -106,8 +135,9 @@ def forget_background_job(key: str) -> bool:
 
 
 def background_job_running(key: str) -> bool:
-    state = get_background_job(key)
-    return bool(state and state.get("status") in {"queued", "running"})
+    with _LOCK:
+        state = _JOBS.get(key)
+        return bool(state and state.get("status") in {"queued", "running"})
 
 
 @st.fragment(run_every=2)

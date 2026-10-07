@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import re
 import json
 import subprocess
+import sys
 import warnings
 from pathlib import Path
 from dataclasses import asdict, dataclass
@@ -21,6 +22,14 @@ from src.direct_recall.comparison import (
     calculate_rouge_score,
     calculate_similarity_metrics,
 )
+
+
+def _completion_error(completion: Any) -> Optional[str]:
+    if not isinstance(completion, str) or not completion.strip():
+        return "Error: The model returned an empty or invalid response."
+    if completion.strip().lower().startswith("error"):
+        return completion.strip()
+    return None
 
 # Load framework.json for zero-shot templates
 framework_path = Path(__file__).resolve().parent / "framework.json"
@@ -1397,7 +1406,7 @@ def run_custom_mutation(
     if dry_run:
         return MutationResult(strategy=strategy, instruction=instruction, response="[DRY RUN]", error=None)
 
-    if not api_key:
+    if provider != "Local vLLM" and not str(api_key or "").strip():
         return MutationResult(
             strategy=strategy,
             instruction=instruction,
@@ -1422,8 +1431,8 @@ def run_custom_mutation(
             temperature=temperature,
             top_p=top_p,
         )
-        if isinstance(completion, str) and completion.startswith("Error"):
-            return MutationResult(strategy=strategy, instruction=prompt, response=None, error=completion)
+        if _completion_error(completion):
+            return MutationResult(strategy=strategy, instruction=prompt, response=None, error=_completion_error(completion))
         return MutationResult(strategy=strategy, instruction=prompt, response=completion, error=None)
 
     result = _call(instruction)
@@ -1731,7 +1740,7 @@ def run_adversarial_persuasion(
     if dry_run:
         return MutationResult(strategy=strategy, instruction=instruction, response="[DRY RUN]", error=None)
 
-    if not api_key:
+    if provider != "Local vLLM" and not str(api_key or "").strip():
         return MutationResult(
             strategy=strategy,
             instruction=instruction,
@@ -1756,8 +1765,8 @@ def run_adversarial_persuasion(
         top_p=top_p,
     )
 
-    if isinstance(completion, str) and completion.startswith("Error"):
-        return MutationResult(strategy=strategy, instruction=instruction, response=None, error=completion)
+    if _completion_error(completion):
+        return MutationResult(strategy=strategy, instruction=instruction, response=None, error=_completion_error(completion))
 
     result = MutationResult(strategy=strategy, instruction=instruction, response=completion, error=None)
     if not _is_continuation_style_prompt(adversarial_prompt):
@@ -1778,12 +1787,12 @@ def run_adversarial_persuasion(
         temperature=temperature,
         top_p=top_p,
     )
-    if isinstance(retry_completion, str) and retry_completion.startswith("Error"):
+    if _completion_error(retry_completion):
         return MutationResult(
             strategy=strategy,
             instruction=retry_instruction,
             response=None,
-            error=retry_completion,
+            error=_completion_error(retry_completion),
         )
 
     retry_result = MutationResult(
@@ -2107,9 +2116,11 @@ def _parse_judge_vote(response: Optional[str]) -> Optional[bool]:
     if not response:
         return None
     cleaned = response.strip().lower()
-    if "yes" in cleaned:
+    yes = bool(re.search(r"\byes\b", cleaned))
+    no = bool(re.search(r"\bno\b", cleaned))
+    if yes and not no:
         return True
-    if "no" in cleaned:
+    if no and not yes:
         return False
     return None
 
@@ -2302,7 +2313,7 @@ def run_baseline_prompt_suite(
                     if dry_run:
                         evaluation_response = "[DRY RUN]"
                     else:
-                        if not api_key:
+                        if eval_provider != "Local vLLM" and not str(api_key or "").strip():
                             evaluation_error = "Missing API key"
                         elif not eval_model:
                             evaluation_error = "Missing model name"
@@ -2315,8 +2326,8 @@ def run_baseline_prompt_suite(
                                 temperature=evaluation_temperature,
                                 top_p=evaluation_top_p,
                             )
-                            if isinstance(completion, str) and completion.startswith("Error"):
-                                evaluation_error = completion
+                            if _completion_error(completion):
+                                evaluation_error = _completion_error(completion)
                             else:
                                 evaluation_response = str(completion).strip()
 
@@ -2481,7 +2492,7 @@ def run_primary_intention_assessment(
         )
         return MutationResult(strategy=strategy_label, instruction=prompt, response=sample_response, error=None)
 
-    if not api_key:
+    if provider != "Local vLLM" and not str(api_key or "").strip():
         return MutationResult(strategy=strategy_label, instruction=prompt, response=None, error="Missing API key")
 
     if not model_name:
@@ -2496,8 +2507,8 @@ def run_primary_intention_assessment(
         top_p=top_p,
     )
 
-    if isinstance(completion, str) and completion.startswith("Error"):
-        return MutationResult(strategy=strategy_label, instruction=prompt, response=None, error=completion)
+    if _completion_error(completion):
+        return MutationResult(strategy=strategy_label, instruction=prompt, response=None, error=_completion_error(completion))
 
     return MutationResult(strategy=strategy_label, instruction=prompt, response=str(completion).strip(), error=None)
 
@@ -2633,7 +2644,7 @@ def run_mutation_pipeline(
 
     for script_name in scripts_in_order:
         script_path = mutate_dir / script_name
-        command = ["python", str(script_path), *script_args[script_name]]
+        command = [sys.executable, str(script_path), *script_args[script_name]]
 
         try:
             completed = subprocess.run(
@@ -2720,7 +2731,7 @@ def run_intention_judge(
     if dry_run:
         return MutationResult(strategy=strategy_label, instruction=prompt, response="yes", error=None)
 
-    if not api_key:
+    if provider != "Local vLLM" and not str(api_key or "").strip():
         return MutationResult(strategy=strategy_label, instruction=prompt, response=None, error="Missing API key")
 
     if not model_name:
@@ -2738,20 +2749,20 @@ def run_intention_judge(
             top_p=top_p,
         )
 
-        if isinstance(completion, str) and completion.startswith("Error"):
-            return MutationResult(strategy=strategy_label, instruction=prompt, response=None, error=completion)
+        if _completion_error(completion):
+            return MutationResult(strategy=strategy_label, instruction=prompt, response=None, error=_completion_error(completion))
 
         answer_text = str(completion).strip()
         last_response = answer_text
         lowered = answer_text.lower()
 
-        if "yes" in lowered:
+        if re.search(r"\byes\b", lowered) and not re.search(r"\bno\b", lowered):
             return MutationResult(strategy=strategy_label, instruction=prompt, response="yes", error=None)
-        if "no" in lowered:
+        if re.search(r"\bno\b", lowered) and not re.search(r"\byes\b", lowered):
             return MutationResult(strategy=strategy_label, instruction=prompt, response="no", error=None)
 
     # Fallback to the last response when we fail to extract an explicit yes/no.
-    return MutationResult(strategy=strategy_label, instruction=prompt, response=last_response, error=None)
+    return MutationResult(strategy=strategy_label, instruction=prompt, response=last_response, error="The judge did not return a decisive yes/no answer after three attempts.")
 
 
 @dataclass(frozen=True)

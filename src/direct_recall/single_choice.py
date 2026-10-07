@@ -16,6 +16,7 @@ from openai import OpenAI
 from anthropic import Anthropic
 
 from src.direct_recall.comparison import get_llm_completion
+from src.api_concurrency import limit_api_concurrency
 from src.kimi_utils import normalize_kimi_sampling_params
 from src.openai_utils import apply_openai_request_compat
 from src.direct_recall.pdf_utils import extract_text_from_document
@@ -29,18 +30,20 @@ SC_QA_PROMPT = (
 )
 ANSWER_PREFIX = "Answer:"
 OPTION_LABELS = ["A", "B", "C", "D"]
-LETTER_PATTERN = re.compile(r"[A-D]", re.IGNORECASE)
+LETTER_PATTERN = re.compile(r"\b[A-D]\b", re.IGNORECASE)
 
 
 def _clean_text(value: Any) -> str:
-    return str(value).strip()
+    return value.strip() if isinstance(value, str) else ""
 
 
 def _normalize_options(raw_options: Any) -> List[Dict[str, str]]:
     options: List[Dict[str, str]] = []
 
     if isinstance(raw_options, dict):
-        for key in sorted(raw_options.keys()):
+        for key in sorted(raw_options.keys(), key=str):
+            if not isinstance(key, str):
+                continue
             label = key.strip().upper()[:1]
             text = _clean_text(raw_options[key])
             if label and text:
@@ -261,7 +264,7 @@ Return ONLY a JSON array of strings, like: ["distractor 1", "distractor 2", "dis
     try:
         distractors = json.loads(json_str)
         if isinstance(distractors, list):
-            return [str(d) for d in distractors[:num_distractors]]
+            return [d.strip() for d in distractors if isinstance(d, str) and d.strip()][:num_distractors]
     except json.JSONDecodeError:
         pass
 
@@ -573,7 +576,10 @@ def _extract_option_from_text(text: str) -> str:
 def _normalize_option_probabilities(raw: Dict[str, float]) -> Optional[Dict[str, float]]:
     if not raw:
         return None
-    total = sum(value for value in raw.values() if value is not None)
+    if any(isinstance(value, bool) or not isinstance(value, (int, float))
+           or not math.isfinite(value) or value < 0 for value in raw.values()):
+        return None
+    total = sum(raw.values())
     if total <= 0:
         return None
     return {label: value / total for label, value in raw.items() if value is not None}
@@ -589,7 +595,10 @@ def _parse_openai_top_logprobs(top_logprobs: Any) -> Optional[Dict[str, float]]:
     if isinstance(first_entry, (list, tuple)):
         entries = list(first_entry)
     elif isinstance(first_entry, dict):
-        entries = [first_entry]
+        if "token" in first_entry or "text" in first_entry:
+            entries = [first_entry]
+        else:
+            entries = [{"token": token, "logprob": value} for token, value in first_entry.items()]
     else:
         entries = [first_entry]
 
@@ -598,7 +607,7 @@ def _parse_openai_top_logprobs(top_logprobs: Any) -> Optional[Dict[str, float]]:
         token = getattr(entry, "token", None)
         if token is None and isinstance(entry, dict):
             token = entry.get("token") or entry.get("text")
-        if not token:
+        if not isinstance(token, str) or not token:
             continue
         candidate = token.strip().upper()
         if candidate not in OPTION_LABELS:
@@ -608,9 +617,24 @@ def _parse_openai_top_logprobs(top_logprobs: Any) -> Optional[Dict[str, float]]:
             logprob = entry.get("logprob")
         if logprob is None:
             continue
-        option_scores[candidate] = math.exp(float(logprob))
+        try:
+            value = float(logprob)
+            if math.isfinite(value) and value <= 0:
+                option_scores[candidate] = math.exp(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
 
     return _normalize_option_probabilities(option_scores)
+
+
+def _sc_error_result(message: str) -> Dict[str, Any]:
+    return {"choice": "?", "option_probabilities": None, "raw_response": message,
+            "logit_mode": "text", "error": message}
+
+
+def _compatibility_failure(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(token in message for token in ("400", "404", "not supported", "unsupported", "logprobs", "not found"))
 
 
 def _try_openai_style_completion(
@@ -623,7 +647,7 @@ def _try_openai_style_completion(
 ):
     """Attempt to call the OpenAI-compatible completions API with logprobs."""
 
-    client_kwargs: Dict[str, Any] = {"api_key": api_key}
+    client_kwargs: Dict[str, Any] = {"api_key": api_key, "timeout": 120, "max_retries": 0}
     request_kwargs: Dict[str, Any] = {
         "model": model_choice,
         "prompt": prompt,
@@ -653,27 +677,33 @@ def _try_openai_style_completion(
     request_kwargs = apply_openai_request_compat(request_kwargs)
 
     try:
-        client = OpenAI(**client_kwargs)
-        # Try the original model first
-        try:
-            response = client.completions.create(**request_kwargs)
-        except Exception as e:
-            # Handle 429 rate limit error for gemma-4-31b by falling back to gemma-4-26b
-            error_str = str(e)
-            if "429" in error_str and "gemma-4-31b" in model_choice.lower():
-                # Automatically switch to gemma-4-26b as fallback
-                fallback_model = "google/gemma-4-26b-a4b-it:free"
-                request_kwargs["model"] = fallback_model
-                # Retry with fallback model
+        with limit_api_concurrency(timeout=120), OpenAI(**client_kwargs) as client:
+            # Try the original model first
+            try:
                 response = client.completions.create(**request_kwargs)
-            else:
-                # Re-raise if it's not a 429 for gemma-4-31b
-                raise
-    except Exception:
-        return None
+            except Exception as e:
+                # Handle 429 rate limit error for gemma-4-31b by falling back to gemma-4-26b
+                error_str = str(e)
+                if "429" in error_str and "gemma-4-31b" in model_choice.lower():
+                    # Automatically switch to gemma-4-26b as fallback
+                    fallback_model = "google/gemma-4-26b-a4b-it:free"
+                    request_kwargs["model"] = fallback_model
+                    # Retry with fallback model
+                    response = client.completions.create(**request_kwargs)
+                else:
+                    # Re-raise if it's not a 429 for gemma-4-31b
+                    raise
+    except Exception as exc:
+        if _compatibility_failure(exc):
+            return None
+        return _sc_error_result(f"Error calling API: {type(exc).__name__}: {exc}")
 
-    choice = response.choices[0]
-    token_text = (choice.text or "").strip()
+
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        return _sc_error_result("Error: Model returned empty content.")
+    choice = choices[0]
+    token_text = (getattr(choice, "text", None) or "").strip()
     probabilities = None
     logprobs = getattr(choice, "logprobs", None)
     if logprobs and getattr(logprobs, "top_logprobs", None):
@@ -683,6 +713,8 @@ def _try_openai_style_completion(
     if not selected and probabilities:
         selected = max(probabilities, key=probabilities.get)
 
+    if not selected:
+        return _sc_error_result("Error: Model returned no valid option.")
     return {
         "choice": selected or "?",
         "option_probabilities": probabilities,
@@ -696,19 +728,21 @@ def _try_anthropic_style_completion(
     api_key: str,
     model_choice: str,
 ) -> Optional[Dict[str, Any]]:
-    client = Anthropic(api_key=api_key)
     try:
-        response = client.messages.create(
-            model=model_choice,
-            max_tokens=1,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-        )
-    except Exception:
-        return None
-
-    token_text = response.content[0].text.strip()
+        with limit_api_concurrency(timeout=120), Anthropic(api_key=api_key, timeout=120, max_retries=0) as client:
+            response = client.messages.create(
+                model=model_choice, max_tokens=1,
+                messages=[{"role": "user", "content": prompt}], temperature=0,
+            )
+    except Exception as exc:
+        if _compatibility_failure(exc):
+            return None
+        return _sc_error_result(f"Error calling API: {type(exc).__name__}: {exc}")
+    blocks = getattr(response, "content", None) or []
+    token_text = "".join(getattr(block, "text", "") or "" for block in blocks).strip()
     selected = _extract_option_from_text(token_text)
+    if not selected:
+        return _sc_error_result("Error: Model returned no valid option.")
     return {
         "choice": selected or "?",
         "option_probabilities": None,
@@ -738,6 +772,11 @@ def _evaluate_with_basic_completion(
     )
 
     text = response.strip() if isinstance(response, str) else ""
+    if not text or text.startswith("Error"):
+        return _sc_error_result(text or "Error: Model returned empty content.")
+    selected = _extract_option_from_text(text)
+    if not selected:
+        return _sc_error_result("Error: Model returned no valid option.")
     return {
         "choice": _extract_option_from_text(text) or "?",
         "option_probabilities": None,
@@ -754,19 +793,31 @@ def evaluate_single_choice_question(
     temperature: float = 0.7,
     top_p: float = 0.9,
 ) -> Dict[str, Any]:
+    if not isinstance(question, dict) or not isinstance(question.get("question"), str) or not question["question"].strip():
+        return _sc_error_result("Error: Invalid single-choice question.")
+    options = question.get("options")
+    if not isinstance(options, list) or not 2 <= len(options) <= len(OPTION_LABELS):
+        return _sc_error_result("Error: Invalid single-choice options.")
+    labels = []
+    for option in options:
+        if not isinstance(option, dict) or option.get("label") not in OPTION_LABELS or not isinstance(option.get("text"), str) or not option["text"].strip():
+            return _sc_error_result("Error: Invalid single-choice options.")
+        labels.append(option["label"])
+    if len(set(labels)) != len(labels) or question.get("correct_option") not in labels:
+        return _sc_error_result("Error: Invalid single-choice correct option.")
     prompt = _build_sc_prompt_body(question)
 
+    result = None
     if provider in {"OpenAI", "OpenRouter", "Kimi"}:
         result = _try_openai_style_completion(prompt, api_key, model_choice, provider, temperature, top_p)
-        if result:
-            return result
-
-    if provider == "Anthropic":
+    elif provider == "Anthropic":
         result = _try_anthropic_style_completion(prompt, api_key, model_choice)
-        if result:
-            return result
 
-    return _evaluate_with_basic_completion(prompt, api_key, model_choice, provider, temperature, top_p)
+    if result is None:
+        result = _evaluate_with_basic_completion(prompt, api_key, model_choice, provider, temperature, top_p)
+    if not result.get("error") and result.get("choice") not in labels:
+        return _sc_error_result("Error: Model selected an option absent from this question.")
+    return result
 
 
 def run_single_choice_evaluation(
@@ -788,22 +839,33 @@ def run_single_choice_evaluation(
     for run_idx in range(num_runs):
         run_results: List[Dict[str, Any]] = []
         for question_idx, mcq in enumerate(questions):
-            evaluation = evaluate_single_choice_question(
-                mcq,
-                api_key,
-                model_choice,
-                provider,
-                temperature=temperature,
-                top_p=top_p,
-            )
+            try:
+                evaluation = evaluate_single_choice_question(
+                    mcq,
+                    api_key,
+                    model_choice,
+                    provider,
+                    temperature=temperature,
+                    top_p=top_p,
+                )
+            except Exception as exc:
+                evaluation = _sc_error_result(f"Error evaluating question: {type(exc).__name__}: {exc}")
+            if not isinstance(evaluation, dict) or evaluation.get("choice") not in OPTION_LABELS:
+                evaluation = _sc_error_result(
+                    evaluation.get("error", "Error: Invalid evaluation response.")
+                    if isinstance(evaluation, dict) else "Error: Invalid evaluation response."
+                )
             choice = evaluation.get("choice", "?")
+            mcq = mcq if isinstance(mcq, dict) else {}
 
             result = {
                 "question": mcq.get("question"),
                 "options": mcq.get("options"),
                 "correct_option": mcq.get("correct_option"),
                 "llm_choice": choice,
-                "is_correct": choice == mcq.get("correct_option"),
+                "is_correct": None if evaluation.get("error") else choice == mcq.get("correct_option"),
+                "error": evaluation.get("error"),
+                "question_index": question_idx,
                 "raw_response": evaluation.get("raw_response", ""),
                 "option_probabilities": evaluation.get("option_probabilities"),
                 "logit_mode": evaluation.get("logit_mode", "text"),
@@ -830,13 +892,16 @@ def summarize_single_choice_results(all_results: List[List[Dict[str, Any]]]) -> 
     if total_attempts == 0:
         return {}
 
-    total_correct = sum(1 for run in all_results for item in run if item.get("is_correct"))
+    successful_attempts = sum(1 for run in all_results for item in run if not item.get("error"))
+    total_correct = sum(1 for run in all_results for item in run if not item.get("error") and item.get("is_correct"))
     option_distribution: Dict[str, int] = {label: 0 for label in OPTION_LABELS}
     option_distribution["?"] = 0
 
     correct_confidences: List[float] = []
     for run in all_results:
         for item in run:
+            if item.get("error"):
+                continue
             choice = item.get("llm_choice", "?")
             if choice not in option_distribution:
                 option_distribution[choice] = 0
@@ -854,7 +919,7 @@ def summarize_single_choice_results(all_results: List[List[Dict[str, Any]]]) -> 
         correct = 0
         question_text = ""
         for run in all_results:
-            if idx < len(run):
+            if idx < len(run) and not run[idx].get('error'):
                 attempts += 1
                 question_text = run[idx].get("question", question_text)
                 if run[idx].get("is_correct"):
@@ -872,7 +937,9 @@ def summarize_single_choice_results(all_results: List[List[Dict[str, Any]]]) -> 
     return {
         "total_runs": len(all_results),
         "total_attempts": total_attempts,
-        "overall_accuracy": total_correct / total_attempts,
+        "overall_accuracy": total_correct / successful_attempts if successful_attempts else None,
+        "successful_attempts": successful_attempts,
+        "failed_attempts": total_attempts - successful_attempts,
         "option_distribution": option_distribution,
         "per_question": per_question,
         "avg_correct_confidence": (sum(correct_confidences) / len(correct_confidences))

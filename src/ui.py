@@ -39,6 +39,7 @@ from src.direct_recall import (
     get_predefined_examples_index,
 )
 from src.direct_recall.sleek_attack import run_sleek_evaluation
+from src.text_analysis import unpack_text_result
 from src.direct_recall.knowledge_benchmarks import (
     get_knowledge_question_bank_by_title,
     list_knowledge_book_titles,
@@ -268,6 +269,7 @@ def _clear_persuasive_cache() -> None:
         "jailbreak_histogram_png_bytes",
         "jailbreak_distribution_legend_note",
         "persuasion_run_checkpoint",
+        "persuasion_last_run_summary",
     ):
         st.session_state.pop(key, None)
     for key in list(st.session_state.keys()):
@@ -510,7 +512,7 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
         st.warning("No examples in evaluation queue.")
         return
     
-    if not api_key or not model_choice:
+    if (provider != "Local vLLM" and not str(api_key or "").strip()) or not model_choice:
         st.error("Please configure API key and model in the sidebar.")
         return
     
@@ -561,29 +563,38 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
             
             progress_bar.progress(0.3 + (i / len(questions)) * 0.6, text=f" Generating answer for question {i+1}/{len(questions)}...")
             
-            # Use API to generate answer
-            generated_text = get_llm_completion(
-                prompt, 
-                api_key, 
-                model_choice, 
-                provider,
-                temperature=0.7,  # Deterministic for evaluation
-                top_p=0.9,
-                max_output_tokens=max_new_tokens,
-                stop_sequences=KNOWMEM_STOP_SEQUENCES,
-            )
-            
-            if isinstance(generated_text, str) and generated_text.startswith("Error"):
-                st.error(f"Error: API error for question {i+1}: {generated_text}")
+            try:
+                # Use API to generate answer
+                generated_text = get_llm_completion(
+                    prompt,
+                    api_key,
+                    model_choice,
+                    provider,
+                    temperature=0.7,  # Deterministic for evaluation
+                    top_p=0.9,
+                    max_output_tokens=max_new_tokens,
+                    stop_sequences=KNOWMEM_STOP_SEQUENCES,
+                )
+
+                if isinstance(generated_text, str) and generated_text.startswith("Error"):
+                    st.error(f"Error: API error for question {i+1}: {generated_text}")
+                    continue
+
+                if not isinstance(generated_text, str) or not generated_text.strip():
+                    raise ValueError("The model returned an empty or invalid response.")
+                trimmed_output = _trim_knowmem_completion(generated_text)
+                if not trimmed_output:
+                    trimmed_output = generated_text.strip()
+
+                # Log the result
+                logger.log(prompt, answer, trimmed_output, question=question)
+            except Exception as exc:
+                detail = str(exc).strip() or type(exc).__name__
+                if api_key:
+                    detail = detail.replace(str(api_key), "[redacted]")
+                st.error(f"Evaluation of question {i + 1} failed: {detail}")
                 continue
-            
-            trimmed_output = _trim_knowmem_completion(generated_text)
-            if not trimmed_output:
-                trimmed_output = generated_text.strip()
-            
-            # Log the result
-            logger.log(prompt, answer, trimmed_output, question=question)
-        
+
         progress_bar.progress(1.0, text="Done:All evaluations completed!")
         progress_bar.empty()
         
@@ -591,7 +602,13 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
         results = logger
         
         # Display results
-        st.success("Done:Knowmem evaluation completed!")
+        if not logger.entries:
+            st.error('No answers were successfully evaluated. No score is available.')
+            return
+        if len(logger.entries) < len(questions):
+            st.warning(f'Partial evaluation: {len(logger.entries)}/{len(questions)} questions scored.')
+        else:
+            st.success("Done:Knowmem evaluation completed!")
         
         # Show summary metrics
         st.markdown("####  Evaluation Results")
@@ -696,6 +713,14 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
         st.error(f"Error: during knowmem evaluation: {str(e)}")
         import traceback
         st.code(traceback.format_exc())
+
+
+def _generate_report_safely(factory, *args, **kwargs):
+    try:
+        return factory(*args, **kwargs)
+    except Exception as exc:
+        st.warning(f"The analysis results are available, but the PDF report could not be generated: {str(exc).strip() or type(exc).__name__}")
+        return None
 
 
 def render_evaluation_queue(api_key, model_choice, provider) -> None:
@@ -1042,6 +1067,9 @@ def render_snippet_to_document_page(api_key, model_choice, provider):
         [Paper](https://aclanthology.org/2024.emnlp-main.844/) | [DOI](https://doi.org/10.18653/v1/2024.emnlp-main.844)
         """)
 
+    if st.query_params.get("document_analysis") and "content_recall_mode" not in st.session_state:
+        st.session_state["content_recall_mode"] = "Document Memorization Detection"
+
     content_recall_mode = st.radio(
         "Content recall detection mode",
         ["Text Memorization Detection", "Document Memorization Detection"],
@@ -1251,6 +1279,11 @@ def render_qa_based_detection(api_key, model_choice, provider):
         # Display selected literature info
         st.caption(f" Selected: {selected_literature}")
         qa_pairs = get_knowledge_question_bank_by_title(selected_literature)
+        if st.session_state.get('qa_generated_qa_pairs') != qa_pairs:
+            st.session_state['qa_evaluation_results'] = None
+            st.session_state['qa_sleek_results'] = None
+            st.session_state.pop('qa_pdf_report_bytes', None)
+            st.session_state.pop('qa_sleek_pdf_report', None)
         st.session_state['qa_generated_qa_pairs'] = qa_pairs
         st.session_state['qa_document_text_content'] = f"Predefined literature example: {selected_literature}"
         st.session_state['qa_pairs_source'] = "predefined"
@@ -1345,54 +1378,62 @@ def render_qa_based_detection(api_key, model_choice, provider):
             qa_gen_temperature = st.session_state.get('qa_gen_temperature', 0.7)
             qa_gen_top_p = st.session_state.get('qa_gen_top_p', 0.9)
             
-            if not qa_gen_api_key:
+            if provider != "Local vLLM" and not str(qa_gen_api_key or "").strip():
                 show_error_with_clear_cache("Warning: Please provide an API key for Q/A generation.", clear_id=KNOWLEDGE_CLEAR_CACHE_ID)
             else:
                 with detection_job("Q/A Pair Generation"):
                     from src.direct_recall.knowledge_qa import generate_qa_pairs_from_document, generate_qa_pairs_from_text
 
-                    with st.spinner(f" Generating {num_qa_pairs} Q/A pairs with target model ({model_choice})..."):
-                        qa_pairs = []
-                        document_text = ""
+                    try:
+                        with st.spinner(f" Generating {num_qa_pairs} Q/A pairs with target model ({model_choice})..."):
+                            qa_pairs = []
+                            document_text = ""
 
-                        if qa_source_mode == "Input Text":
-                            input_text = st.session_state.get("qa_input_text", "").strip()
-                            if not input_text:
-                                st.warning("Warning: Please enter some text first.")
+                            if qa_source_mode == "Input Text":
+                                input_text = st.session_state.get("qa_input_text", "").strip()
+                                if not input_text:
+                                    st.warning("Warning: Please enter some text first.")
+                                else:
+                                    document_text = input_text
+                                    qa_pairs = generate_qa_pairs_from_text(
+                                        document_text,
+                                        qa_gen_api_key,
+                                        qa_gen_model,
+                                        qa_gen_provider,
+                                        num_pairs=num_qa_pairs,
+                                        temperature=qa_gen_temperature,
+                                        top_p=qa_gen_top_p,
+                                    )
+                            elif qa_source_mode == "Upload Document":
+                                if not uploaded_document:
+                                    st.warning("Warning: Please upload a document first.")
+                                else:
+                                    qa_pairs, document_text = generate_qa_pairs_from_document(
+                                        uploaded_document,
+                                        qa_gen_api_key,
+                                        qa_gen_model,
+                                        qa_gen_provider,
+                                        num_pairs=num_qa_pairs,
+                                        temperature=qa_gen_temperature,
+                                        top_p=qa_gen_top_p,
+                                    )
+                            if isinstance(document_text, str) and document_text.startswith("Error"):
+                                st.error(f"Error:{document_text}")
+                            elif not qa_pairs:
+                                st.error("Error: Failed to generate Q/A pairs. The LLM may not have returned valid JSON. Please try again or use a different model.")
                             else:
-                                document_text = input_text
-                                qa_pairs = generate_qa_pairs_from_text(
-                                    document_text,
-                                    qa_gen_api_key,
-                                    qa_gen_model,
-                                    qa_gen_provider,
-                                    num_pairs=num_qa_pairs,
-                                    temperature=qa_gen_temperature,
-                                    top_p=qa_gen_top_p,
-                                )
-                        elif qa_source_mode == "Upload Document":
-                            if not uploaded_document:
-                                st.warning("Warning: Please upload a document first.")
-                            else:
-                                qa_pairs, document_text = generate_qa_pairs_from_document(
-                                    uploaded_document,
-                                    qa_gen_api_key,
-                                    qa_gen_model,
-                                    qa_gen_provider,
-                                    num_pairs=num_qa_pairs,
-                                    temperature=qa_gen_temperature,
-                                    top_p=qa_gen_top_p,
-                                )
-                        if isinstance(document_text, str) and document_text.startswith("Error"):
-                            st.error(f"Error:{document_text}")
-                        elif not qa_pairs:
-                            st.error("Error: Failed to generate Q/A pairs. The LLM may not have returned valid JSON. Please try again or use a different model.")
-                        else:
-                            st.session_state['qa_generated_qa_pairs'] = qa_pairs
-                            st.session_state['qa_document_text_content'] = document_text
-                            st.session_state['qa_pairs_source'] = qa_source_mode
-                            st.success(f"Successfully generated {len(qa_pairs)} Q/A pairs!")
-        
+                                if st.session_state.get('qa_generated_qa_pairs') != qa_pairs:
+                                    st.session_state['qa_evaluation_results'] = None
+                                    st.session_state['qa_sleek_results'] = None
+                                    st.session_state.pop('qa_pdf_report_bytes', None)
+                                    st.session_state.pop('qa_sleek_pdf_report', None)
+                                st.session_state['qa_generated_qa_pairs'] = qa_pairs
+                                st.session_state['qa_document_text_content'] = document_text
+                                st.session_state['qa_pairs_source'] = qa_source_mode
+                                st.success(f"Successfully generated {len(qa_pairs)} Q/A pairs!")
+                    except Exception as exc:
+                        st.error(f"Q/A generation failed: {str(exc).strip() or type(exc).__name__}")
+
         # Display Q/A pairs
         if st.session_state['qa_generated_qa_pairs']:
             section_title = " Generated Q/A Pairs"
@@ -1491,7 +1532,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 
                 if not st.session_state['qa_generated_qa_pairs']:
                     st.warning("Warning: Please generate Q/A pairs first before running evaluation.")
-                elif not api_key or not api_key.strip():
+                elif provider != "Local vLLM" and not str(api_key or "").strip():
                     show_error_with_clear_cache(
                         f"Warning: Please configure the API key for **{provider}** in the sidebar before running evaluation.",
                         clear_id=KNOWLEDGE_CLEAR_CACHE_ID,
@@ -1500,8 +1541,16 @@ def render_qa_based_detection(api_key, model_choice, provider):
                     st.error("Warning: Please select a model in the sidebar before running evaluation.")
                 else:
                     with detection_job("Knowledge Memorization Evaluation"):
+                        st.session_state["qa_evaluation_results"] = None
+                        st.session_state.pop("qa_pdf_report_bytes", None)
                         total_qa_pairs = len(st.session_state['qa_generated_qa_pairs'])
                         total_items = num_eval_runs * total_qa_pairs
+                        st.session_state['qa_evaluation_metadata'] = {
+                            'qa_pairs': [dict(pair) for pair in st.session_state['qa_generated_qa_pairs']],
+                            'model': model_choice, 'provider': provider,
+                            'source_mode': qa_source_mode, 'num_qa_pairs': total_qa_pairs,
+                            'num_eval_runs': num_eval_runs, 'temperature': eval_temperature, 'top_p': eval_top_p,
+                        }
 
                         progress_bar = st.progress(0, text="Starting evaluation...")
 
@@ -1556,7 +1605,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                             num_qa_pairs = st.session_state.get('qa_num_qa_pairs', 5)
                             agg_metrics = calculate_aggregate_metrics(all_results)
 
-                            pdf_bytes = generate_open_ended_question_pdf_report(
+                            pdf_bytes = _generate_report_safely(generate_open_ended_question_pdf_report,
                                 all_results,
                                 agg_metrics,
                                 qa_pairs,
@@ -1575,6 +1624,16 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 
                 # Calculate aggregate metrics
                 agg_metrics = calculate_aggregate_metrics(all_results)
+                failed_count = agg_metrics.get('failed_evaluations', 0)
+                if failed_count:
+                    st.warning(f"Partial evaluation: {agg_metrics.get('total_evaluations', 0)} successful; {failed_count} failed. Scores cover successful responses only.")
+                if not agg_metrics.get('total_evaluations', 0):
+                    for run in all_results:
+                        for row in run:
+                            if row.get('error'):
+                                st.error(row['error'])
+                    st.error('No answers were successfully evaluated. No memorization assessment is available.')
+                    return
                 
                 # Display detailed results grouped by Q/A pair
                 st.markdown("---")
@@ -1620,6 +1679,11 @@ def render_qa_based_detection(api_key, model_choice, provider):
                         st.markdown(question_card_html, unsafe_allow_html=True)
 
                         for run_idx, eval_result in run_details:
+                            if eval_result.get('error'):
+                                st.error(f"Run #{run_idx}: {eval_result['error']}")
+                                continue
+                            if eval_result.get('llm_judge_error'):
+                                st.warning(f"Run #{run_idx}: Judge unavailable: {eval_result['llm_judge_error']}")
                             # Token-level F1 metrics for Fact Recall evaluation
                             metrics_payload = {
                                 "f1": eval_result.get('f1'),
@@ -1828,22 +1892,23 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 st.markdown("---")
                 
                 # Use cached PDF if available, otherwise generate new one
-                if 'qa_pdf_report_bytes' in st.session_state:
+                if st.session_state.get('qa_pdf_report_bytes'):
                     pdf_bytes = st.session_state['qa_pdf_report_bytes']
                 else:
                     # Fallback: generate PDF if not cached (shouldn't happen in normal flow)
-                    qa_pairs = st.session_state.get('qa_generated_qa_pairs', [])
-                    source_mode = st.session_state.get('qa_source_mode', 'Input Text')
-                    num_qa_pairs = st.session_state.get('qa_num_qa_pairs', 5)
-                    num_eval_runs = st.session_state.get('qa_num_eval_runs', 1)
-                    eval_temperature = st.session_state.get('qa_eval_temperature', 0.7)
-                    eval_top_p = st.session_state.get('qa_eval_top_p', 0.9)
+                    captured = st.session_state.get('qa_evaluation_metadata', {})
+                    qa_pairs = captured.get('qa_pairs', st.session_state.get('qa_generated_qa_pairs', []))
+                    source_mode = captured.get('source_mode', st.session_state.get('qa_source_mode', 'Input Text'))
+                    num_qa_pairs = captured.get('num_qa_pairs', len(qa_pairs))
+                    num_eval_runs = captured.get('num_eval_runs', len(all_results))
+                    eval_temperature = captured.get('temperature', st.session_state.get('qa_eval_temperature', 0.7))
+                    eval_top_p = captured.get('top_p', st.session_state.get('qa_eval_top_p', 0.9))
                     
-                    pdf_bytes = generate_open_ended_question_pdf_report(
+                    pdf_bytes = _generate_report_safely(generate_open_ended_question_pdf_report,
                         all_results,
                         agg_metrics,
                         qa_pairs,
-                        model_choice,
+                        captured.get("model", model_choice),
                         source_mode,
                         num_qa_pairs,
                         num_eval_runs,
@@ -1853,7 +1918,8 @@ def render_qa_based_detection(api_key, model_choice, provider):
                     st.session_state['qa_pdf_report_bytes'] = pdf_bytes
 
                 # PDF Preview
-                render_pdf_preview_with_blob(pdf_bytes, title=" Audit Report Preview", iframe_height=450)
+                if pdf_bytes:
+                    render_pdf_preview_with_blob(pdf_bytes, title=" Audit Report Preview", iframe_height=450)
 
         # Step-by-step Leaking and Extraction evaluation mode
         elif evaluation_mode == "Step-by-step Leaking and Extraction":
@@ -1907,7 +1973,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 
                 if not st.session_state['qa_generated_qa_pairs']:
                     st.warning("Warning: Please generate Q/A pairs first before running evaluation.")
-                elif not api_key or not api_key.strip():
+                elif provider != "Local vLLM" and not str(api_key or "").strip():
                     show_error_with_clear_cache(
                         f"Warning: Please configure the API key for **{provider}** in the sidebar before running evaluation.",
                         clear_id=KNOWLEDGE_CLEAR_CACHE_ID,
@@ -1915,6 +1981,8 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 elif not model_choice:
                     st.error("Warning: Please select a model in the sidebar before running evaluation.")
                 else:
+                    st.session_state["qa_sleek_results"] = None
+                    st.session_state.pop("qa_sleek_pdf_report", None)
                     from src.direct_recall.sleek_attack import run_sleek_qa_evaluation
                     
                     total_qa_pairs = len(st.session_state['qa_generated_qa_pairs'])
@@ -1943,7 +2011,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                         st.session_state['qa_sleek_results'] = sleek_results
                         
                         # Generate and cache PDF report
-                        pdf_bytes = generate_sleek_attack_pdf_report(
+                        pdf_bytes = _generate_report_safely(generate_sleek_attack_pdf_report,
                             sleek_results, 
                             model_choice, 
                             provider
@@ -1958,6 +2026,15 @@ def render_qa_based_detection(api_key, model_choice, provider):
             # Display Step-by-step Leaking and Extraction results
             if st.session_state.get('qa_sleek_results'):
                 sleek_results = st.session_state['qa_sleek_results']
+                if sleek_results.get('failed_evaluations', 0):
+                    st.warning(f"Partial evaluation: {sleek_results.get('successful_evaluations', 0)} successful; {sleek_results['failed_evaluations']} failed. Scores cover successful responses only.")
+                if sleek_results.get('successful_evaluations') == 0:
+                    for pair in sleek_results.get('qa_pair_results', []):
+                        for run in pair.get('runs', []):
+                            if run.get('error'):
+                                st.error(run['error'])
+                    st.error('No answers were successfully evaluated. No leakage assessment is available.')
+                    return
                 
                 st.markdown("---")
                 
@@ -1976,6 +2053,9 @@ def render_qa_based_detection(api_key, model_choice, provider):
                         # Show runs
                         runs = pair_result.get('runs', [])
                         for run in runs:
+                            if run.get('error'):
+                                st.error(f"Run #{run.get('run', 1)}: {run['error']}")
+                                continue
                             run_num = run.get('run', 1)
                             st.markdown(f"---\n**Run {run_num}**")
                             
@@ -2034,15 +2114,20 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 st.markdown("---")
                 
                 # Use cached PDF if available, otherwise generate new one
-                if 'qa_sleek_pdf_report' in st.session_state:
+                if st.session_state.get('qa_sleek_pdf_report'):
                     pdf_bytes = st.session_state['qa_sleek_pdf_report']
                 else:
                     # Fallback: generate PDF if not cached (shouldn't happen in normal flow)
-                    pdf_bytes = generate_sleek_attack_pdf_report(sleek_results, model_choice, provider)
+                    pdf_bytes = _generate_report_safely(
+                        generate_sleek_attack_pdf_report, sleek_results,
+                        sleek_results.get("summary", {}).get("model", model_choice),
+                        sleek_results.get("summary", {}).get("provider", provider),
+                    )
                     st.session_state['qa_sleek_pdf_report'] = pdf_bytes
 
                 # PDF Preview
-                render_pdf_preview_with_blob(pdf_bytes, title=" Audit Report Preview", iframe_height=450)
+                if pdf_bytes:
+                    render_pdf_preview_with_blob(pdf_bytes, title=" Audit Report Preview", iframe_height=450)
 
         elif not st.session_state['qa_generated_qa_pairs']:
             st.info(" Upload a PDF or TXT file and generate Q/A pairs to begin the knowledge memorization detection process.")
@@ -2448,7 +2533,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         elif not reference_text.strip():
             st.warning("Warning: Please provide reference text for evaluation.")
             finish_detection_job()
-        elif not api_key or not model_choice:
+        elif (provider != "Local vLLM" and not str(api_key or "").strip()) or not model_choice:
             show_error_with_clear_cache("Warning: Enter your API key and choose a model in the sidebar.", clear_id=PERSUASIVE_CLEAR_CACHE_ID)
             finish_detection_job()
         else:
@@ -2468,6 +2553,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             }
 
             with detection_job("Persuasive Jailbreak Detection"):
+                st.session_state.pop("persuasion_last_run_summary", None)
                 try:
                     if reference_text:
                         stage1_reference_map[original_prompt] = reference_text
@@ -2625,6 +2711,10 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         
                         total_evaluations = len(all_evaluations) * attempts_per_prompt
                         eval_count = 0
+                        evaluation_failures = [str(item.mutation.error or "Invalid mutation prompt") if item is not None else "Missing mutation result" for item in all_evaluations if item is None or item.mutation.error or not item.parsed or not item.parsed.mutated_text]
+                        generation_failed = sum(item is None or bool(item.mutation.error) or not item.parsed or not item.parsed.mutated_text for item in all_evaluations)
+                        if generation_failed:
+                            st.warning(f"{generation_failed}/{len(all_evaluations)} mutations failed or returned an invalid prompt. These are excluded from evaluation.")
                         
                         for eval_idx, evaluation in enumerate(all_evaluations):
                             if evaluation is None or evaluation.mutation.error:
@@ -2638,7 +2728,8 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                             
                             # Send mutated prompt to LLM multiple times to get responses
                             for prompt_attempt in range(1, attempts_per_prompt + 1):
-                                progress_bar.progress((eval_count + 1) / total_evaluations, text=f" Evaluating mutation {eval_count + 1}/{total_evaluations}")
+                                eval_count += 1
+                                progress_bar.progress(eval_count / total_evaluations, text=f" Evaluating mutation {eval_count}/{total_evaluations}")
                                 
                                 try:
                                     # Request logprobs for confidence analysis (OpenAI/OpenRouter only)
@@ -2662,8 +2753,12 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                     if isinstance(llm_response, str) and show_api_failure_if_needed(
                                         llm_response, clear_id=PERSUASIVE_CLEAR_CACHE_ID
                                     ):
+                                        evaluation_failures.append(llm_response)
                                         continue
                                     
+                                    if not isinstance(llm_response, str) or not llm_response.strip():
+                                        raise ValueError("The model returned an empty or invalid response.")
+
                                     # Run confidence analysis if logprobs available
                                     confidence_result = None
                                     if logprobs_data and provider in ("OpenAI", "OpenRouter"):
@@ -2680,6 +2775,8 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                     
                                     # Calculate similarity metrics (full bundle for downstream ranking)
                                     metrics_dict = calculate_similarity_metrics(reference_text.strip(), llm_response)
+                                    if not metrics_dict or any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) for value in metrics_dict.values()):
+                                        raise ValueError("Similarity metrics were missing or invalid.")
                                     rouge_score = metrics_dict.get("rouge_l", 0.0)
                                     jaccard = metrics_dict.get("jaccard_index", 0.0)
                                     levenshtein = metrics_dict.get("levenshtein", 0.0)
@@ -2761,12 +2858,20 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                     }
                                     
                                 except Exception as e:
-                                    st.warning(f"Warning: Failed to evaluate mutation {eval_idx + 1}, attempt {prompt_attempt}: {e}")
+                                    detail = str(e).strip() or type(e).__name__
+                                    evaluation_failures.append(detail)
+                                    st.warning(f"Warning: Failed to evaluate mutation {eval_idx + 1}, attempt {prompt_attempt}: {detail}")
                                     continue
-                                
-                                eval_count += 1
                         
                         progress_bar.empty()
+                        st.session_state["persuasion_last_run_summary"] = {
+                            "model": model_choice, "provider": provider,
+                            "planned": total_evaluations, "successful": len(evaluated_mutations),
+                            "failed": total_evaluations - len(evaluated_mutations),
+                            "failures": [str(message).replace(str(api_key), "[redacted]") if api_key else str(message) for message in evaluation_failures],
+                        }
+                        if len(evaluated_mutations) < total_evaluations:
+                            st.warning(f"Partial evaluation: {len(evaluated_mutations)}/{total_evaluations} planned responses were scored. Scores cover successful responses only.")
                         
                         if not evaluated_mutations:
                             st.error("Error: No mutations were successfully evaluated.")
@@ -2914,7 +3019,8 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                             st.session_state["last_prompt"] = original_prompt
                             st.session_state["results_prompt_selector"] = original_prompt
                             
-                            st.success(f"Done:**Generation Complete:** Evaluated {successful_count} mutations (ranked by ROUGE-L)")
+                            if len(evaluated_mutations) == total_evaluations:
+                                st.success(f"Done:**Generation Complete:** Evaluated {len(evaluated_mutations)} mutations (ranked by ROUGE-L)")
                 except Exception as e:
                     show_error_with_clear_cache(
                         f"Error: Persuasive Jailbreak run failed: {e}",
@@ -2923,6 +3029,13 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     st.code(traceback.format_exc())
     
     st.divider()
+
+    last_run_summary = st.session_state.get("persuasion_last_run_summary", {})
+    if last_run_summary.get("failed", 0):
+        st.warning(f"Partial evaluation for {last_run_summary.get('model', '')}: {last_run_summary['successful']}/{last_run_summary['planned']} planned responses were scored. Scores cover successful responses only.")
+        with st.expander("Last run request failures", expanded=False):
+            for message in last_run_summary.get('failures', []):
+                st.write(message)
 
     # ===== Results Explorer =====
     prompts = [
@@ -3426,35 +3539,42 @@ def render_jailbreak_persuasion_probe_section(api_key, model_choice, provider):
         "run_probe_button",
         "🔍 Run: Probe",
     ):
-        if not api_key:
+        if provider != "Local vLLM" and not str(api_key or "").strip():
             st.error("Warning: Please enter your API key in the sidebar.")
-        elif not input_text_probe or not ground_truth_probe:
+        elif not input_text_probe.strip() or not ground_truth_probe.strip():
             st.warning("Warning: Please enter both the Input Text and the Ground Truth text.")
+        elif not model_choice:
+            st.warning("Warning: Please select a model in the sidebar.")
         else:
-            with st.spinner(f"Running persuasion probe with {model_choice}..."):
-                chunk_size = len(ground_truth_probe.split())
-                result = run_persuasion_probe(
-                    api_key,
-                    model_choice,
-                    provider,
-                    persuasion_strategy,
-                    input_text_probe,
-                    ground_truth_probe,
-                    chunk_size=chunk_size,
-                )
+            with detection_job("Persuasive Probe"):
+                with st.spinner(f"Running persuasion probe with {model_choice}..."):
+                    try:
+                        chunk_size = len(ground_truth_probe.split())
+                        result = run_persuasion_probe(
+                            api_key,
+                            model_choice,
+                            provider,
+                            persuasion_strategy,
+                            input_text_probe,
+                            ground_truth_probe,
+                            chunk_size=chunk_size,
+                        )
+                        generated_text, metrics_map, _ = unpack_text_result(result)
+                    except Exception as exc:
+                        detail = str(exc).strip() or type(exc).__name__
+                        if api_key:
+                            detail = detail.replace(str(api_key), "[redacted]")
+                        st.error(f"Probe failed: {detail}")
+                    else:
+                        st.success("Done:Probe completed. Review the overlap below.")
+                        render_direct_recall_diff(
+                            ground_truth_probe,
+                            generated_text,
+                            title="Ground Truth vs. Probe Output",
+                            metrics=metrics_map,
+                        )
+        finish_detection_job()
 
-                if isinstance(result, str) and result.startswith("Error"):
-                    st.error(f"Error:{result}")
-                else:
-                    generated_text, metrics = result
-                    metrics_map = metrics or {}
-                    st.success("Done:Probe completed. Review the overlap below.")
-                    render_direct_recall_diff(
-                        ground_truth_probe,
-                        generated_text,
-                        title="Ground Truth vs. Probe Output",
-                        metrics=metrics_map,
-                    )
 
 def render_sleek_attack_page(api_key, model_choice, provider):
     """Render the SLEEK Attack detection page."""
@@ -3564,7 +3684,7 @@ def render_sleek_attack_page(api_key, model_choice, provider):
     if run_sleek:
         if not document_text:
             st.warning("Warning: Please provide source content first.")
-        elif not api_key or not api_key.strip():
+        elif provider != "Local vLLM" and not str(api_key or "").strip():
             st.error(f"Warning: Please configure the API key for **{provider}** in the sidebar.")
         elif not model_choice:
             st.error("Warning: Please select a model in the sidebar.")
@@ -3572,6 +3692,7 @@ def render_sleek_attack_page(api_key, model_choice, provider):
             temperature = st.session_state.get('sleek_temperature', 0.7)
             top_p = st.session_state.get('sleek_top_p', 0.9)
             
+            st.session_state['sleek_evaluation_results'] = None
             with st.spinner(" Running SLEEK Attack evaluation..."):
                 try:
                     results = run_sleek_evaluation(
@@ -3596,6 +3717,14 @@ def render_sleek_attack_page(api_key, model_choice, provider):
         results = st.session_state['sleek_evaluation_results']
         
         st.markdown("####  SLEEK Attack Results")
+        if results.get('failed_evaluations', 0):
+            st.warning(f"Partial evaluation: {results.get('successful_evaluations', 0)} successful; {results['failed_evaluations']} failed.")
+        if results.get('successful_evaluations') == 0:
+            for question in results.get('questions', []):
+                if str(question.get('response') or '').lower().startswith('error'):
+                    st.error(question['response'])
+            st.error('No successful responses are available for a leakage assessment.')
+            return
         
         # Overall metrics
         st.markdown("**Overall Leakage Assessment:**")

@@ -179,6 +179,8 @@ def _normalise_query_inputs(query: Union[str, Sequence[str]]) -> List[str]:
     for item in query_iterable:
         if not item:
             continue
+        if not isinstance(item, str):
+            raise ValueError("Representational queries must be strings.")
         cleaned = item.strip()
         if cleaned:
             normalised.append(cleaned)
@@ -249,9 +251,8 @@ def run_representational_analysis(
                 inline_artifacts=inline_artifacts,
                 warnings=remote_result.warnings,
             )
-        except ImportError:
-            # If remote_execution module is not available, fall back to local execution
-            pass
+        except ImportError as exc:
+            raise RuntimeError("Remote representational execution dependencies are unavailable.") from exc
         except Exception as e:
             # If remote execution fails, raise the error
             raise RuntimeError(f"Remote execution failed: {str(e)}") from e
@@ -284,9 +285,14 @@ def run_representational_analysis(
     inline_artifacts: List[InlineArtifact] = []
     warnings: List[str] = []
 
-    before_snapshot: set[str] = set()
-    if feature_meta.output_kind == "directory" and target_path and target_path.exists():
-        before_snapshot = {str(p.resolve()) for p in target_path.glob("*.pdf")}
+    def artifact_signature(path):
+        stat = path.stat()
+        return stat.st_mtime_ns, stat.st_size
+
+    before_snapshot = {}
+    if target_path and target_path.exists():
+        candidates = target_path.glob("*.pdf") if feature_meta.output_kind == "directory" else [target_path]
+        before_snapshot = {str(path.resolve()): artifact_signature(path) for path in candidates if path.is_file()}
 
     try:
         assert _run_feature_analysis is not None  # for type checkers
@@ -344,7 +350,10 @@ Exception: {exc}
                     description=getattr(viz, "description", None),
                 )
             )
-        warnings.extend(getattr(analysis_payload, "warnings", []))
+        payload_warnings = getattr(analysis_payload, "warnings", [])
+        if not isinstance(payload_warnings, list) or any(not isinstance(item, str) for item in payload_warnings):
+            raise RuntimeError("Representational analysis returned invalid warning metadata.")
+        warnings.extend(payload_warnings)
     else:
         if target_path is not None:
             if feature_meta.output_kind == "directory":
@@ -352,13 +361,13 @@ Exception: {exc}
                 if target_path.exists():
                     latest_artifacts = sorted(str(p.resolve()) for p in target_path.glob("*.pdf"))
                 if before_snapshot:
-                    latest_artifacts = [path for path in latest_artifacts if path not in before_snapshot]
+                    latest_artifacts = [path for path in latest_artifacts if before_snapshot.get(path) != artifact_signature(Path(path))]
                 if latest_artifacts:
                     generated_artifacts = latest_artifacts
                 else:
                     warnings.append("Analysis completed but no artifacts were detected in the output directory.")
             else:
-                if target_path.exists():
+                if target_path.is_file() and before_snapshot.get(str(target_path.resolve())) != artifact_signature(target_path):
                     generated_artifacts = [str(target_path.resolve())]
                 else:
                     warnings.append("Analysis completed but no output artifact was produced.")
@@ -468,16 +477,20 @@ def run_unlearning_detection(
 
     for strategy_id in strategies:
         prompt = build_unlearning_prompt(strategy_id, target_description, custom_prompt=custom_prompt)
-        response = get_llm_completion(
-            prompt,
-            api_key,
-            model_name,
-            provider,
-            temperature=temperature,
-            top_p=top_p,
-        )
+        try:
+            response = get_llm_completion(
+                prompt, api_key, model_name, provider,
+                temperature=temperature, top_p=top_p, request_timeout=120,
+            )
+            if not isinstance(response, str) or not response.strip():
+                response = "Error: The unlearning probe returned no usable text."
+        except Exception as exc:
+            detail = str(exc).replace(api_key, "[redacted]") if api_key else str(exc)
+            response = f"Error: Unlearning probe failed: {detail}"
 
         if isinstance(response, str) and response.startswith("Error"):
+            if api_key:
+                response = response.replace(api_key, "[redacted]")
             results.append(
                 UnlearningProbeResult(
                     strategy_id=strategy_id,

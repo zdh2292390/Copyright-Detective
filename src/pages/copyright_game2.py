@@ -559,7 +559,7 @@ def _render_batch(
                 )
     if result.errors:
         st.warning(
-            "The provider returned a usable partial batch, then stopped: "
+            "Only successful responses are scored in this partial batch. Failed runs: "
             + " | ".join(result.errors)
         )
 
@@ -838,7 +838,7 @@ def _render_provider_workspace(
             render_background_job_status(
                 _job_key(provider),
                 completed_message=(
-                    f"{provider} scaling completed. Every response is available below."
+                    f"{provider} scaling finished. Results and any request failures are available below."
                 ),
             )
 

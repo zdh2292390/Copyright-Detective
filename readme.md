@@ -40,6 +40,32 @@ streamlit run app.py
 
 ---
 
+## Analysis execution reliability
+
+The existing prompts, sampling controls, sample counts and scientific scoring formulas are preserved. Failed or malformed responses are shown separately and excluded from scores; partial evaluations state their coverage in the UI and PDF. Reports use the model/settings captured for their analysis, and a PDF failure does not discard completed results or repeat inference.
+
+Shared provider requests default to a 120-second request timeout; internal callers can override it. Client connections and API slots are released on failure. Remote representational tasks retry temporary status-check failures within the polling deadline, without automatically resubmitting a possibly accepted task. Game scaling continues independent runs after a temporary failure and stops repeated requests for invalid credentials or model configuration; official competition scores still require a complete successful batch.
+
+## Document analysis completion and recovery
+
+The chunk preview is the planned number of comparisons. Results and PDF reports show successful, failed, and pending chunks separately; only a run with every planned comparison successful is marked complete. A partial report describes only the analyzed scope.
+
+Document analysis runs in a bounded background worker pool. Refreshing, switching pages, or reconnecting does not interrupt a running task while the app server stays up. Duplicate submissions of an active task are rejected. **Stop analysis** stops before the next API call, or immediately during retry backoff; an in-flight request finishes first and its successful result is kept.
+
+Each chunk and active attempt is saved in a local SQLite checkpoint. Bookmark the page's recovery URL to restore the saved document, original settings, results, and failure reasons after reconnecting or restarting the app. Click **Resume saved analysis** with the original provider's API key; re-uploading the document is unnecessary. Resume processes only failed or pending chunks. API keys stay in worker memory and are excluded from checkpoints. Signed-in analyses require the creating account; anonymous recovery URLs provide access to their document and should be kept private. **Clear Cache** deletes the saved task and report after the worker stops.
+
+Temporary errors (including rate limits, timeouts, and service failures) are retried up to three times per chunk with exponential backoff and jitter. Provider retry-delay hints are honored up to 60 seconds. Document calls use a 120-second request timeout and disable SDK retries so the worker owns the retry budget. Persistent service/authentication/configuration errors pause the run; fix the key, quota, or service issue before resuming. Empty or blocked model responses remain failed while later chunks are processed. Corrupt checkpoints and non-finite metrics are rejected rather than reported as complete. A checkpoint write failure pauses outbound work and retains the latest result in memory while that server remains available.
+
+Checkpoints default to `.cache/document-analysis/checkpoints.sqlite3` (ignored by Git). Set `COPYRIGHT_DETECTIVE_DOCUMENT_CHECKPOINT_DIR` to a persistent disk directory to retain them across deployments; storage supplied by an ephemeral host can disappear on redeployment. Worker scheduling and duplicate protection currently target a single Streamlit server process. Results created before the checkpoint feature must be rerun to verify full coverage.
+
+Run the regression tests without API calls:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+---
+
 ## 🌐 Sidebar — vLLM Model Setup & Usage
 
 ### Scenario A — Run the App Locally, Serve vLLM Remotely (Private Network / No Public Exposure, you can also use the method in scenario B)

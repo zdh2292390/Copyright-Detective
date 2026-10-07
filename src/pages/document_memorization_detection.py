@@ -5,6 +5,7 @@ This module provides the UI for document-scale memorization detection by analyzi
 PDF/TXT documents for potential copyright infringement.
 """
 
+import hashlib
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,25 +15,30 @@ from src.pages.sampling_controls import render_temperature_top_p
 from src.upload_cache import clear_upload_cache, resolve_uploaded_file
 
 from src.direct_recall import (
-    compare_texts,
     extract_text_from_document,
     split_text_into_chunks,
 )
-from src.adversarial_persuasion_detection import run_persuasion_probe
 from src.prompt_utils import get_full_prompt
 from src.components import render_prompt_preview
 from src.pdf_preview import render_pdf_results_section
-from src.job_guard import detection_job, finish_detection_job, render_run_button, reset_detection_job, wd
+from src.document_analysis import (
+    analysis_fingerprint,
+    analysis_results,
+    new_analysis_state,
+)
+from src.document_checkpoints import CheckpointError
+from src.document_jobs import DOCUMENT_JOBS
+from src.job_guard import finish_detection_job, render_run_button, reset_detection_job
 from src.floating_clear_cache import (
-    build_reset_and_rerun_handler,
     register_clear_cache_handler,
     set_active_clear_cache_id,
-    show_api_failure_if_needed,
     show_error_with_clear_cache,
 )
 
 PDF_CLEAR_CACHE_ID = "document_memorization"
 PDF_UPLOAD_CACHE_KEY = "pdf_cached_upload"
+PDF_JOB_TOKEN_KEY = "pdf_analysis_job_token"
+PDF_JOB_QUERY_KEY = "document_analysis"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_DATA_DIR = REPO_ROOT / "data"
 
@@ -107,9 +113,8 @@ def _resolve_active_document(
 def _document_cache_id(document_file) -> str | None:
     if document_file is None:
         return None
-    if isinstance(document_file, ExampleDocument):
-        return f"example:{document_file.path.resolve()}"
-    return f"{document_file.name}_{len(document_file.getvalue())}"
+    content_hash = hashlib.sha256(document_file.getvalue()).hexdigest()
+    return f"{document_file.name}:{content_hash}"
 
 
 def _trigger_pdf_rerun() -> None:
@@ -123,6 +128,26 @@ def _trigger_pdf_rerun() -> None:
 
 
 def _clear_pdf_cache() -> None:
+    token = st.session_state.get(PDF_JOB_TOKEN_KEY)
+    if token:
+        try:
+            if DOCUMENT_JOBS.is_running(token):
+                DOCUMENT_JOBS.stop(token, owner_id=st.session_state.get("user_id"))
+                st.warning("Stop requested. Wait for the current request to finish, then clear the cache.")
+                return
+            DOCUMENT_JOBS.delete(token, owner_id=st.session_state.get("user_id"))
+        except (CheckpointError, ValueError) as exc:
+            st.error(f"Could not remove the saved analysis: {exc}")
+            return
+    st.session_state.pop(PDF_JOB_TOKEN_KEY, None)
+    st.query_params.pop(PDF_JOB_QUERY_KEY, None)
+    for key in (
+        "pdf_analysis_state", "pdf_report_bytes", "pdf_report_fingerprint",
+        "pdf_analysis_model", "pdf_analysis_chunk_size",
+        "pdf_analysis_continuation_method", "pdf_analysis_temperature",
+        "pdf_analysis_top_p",
+    ):
+        st.session_state.pop(key, None)
     st.session_state.pop("pdf_analysis_results", None)
     st.session_state.pop("pdf_analysis_score_type", None)
     st.session_state.pop("pdf_analysis_top_k", None)
@@ -195,7 +220,7 @@ def _render_chunk_count_preview(document_file, chunk_size: int) -> None:
 
     if pair_count > 0:
         st.info(
-            f"📊 **{pair_count}** chunk{'s' if pair_count != 1 else ''} will be processed "
+            f"📊 **{pair_count:,}** chunk{'s' if pair_count != 1 else ''} will be processed "
             f"({total_words:,} words total · chunk size {chunk_size} words · 50-word overlap). "
             f"Each chunk triggers one LLM call."
         )
@@ -215,9 +240,122 @@ def _get_verbose_generation_instruction() -> str:
     ).strip()
 
 
+def _sync_document_job(state) -> None:
+    st.session_state["pdf_analysis_state"] = state
+    st.session_state["pdf_analysis_results"] = analysis_results(state)
+    settings = state["settings"]
+    st.session_state["pdf_active_document_name"] = settings["filename"]
+    st.session_state["pdf_analysis_model"] = settings["model"]
+    st.session_state["pdf_analysis_chunk_size"] = settings["chunk_size"]
+
+
+def _restore_document_job():
+    token = st.query_params.get(PDF_JOB_QUERY_KEY) or st.session_state.get(PDF_JOB_TOKEN_KEY)
+    if not token:
+        return None
+    try:
+        state = DOCUMENT_JOBS.get(token, owner_id=st.session_state.get("user_id"))
+        if state is None:
+            raise CheckpointError("The saved analysis is no longer available. Start a new run.")
+        st.session_state[PDF_JOB_TOKEN_KEY] = token
+        _sync_document_job(state)
+        return token
+    except (CheckpointError, ValueError) as exc:
+        # Do not display another account's previously cached document after sign-out.
+        st.session_state.pop("pdf_analysis_state", None)
+        st.session_state.pop("pdf_analysis_results", None)
+        st.session_state.pop("pdf_report_bytes", None)
+        st.error(f"Could not restore the saved analysis: {exc}")
+        return None
+
+
+def _render_saved_pdf_results(state) -> None:
+    settings = state["settings"]
+    render_pdf_results_section(
+        analysis_results(state), DocumentRef(settings["filename"]), settings["model"],
+        default_score_type=st.session_state.get("pdf_analysis_score_type") or "ROUGE-L",
+        default_top_k=st.session_state.get("pdf_analysis_top_k") or 5,
+        continuation_method=settings["continuation_method"],
+        temperature=settings["temperature"], top_p=settings["top_p"],
+        chunk_size=settings["chunk_size"], analysis_progress=state,
+    )
+    if state.get("failures"):
+        with st.expander(f"Failed chunks ({len(state['failures'])})"):
+            for index, error in sorted(state["failures"].items()):
+                st.write(f"Chunk {index + 1}: {error}")
+
+
+@st.fragment(run_every=2)
+def _poll_document_job(token, owner_id) -> None:
+    try:
+        state = DOCUMENT_JOBS.get(token, owner_id=owner_id)
+    except (CheckpointError, ValueError) as exc:
+        st.error(f"Could not read analysis progress: {exc}")
+        return
+    if state is None:
+        st.error("The saved analysis is no longer available.")
+        return
+    _sync_document_job(state)
+    if not DOCUMENT_JOBS.is_running(token):
+        # Remove timed polling after the task ends and render its final report.
+        st.rerun()
+    completed = len(state["results"])
+    total = state["total_chunks"]
+    st.progress(
+        completed / max(total, 1),
+        text=f"Analyzing chunk {state.get('current_chunk') or 1}/{total} · {completed} succeeded · {len(state['failures'])} failed",
+    )
+    st.caption("Analysis continues in the background if you refresh or switch pages. Progress is saved after each chunk.")
+    if state.get("retry_in_seconds"):
+        st.caption(f"Temporary API error; retry {state.get('retry_attempt')} after {state['retry_in_seconds']:.1f} seconds.")
+    if state.get("stop_requested"):
+        st.info("Stop requested. Analysis will stop when the current API request finishes; completed chunks are kept.")
+    if st.button("Stop analysis", key="stop_pdf_analysis", disabled=bool(state.get("stop_requested"))):
+        DOCUMENT_JOBS.stop(token, owner_id=owner_id)
+        st.info("Stop requested; completed chunks will be preserved.")
+
+
+def _render_document_job(token, api_key, provider) -> None:
+    owner_id = st.session_state.get("user_id")
+    state = DOCUMENT_JOBS.get(token, owner_id=owner_id)
+    if state is None:
+        return
+    _sync_document_job(state)
+    settings = state["settings"]
+    st.markdown("---")
+    st.markdown(f"**Saved analysis: {settings['filename']} · {settings['model']}**")
+    st.caption("Bookmark this page to restore this analysis after reconnecting. The recovery link provides access to this document; keep it private.")
+    if DOCUMENT_JOBS.is_running(token):
+        _poll_document_job(token, owner_id)
+        return
+    if state["status"] == "running":
+        # The worker may have finished between the snapshot and active check.
+        state = DOCUMENT_JOBS.get(token, owner_id=owner_id)
+        if state is None:
+            return
+        _sync_document_job(state)
+    if state["status"] != "complete":
+        if provider != settings["provider"]:
+            st.info(f"Select {settings['provider']} in the sidebar to resume this saved analysis.")
+        if st.button(
+            "Resume saved analysis", key="resume_saved_pdf_analysis",
+            disabled=(not api_key and settings["provider"] != "Local vLLM") or provider != settings["provider"],
+            help="Uses the saved document and generation settings, even if the controls above have changed.",
+        ):
+            try:
+                DOCUMENT_JOBS.submit(token, api_key, owner_id=owner_id)
+                _trigger_pdf_rerun()
+            except (CheckpointError, ValueError) as exc:
+                st.error(f"Could not resume analysis: {exc}")
+    _render_saved_pdf_results(state)
+
+
 def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_header: bool = True):
     """Render the document-scale analysis workflow for PDF/TXT uploads."""
     
+    token = _restore_document_job()
+    job_running = bool(token and DOCUMENT_JOBS.is_running(token))
+
     # Initialize session state for PDF Analysis
     if 'pdf_chunk_size' not in st.session_state:
         st.session_state['pdf_chunk_size'] = 200
@@ -253,7 +391,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                 "Use a built-in example from the `data/` folder or upload your own file."
             )
         with button_col:
-            if st.button("🗑️ Clear Cache", key="clear_pdf_cache", help="Remove cached PDF analysis results"):
+            if st.button("🗑️ Clear Cache", key="clear_pdf_cache", help="Remove cached PDF analysis results", disabled=job_running):
                 _clear_pdf_cache()
 
     # Initialize variables to avoid UnboundLocalError
@@ -326,25 +464,25 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
     with config_col1:
         chunk_size = st.number_input(
             'Change chunk size (words):',
-            min_value=50,
+            min_value=75,
             max_value=2000,
-            value=st.session_state['pdf_chunk_size'],
+            value=max(75, st.session_state['pdf_chunk_size']),
             step=25,
-            help='Number of words per text chunk (must be between 50 and 2000)',
+            help='Number of words per text chunk (must be between 75 and 2000)',
             key='pdf_chunk_size_input'
         )
         # Custom validation with English error message
         if chunk_size > 2000:
-            st.error("⚠️ Chunk size cannot exceed 2000 words. Please enter a value between 50 and 2000.")
+            st.error("⚠️ Chunk size cannot exceed 2000 words. Please enter a value between 75 and 2000.")
             chunk_size = 2000
             st.session_state['pdf_chunk_size'] = 2000
-        elif chunk_size < 50:
-            st.error("⚠️ Chunk size must be at least 50 words. Please enter a value between 50 and 2000.")
-            chunk_size = 50
-            st.session_state['pdf_chunk_size'] = 50
+        elif chunk_size < 75:
+            st.error("⚠️ Chunk size must be at least 75 words. Please enter a value between 75 and 2000.")
+            chunk_size = 75
+            st.session_state['pdf_chunk_size'] = 75
         else:
             st.session_state['pdf_chunk_size'] = chunk_size
-        st.caption("Chunk size must be between 50 and 2000 words to run document analysis.")
+        st.caption("Chunk size must be between 75 and 2000 words to run document analysis.")
     with config_col2:
         continuation_method = st.selectbox(
             'Choose a prompting method',
@@ -408,11 +546,53 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         col_top_p=ctrl_col2,
     )
 
+    # The preview and execution use the same extracted text and chunk settings.
+    document_text = _get_document_text_preview(document_file)
+    analysis_settings = {
+        "filename": document_file.name if document_file else "document.pdf",
+        "model": model_choice,
+        "provider": provider,
+        "chunk_size": chunk_size,
+        "overlap": 50,
+        "continuation_method": continuation_method,
+        "temperature": temperature,
+        "top_p": top_p,
+        "custom_template": preview_custom_template,
+        "extra_prompt_instructions": long_output_instruction,
+        "base_url": st.session_state.get("sidebar_local_vllm_base_url", "http://localhost:8000/v1") or "http://localhost:8000/v1"
+        if provider == "Local vLLM" else None,
+    }
+    fingerprint = (
+        analysis_fingerprint(document_text, analysis_settings)
+        if document_text and not document_text.startswith("Error") else None
+    )
+    saved_analysis = st.session_state.get("pdf_analysis_state")
+    resume_analysis = bool(
+        saved_analysis and saved_analysis.get("fingerprint") == fingerprint
+        and len(saved_analysis["results"]) < saved_analysis["total_chunks"]
+    )
+    button_label = "🔍 Run: Document Memorization Detection"
+    if resume_analysis:
+        button_label = (
+            f"▶️ Resume document analysis "
+            f"({len(saved_analysis['results'])}/{saved_analysis['total_chunks']} complete)"
+        )
+        st.caption(
+            "Resume retries failed and unprocessed chunks using these same settings. "
+            "Completed chunks are kept; do not clear the cache to resume."
+        )
+    elif saved_analysis and saved_analysis.get("status") != "complete":
+        st.caption(
+            "An incomplete analysis is saved. Restore its document and generation "
+            "settings to resume, or use Run to start a new analysis with these settings."
+        )
+
     analyze_document = render_run_button(
         "Document Memorization Detection",
         "analyze_pdf_button",
-        "🔍 Run: Document Memorization Detection",
+        button_label,
         type="primary",
+        disabled=job_running,
     )
     st.markdown(
         """
@@ -427,130 +607,66 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
     if analyze_document:
         set_active_clear_cache_id(PDF_CLEAR_CACHE_ID)
         try:
-            st.session_state.pop('pdf_report_bytes', None)
-
-            temperature = st.session_state.get('pdf_temperature', temperature)
-            top_p = st.session_state.get('pdf_top_p', top_p)
-
-            if score_type is None:
-                score_type = "ROUGE-L"
-            if top_k is None:
-                top_k = 5
-
-            if not api_key:
+            if not api_key and provider != "Local vLLM":
                 show_error_with_clear_cache("⚠️ Please enter your API key in the sidebar.")
                 return
             if document_file is None:
-                if source_mode == "Example Document":
-                    st.error("⚠️ Please select an example document before running the analysis.")
-                else:
-                    st.error("⚠️ Please upload a document before running the analysis.")
+                st.error("⚠️ Please select or upload a document before running the analysis.")
                 return
-            custom_template = None
-            if continuation_method == "Custom Prompt":
-                custom_template = (custom_pdf_prompt or "").strip()
-                if not custom_template:
-                    st.error("⚠️ Please provide a custom prompt template before running the analysis.")
+            if not document_text or document_text.startswith("Error"):
+                st.error(document_text or "⚠️ The document contains no extractable text.")
+                return
+            if continuation_method == "Custom Prompt" and not preview_custom_template:
+                st.error("⚠️ Please provide a custom prompt template before running the analysis.")
+                return
+            if not resume_analysis:
+                chunk_pairs = split_text_into_chunks(document_text, chunk_size=chunk_size)
+                if not chunk_pairs:
+                    st.warning("⚠️ Could not split the document into enough text chunks for analysis.")
                     return
-
-            with detection_job("Document Memorization Detection"):
-                try:
-                    st.session_state["pdf_active_document_name"] = document_file.name
-                    progress_bar = st.progress(0, text=f"🔄 Analyzing document with {model_choice}...")
-                    document_text = extract_text_from_document(document_file)
-                    if isinstance(document_text, str) and show_api_failure_if_needed(document_text):
-                        return
-                    chunk_pairs = split_text_into_chunks(document_text, chunk_size=chunk_size)
-                    if not chunk_pairs:
-                        st.warning("⚠️ Could not split the document into enough text chunks for analysis.")
-                        return
-
-                    results = []
-                    total = len(chunk_pairs)
-                    for i, (upper, lower) in enumerate(chunk_pairs):
-                        target_words = len(lower.split()) if lower else chunk_size
-                        if continuation_method != "Normal Continuation":
-                            result = run_persuasion_probe(
-                                api_key,
-                                model_choice,
-                                provider,
-                                continuation_method,
-                                upper,
-                                lower,
-                                chunk_size=target_words,
-                                temperature=temperature,
-                                top_p=top_p,
-                                custom_template=custom_template,
-                                target_word_count=target_words,
-                                extra_prompt_instructions=long_output_instruction,
-                            )
-                        else:
-                            result = compare_texts(
-                                upper,
-                                lower,
-                                api_key,
-                                model_name=model_choice,
-                                provider=provider,
-                                chunk_size=target_words,
-                                temperature=temperature,
-                                top_p=top_p,
-                                continuation_method=continuation_method,
-                                custom_template=custom_template,
-                                target_word_count=target_words,
-                                extra_prompt_instructions=long_output_instruction,
-                            )
-                        if isinstance(result, str) and show_api_failure_if_needed(result):
-                            return
-
-                        generated_text, metrics = result
-                        metrics_map = metrics or {}
-                        results.append((upper, lower, generated_text, dict(metrics_map)))
-                        st.session_state["pdf_analysis_results"] = list(results)
-                        progress_bar.progress((i + 1)/total, text=f"🔄 Processing chunk {i+1}/{total} · {continuation_method}")
-
-                    st.session_state["pdf_analysis_score_type"] = score_type
-                    st.session_state["pdf_analysis_top_k"] = top_k
-                    st.session_state["pdf_analysis_continuation_method"] = continuation_method
-                    st.session_state["pdf_analysis_temperature"] = temperature
-                    st.session_state["pdf_analysis_top_p"] = top_p
-
-                    render_pdf_results_section(
-                        results,
-                        document_file,
-                        model_choice,
-                        default_score_type=score_type,
-                        default_top_k=top_k,
-                        continuation_method=continuation_method,
-                        temperature=temperature,
-                        top_p=top_p,
-                    )
-
-                    progress_bar.progress(1.0, text=f"✅ Completed analysis with {model_choice}. Processed {total} chunks.")
-                except Exception as e:
-                    if not show_api_failure_if_needed(str(e)):
-                        show_error_with_clear_cache(f"❌ Error during analysis: {e}")
+                state = new_analysis_state(fingerprint, analysis_settings, len(chunk_pairs))
+                token = DOCUMENT_JOBS.create(
+                    state, chunk_pairs, owner_id=st.session_state.get("user_id")
+                )
+                st.session_state[PDF_JOB_TOKEN_KEY] = token
+                st.query_params[PDF_JOB_QUERY_KEY] = token
+            elif not token:
+                # Upgrade the preceding in-session checkpoint to a durable task.
+                chunk_pairs = split_text_into_chunks(document_text, chunk_size=chunk_size)
+                token = DOCUMENT_JOBS.create(
+                    saved_analysis, chunk_pairs, owner_id=st.session_state.get("user_id")
+                )
+                st.session_state[PDF_JOB_TOKEN_KEY] = token
+                st.query_params[PDF_JOB_QUERY_KEY] = token
+            st.session_state["pdf_analysis_score_type"] = "ROUGE-L"
+            st.session_state["pdf_analysis_top_k"] = 5
+            st.session_state.pop("pdf_report_bytes", None)
+            st.session_state.pop("pdf_report_fingerprint", None)
+            DOCUMENT_JOBS.submit(token, api_key, owner_id=st.session_state.get("user_id"))
+        except (CheckpointError, ValueError) as exc:
+            st.error(f"Could not start document analysis: {exc}")
         finally:
             finish_detection_job()
 
+    if token:
+        try:
+            _render_document_job(token, api_key, provider)
+        except (CheckpointError, ValueError) as exc:
+            st.error(f"Could not read the saved analysis: {exc}")
     elif st.session_state.get("pdf_analysis_results"):
-        cached_results = st.session_state.get("pdf_analysis_results") or []
-        cached_score_type = st.session_state.get("pdf_analysis_score_type", "ROUGE-L")
-        cached_top_k = st.session_state.get("pdf_analysis_top_k", 5)
-        cached_continuation_method = st.session_state.get("pdf_analysis_continuation_method", "Normal Continuation")
-        cached_temperature = st.session_state.get("pdf_analysis_temperature", 0.7)
-        cached_top_p = st.session_state.get("pdf_analysis_top_p", 0.9)
-        display_document = document_file or DocumentRef(
-            st.session_state.get("pdf_active_document_name", "document.pdf")
-        )
-
-        render_pdf_results_section(
-            cached_results,
-            display_document,
-            model_choice,
-            default_score_type=cached_score_type,
-            default_top_k=cached_top_k,
-            continuation_method=cached_continuation_method,
-            temperature=cached_temperature,
-            top_p=cached_top_p,
-        )
-
+        # Historical results lack a durable task; report their coverage as unverified.
+        state = st.session_state.get("pdf_analysis_state")
+        if state:
+            _render_saved_pdf_results(state)
+        else:
+            render_pdf_results_section(
+                st.session_state["pdf_analysis_results"],
+                DocumentRef(st.session_state.get("pdf_active_document_name", "document.pdf")),
+                st.session_state.get("pdf_analysis_model", "Unknown (legacy run)"),
+                default_score_type=st.session_state.get("pdf_analysis_score_type") or "ROUGE-L",
+                default_top_k=st.session_state.get("pdf_analysis_top_k") or 5,
+                continuation_method=st.session_state.get("pdf_analysis_continuation_method", "Normal Continuation"),
+                temperature=st.session_state.get("pdf_analysis_temperature", 0.7),
+                top_p=st.session_state.get("pdf_analysis_top_p", 0.9),
+                chunk_size=st.session_state.get("pdf_analysis_chunk_size", 200),
+            )

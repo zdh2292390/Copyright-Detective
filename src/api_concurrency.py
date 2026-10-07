@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import math
 import threading
 from contextlib import contextmanager
 from typing import Iterator, Optional
@@ -33,6 +34,8 @@ def _acquire_timeout_seconds() -> Optional[float]:
         value = float(raw)
     except (TypeError, ValueError):
         return DEFAULT_ACQUIRE_TIMEOUT_SECONDS
+    if not math.isfinite(value):
+        return DEFAULT_ACQUIRE_TIMEOUT_SECONDS
     if value < 0:
         return None
     return value
@@ -47,7 +50,10 @@ def acquire_api_concurrency(timeout: Optional[float] = None) -> None:
     if wait is None:
         _API_SEMAPHORE.acquire()
         return
-    if not _API_SEMAPHORE.acquire(timeout=max(0.0, float(wait))):
+    wait = float(wait)
+    if not math.isfinite(wait):
+        raise ValueError("API slot timeout must be finite.")
+    if not _API_SEMAPHORE.acquire(timeout=max(0.0, wait)):
         raise ApiConcurrencyTimeout(
             f"Too many concurrent API requests (limit {_MAX_CONCURRENT_API}). "
             "Please retry shortly."

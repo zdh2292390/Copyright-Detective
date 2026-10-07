@@ -252,6 +252,10 @@ def run_persuasion_probe(
     mode: str = "Zero-Shot",
     target_word_count: Optional[int] = None,
     extra_prompt_instructions: Optional[str] = None,
+    *,
+    request_timeout: Optional[float] = None,
+    request_max_retries: Optional[int] = None,
+    base_url: Optional[str] = None,
 ) -> tuple | str:
     """
     Runs the persuasion probe, gets the LLM completion, and compares it with the ground truth.
@@ -272,7 +276,14 @@ def run_persuasion_probe(
     )
     if extra_prompt_instructions:
         prompt = f"{prompt}\n\n{extra_prompt_instructions.strip()}"
-    generated_text = get_llm_completion(prompt, api_key, model_name, provider, temperature=temperature, top_p=top_p)
+    generated_text = get_llm_completion(
+        prompt, api_key, model_name, provider,
+        temperature=temperature,
+        top_p=top_p,
+        request_timeout=request_timeout,
+        request_max_retries=request_max_retries,
+        base_url=base_url,
+    )
 
     if isinstance(generated_text, str) and generated_text.startswith("Error"):
         return generated_text

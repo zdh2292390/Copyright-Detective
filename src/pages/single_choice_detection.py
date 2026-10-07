@@ -4,6 +4,8 @@ Single-choice Question Detection Module
 This module provides the UI for single-choice question-based knowledge memorization detection.
 """
 
+import hashlib
+import json
 import textwrap
 from collections import Counter
 from pathlib import Path
@@ -29,6 +31,23 @@ from src.job_guard import detection_job, render_run_button, wd
 from src.upload_cache import resolve_uploaded_file
 
 SC_UPLOAD_CACHE_KEY = "sc_cached_upload"
+
+
+def _source_identity(mode, *, text="", document=None, dataset="", indices=""):
+    payload = {"mode": mode, "text": text, "dataset": dataset, "indices": indices}
+    if document is not None:
+        payload["document"] = hashlib.sha256(document.getvalue()).hexdigest()
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _sync_source_identity(identity):
+    previous = st.session_state.get("sc_source_identity")
+    if previous is not None and previous != identity:
+        st.session_state["sc_generated_mcqs"] = []
+        st.session_state["sc_evaluation_results"] = None
+        st.session_state["sc_document_text"] = ""
+        st.session_state.pop("sc_evaluation_metadata", None)
+    st.session_state["sc_source_identity"] = identity
 
 
 def render_single_choice_detection_page(api_key, model_choice, provider):
@@ -86,6 +105,7 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
         if st.session_state.get("sc_input_text", "").strip():
             excerpt_preview = st.session_state["sc_input_text"].strip()
             st.caption(f"Text length: {len(excerpt_preview)} characters · {len(excerpt_preview.split())} words")
+        _sync_source_identity(_source_identity(source_mode, text=st.session_state.get("sc_input_text", "").strip()))
     elif source_mode == "Upload Document":
         st.markdown("**📎 Upload your document**")
         uploaded_document = st.file_uploader(
@@ -95,6 +115,7 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
             key="sc_document_upload",
         )
         uploaded_document = resolve_uploaded_file(SC_UPLOAD_CACHE_KEY, uploaded_document)
+        _sync_source_identity(_source_identity(source_mode, document=uploaded_document))
     elif source_mode == "Predefined Examples":
         st.markdown("**📚 Select predefined evaluation dataset**")
         dataset_options = ["arXivTection", "BookTection"]
@@ -117,6 +138,7 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
                 help="Enter question indices (comma-separated, ranges with hyphens). Leave empty to load all questions.",
                 key="sc_question_indices",
             )
+        _sync_source_identity(_source_identity(source_mode, dataset=selected_dataset, indices=question_indices.strip()))
         # Show selected questions count
         if question_indices.strip():
             try:
@@ -208,7 +230,7 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
                         indices_to_load = parse_question_indices(question_indices.strip())
                     except ValueError as e:
                         st.error(f"Invalid question indices format: {e}")
-                        indices_to_load = None
+                        return
                 
                 generated_mcqs = load_predefined_examples(selected_dataset, indices_to_load)
                 if generated_mcqs:
@@ -289,7 +311,7 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
 
     if generate_questions:
         effective_api_key = generation_api_key or api_key
-        if not effective_api_key:
+        if not effective_api_key and generation_provider != "Local vLLM":
             st.error("⚠️ Please provide an API key for question generation.")
         else:
             with detection_job("Single-Choice Question Generation"):
@@ -423,12 +445,14 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
     if run_single_choice_eval:
         if not st.session_state['sc_generated_mcqs']:
             st.warning("⚠️ Generate single-choice questions before running the evaluation.")
-        elif not api_key or not api_key.strip():
+        elif provider != "Local vLLM" and (not api_key or not api_key.strip()):
             st.error(f"⚠️ Configure an API key for {provider} in the sidebar.")
         elif not model_choice:
             st.error("⚠️ Select a target model in the sidebar before running evaluation.")
         else:
             with detection_job("Single-Choice Evaluation"):
+                st.session_state['sc_evaluation_results'] = None
+                st.session_state.pop("sc_evaluation_metadata", None)
                 total_questions = len(st.session_state['sc_generated_mcqs'])
                 total_items = total_questions * st.session_state['sc_eval_runs']
                 progress_bar = st.progress(0, text="🔄 Starting single-choice evaluation...")
@@ -456,7 +480,15 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
                         st.error("❌ Evaluation returned no results. Please try again.")
                     else:
                         st.session_state['sc_evaluation_results'] = results
-                        st.success(f"✅ Completed {total_items} single-choice evaluations.")
+                        st.session_state["sc_evaluation_metadata"] = {
+                            "model": model_choice, "provider": provider, "source_mode": source_mode,
+                        }
+                        summary = summarize_single_choice_results(results)
+                        failed = summary.get("failed_attempts", 0)
+                        if failed:
+                            st.warning(f"Completed {summary.get('successful_attempts', 0)} evaluations; {failed} attempts failed and have no score.")
+                        else:
+                            st.success(f"✅ Completed {total_items} single-choice evaluations.")
                 except Exception as exc:  # noqa: BLE001
                     progress_bar.empty()
                     st.error(f"❌ Evaluation failed: {exc}")
@@ -486,7 +518,7 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
                 {
                     "label": "Accuracy",
                     "icon": "🎯",
-                    "value": f"{accuracy * 100:.1f}%",
+                    "value": f"{accuracy * 100:.1f}%" if accuracy is not None else "—",
                     "description": "Correct option rate",
                     "range": "",
                 },
@@ -536,6 +568,9 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
                 for run_idx, run_results in enumerate(results, start=1):
                     if question_idx - 1 < len(run_results):
                         eval_result = run_results[question_idx - 1]
+                        if eval_result.get("error"):
+                            st.error(f"Run {run_idx}: {eval_result['error']}")
+                            continue
                         status = "✅" if eval_result.get('is_correct') else "❌"
                         st.write(
                             f"Run {run_idx}: chose {eval_result.get('llm_choice', '?')} {status}"
@@ -561,7 +596,9 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
                         st.write(st.session_state['sc_document_text'][:5000])
 
         # Display memorization risk assessment at the end (outside the loop)
-        if accuracy >= 0.75:
+        if accuracy is None:
+            st.warning("No successful model responses are available for a memorization score.")
+        elif accuracy >= 0.75:
             st.error(
                 "⚠️ **High memorization risk** — the model consistently prefers the verbatim option."
             )
@@ -586,8 +623,14 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
         }
 
         # Generate PDF report
-        pdf_bytes = generate_single_choice_question_pdf_report(pdf_data, model_choice, provider, source_mode)
-
-        # PDF Preview
-        render_pdf_preview_with_blob(pdf_bytes, title="📋 Audit Report Preview", iframe_height=450)
+        metadata = st.session_state.get("sc_evaluation_metadata", {})
+        try:
+            pdf_bytes = generate_single_choice_question_pdf_report(
+                pdf_data, metadata.get("model", model_choice),
+                metadata.get("provider", provider), metadata.get("source_mode", source_mode),
+            )
+            if pdf_bytes:
+                render_pdf_preview_with_blob(pdf_bytes, title="📋 Audit Report Preview", iframe_height=450)
+        except Exception as exc:
+            st.warning(f"PDF report is unavailable: {exc}. Evaluation results remain available above.")
 

@@ -4,6 +4,7 @@ import math
 import openai
 import random
 import re
+from contextlib import ExitStack
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -65,6 +66,7 @@ _GEMINI_MODEL_ALIASES = {
 }
 
 _GEMINI_DEFAULT_MODEL = "gemini-3.5-flash"
+_GEMINI_DEFAULT_TIMEOUT_SECONDS = 120.0
 
 
 def _normalize_gemini_model(model_name: Optional[str]) -> str:
@@ -111,7 +113,7 @@ def _build_messages_for_model(
 
 
 def _require_api_key(api_key: Optional[str], provider: str) -> Optional[str]:
-    if str(api_key or "").strip():
+    if provider == "Local vLLM" or str(api_key or "").strip():
         return None
     return (
         f"Error: {provider} API key is missing. "
@@ -130,6 +132,28 @@ def _extract_chat_message_text(response) -> str:
         return f"Error: Model refused the request: {refusal}"
     finish_reason = getattr(choice, "finish_reason", "") or "unknown"
     return f"Error: Model returned empty content (finish_reason={finish_reason})."
+
+
+def _extract_gemini_response_text(response) -> str:
+    """Keep Gemini's empty/blocked response reasons instead of raising on None."""
+    text = getattr(response, "text", None)
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+
+    details = []
+    candidates = getattr(response, "candidates", None) or []
+    if candidates:
+        finish_reason = getattr(candidates[0], "finish_reason", None)
+        if finish_reason:
+            reason = getattr(finish_reason, "value", finish_reason)
+            details.append(f"finish_reason={reason}")
+    feedback = getattr(response, "prompt_feedback", None)
+    block_reason = getattr(feedback, "block_reason", None)
+    if block_reason:
+        reason = getattr(block_reason, "value", block_reason)
+        details.append(f"block_reason={reason}")
+    reason_text = ", ".join(details) or "no text candidate returned"
+    return f"Error: Gemini returned empty content ({reason_text})."
 
 
 def _is_unsupported_max_tokens_error(exc: Exception) -> bool:
@@ -423,6 +447,18 @@ def enforce_exact_word_count(text: str, target_words: Optional[int]) -> str:
 # Backward-compatible alias (internal use in legacy imports)
 _enforce_exact_char_count = enforce_exact_char_count
 
+def _request_controls(request_timeout, request_max_retries):
+    timeout = 120.0 if request_timeout is None else float(request_timeout)
+    if isinstance(request_timeout, bool) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("Request timeout must be a positive finite number.")
+    retries = request_max_retries
+    if retries is not None:
+        if isinstance(retries, bool) or not math.isfinite(float(retries)) or float(retries) != int(retries) or int(retries) < 0:
+            raise ValueError("Request retry count must be a non-negative integer.")
+        retries = int(retries)
+    return timeout, retries
+
+
 def get_llm_completion(
     prompt,
     api_key,
@@ -455,8 +491,8 @@ def get_llm_completion(
         stop_sequences: Stop sequences.
         return_logprobs: If True, return (text, logprobs_data) tuple. Only works for OpenAI/OpenRouter.
     
-        request_timeout: Optional provider request timeout in seconds.
-        request_max_retries: Optional OpenAI SDK retry limit.
+        request_timeout: Provider request timeout in seconds (defaults to 120).
+        request_max_retries: Optional number of additional SDK retry attempts.
     Returns:
         If return_logprobs is False: str (generated text or error message)
         If return_logprobs is True: Tuple[str, Optional[List[Dict]]] (text, logprobs data)
@@ -481,7 +517,8 @@ def get_llm_completion(
         return missing_key
 
     try:
-        with limit_api_concurrency():
+        request_timeout, request_max_retries = _request_controls(request_timeout, request_max_retries)
+        with limit_api_concurrency(timeout=request_timeout):
             return _execute_llm_completion(
                 prompt=prompt,
                 api_key=api_key,
@@ -499,16 +536,16 @@ def get_llm_completion(
                 bar_placeholder=bar_placeholder,
                 progress_bar=progress_bar,
             )
-    except ApiConcurrencyTimeout as exc:
+    except (ApiConcurrencyTimeout, ValueError, TypeError, OverflowError) as exc:
         complete_llm_progress(
             label_placeholder,
             bar_placeholder,
             progress_bar,
-            final_message="API concurrency limit reached",
+            final_message="API concurrency limit reached" if isinstance(exc, ApiConcurrencyTimeout) else "Invalid request controls",
             success=False,
             linger=0.6,
         )
-        error_msg = str(exc)
+        error_msg = f"Error: {exc}"
         if return_logprobs:
             return error_msg, None
         return error_msg
@@ -534,209 +571,243 @@ def _execute_llm_completion(
 ) -> Any:
     logprobs_data: Optional[List[Dict[str, Any]]] = None
     try:
-        if provider == "OpenAI":
-            client_options: Dict[str, Any] = {"api_key": str(api_key).strip()}
-            if request_timeout is not None:
-                client_options["timeout"] = max(1.0, float(request_timeout))
-            if request_max_retries is not None:
-                client_options["max_retries"] = max(
-                    0, int(request_max_retries)
+        request_timeout, request_max_retries = _request_controls(request_timeout, request_max_retries)
+        sdk_request_options: Dict[str, Any] = {"timeout": request_timeout}
+        if request_max_retries is not None:
+            sdk_request_options["max_retries"] = max(0, int(request_max_retries))
+        with ExitStack() as resources:
+            if provider == "OpenAI":
+                client = resources.enter_context(
+                    openai.OpenAI(api_key=str(api_key).strip(), **sdk_request_options)
                 )
-            client = openai.OpenAI(**client_options)
-            messages = [
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": prompt}
-            ]
-            request_kwargs = {
-                "model": model_name,
-                "messages": messages,
-                "temperature": temperature,
-                "top_p": top_p,
-            }
-            if max_output_tokens is not None:
-                request_kwargs["max_tokens"] = max_output_tokens
-            if stop_sequences:
-                request_kwargs["stop"] = stop_sequences
-            if return_logprobs:
-                request_kwargs["logprobs"] = True
-                request_kwargs["top_logprobs"] = 5
-            response = create_openai_chat_completion(client, request_kwargs)
-            result_text = _extract_chat_message_text(response)
-            
-            if return_logprobs:
-                logprobs_data = _extract_logprobs_from_response(response)
-        
-        elif provider == "OpenRouter":
-            client = openai.OpenAI(
-                api_key=api_key,
-                base_url="https://openrouter.ai/api/v1"
-            )
-            messages = _build_messages_for_model(
-                model_name,
-                "You are a helpful assistant.",
-                prompt
-            )
-            request_kwargs = {
-                "model": model_name,
-                "messages": messages,
-                "temperature": temperature,
-                "top_p": top_p,
-                "extra_headers": {
-                    "HTTP-Referer": "http://localhost",
-                    "X-Title": "Copyright Detective"
-                },
-            }
-            if max_output_tokens is not None:
-                request_kwargs["max_tokens"] = max_output_tokens
-            if stop_sequences:
-                request_kwargs["stop"] = stop_sequences
-            # Request logprobs if needed
-            if return_logprobs:
-                request_kwargs["logprobs"] = True
-                request_kwargs["top_logprobs"] = 5
-            
-            # Try the original model first
-            try:
-                response = create_openai_chat_completion(client, request_kwargs)
-            except Exception as e:
-                # Handle 429 rate limit error for gemma-4-31b by falling back to gemma-4-26b
-                error_str = str(e)
-                if "429" in error_str and "gemma-4-31b" in model_name.lower():
-                    # Automatically switch to gemma-4-26b as fallback
-                    fallback_model = "google/gemma-4-26b-a4b-it:free"
-                    request_kwargs["model"] = fallback_model
-                    # Rebuild messages for the fallback model
-                    messages = _build_messages_for_model(
-                        fallback_model,
-                        "You are a helpful assistant.",
-                        prompt
-                    )
-                    request_kwargs["messages"] = messages
-                    # Retry with fallback model
-                    response = create_openai_chat_completion(client, request_kwargs)
-                else:
-                    # Re-raise if it's not a 429 for gemma-4-31b
-                    raise
-            
-            result_text = _extract_chat_message_text(response)
-            
-            # Extract logprobs if requested
-            if return_logprobs:
-                logprobs_data = _extract_logprobs_from_response(response)
-        
-        elif provider == "Anthropic":
-            client = anthropic.Anthropic(api_key=api_key)
-            request_kwargs = {
-                "model": model_name,
-                "max_tokens": max_output_tokens or 1000,
-                "messages": [
+                messages = [
+                    {"role": "system", "content": "You are a helpful assistant."},
                     {"role": "user", "content": prompt}
-                ],
-                "temperature": temperature,
-                "top_p": top_p,
-            }
-            if stop_sequences:
-                request_kwargs["stop_sequences"] = stop_sequences
-            response = client.messages.create(**request_kwargs)
-            result_text = response.content[0].text.strip()
-            # Anthropic doesn't support logprobs in the same way
-        
-        elif provider == "Google Gemini":
-            client = genai.Client(api_key=api_key)
-            normalized_model = _normalize_gemini_model(model_name)
-            config = {}
-            if temperature is not None:
-                config["temperature"] = temperature
-            if top_p is not None:
-                config["top_p"] = top_p
-            if max_output_tokens is not None:
-                config["max_output_tokens"] = max_output_tokens
-            if stop_sequences:
-                config["stop_sequences"] = stop_sequences
-            response = client.models.generate_content(
-                model=normalized_model,
-                contents=prompt,
-                config=config or None
-            )
-            result_text = response.text.strip()
-            # Google Gemini doesn't support logprobs in the same way
+                ]
+                request_kwargs = {
+                    "model": model_name,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                }
+                if max_output_tokens is not None:
+                    request_kwargs["max_tokens"] = max_output_tokens
+                if stop_sequences:
+                    request_kwargs["stop"] = stop_sequences
+                if return_logprobs:
+                    request_kwargs["logprobs"] = True
+                    request_kwargs["top_logprobs"] = 5
+                response = create_openai_chat_completion(client, request_kwargs)
+                result_text = _extract_chat_message_text(response)
 
-        elif provider == "Kimi":
-            # Kimi (Moonshot) exposes an OpenAI-compatible endpoint
-            client = openai.OpenAI(
-                api_key=api_key,
-                base_url="https://api.moonshot.cn/v1",
-            )
-            messages = [
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": prompt},
-            ]
-            kimi_temperature, kimi_top_p = normalize_kimi_sampling_params(
-                model_name, temperature, top_p
-            )
-            request_kwargs = {
-                "model": model_name,
-                "messages": messages,
-                "temperature": kimi_temperature,
-                "top_p": kimi_top_p,
-            }
-            if max_output_tokens is not None:
-                request_kwargs["max_tokens"] = max_output_tokens
-            if stop_sequences:
-                request_kwargs["stop"] = stop_sequences
+                if return_logprobs:
+                    logprobs_data = _extract_logprobs_from_response(response)
 
-            # Kimi currently does not expose logprobs; ignore if requested
-            response = create_openai_chat_completion(client, request_kwargs)
-            result_text = _extract_chat_message_text(response)
-            if return_logprobs:
-                logprobs_data = _extract_logprobs_from_response(response)
+            elif provider == "OpenRouter":
+                client = resources.enter_context(openai.OpenAI(
+                    api_key=api_key,
+                    base_url="https://openrouter.ai/api/v1",
+                    **sdk_request_options,
+                ))
+                messages = _build_messages_for_model(
+                    model_name,
+                    "You are a helpful assistant.",
+                    prompt
+                )
+                request_kwargs = {
+                    "model": model_name,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                    "extra_headers": {
+                        "HTTP-Referer": "http://localhost",
+                        "X-Title": "Copyright Detective"
+                    },
+                }
+                if max_output_tokens is not None:
+                    request_kwargs["max_tokens"] = max_output_tokens
+                if stop_sequences:
+                    request_kwargs["stop"] = stop_sequences
+                # Request logprobs if needed
+                if return_logprobs:
+                    request_kwargs["logprobs"] = True
+                    request_kwargs["top_logprobs"] = 5
 
-        elif provider == "Local vLLM":
-            # Local vLLM via OpenAI-compatible endpoint
-            resolved_base = base_url or st.session_state.get("sidebar_local_vllm_base_url", "http://localhost:8000/v1")
-            resolved_key = api_key or st.session_state.get("sidebar_local_vllm_api_key", "")
-            client = openai.OpenAI(
-                api_key=resolved_key or None,
-                base_url=resolved_base,
-            )
-            messages = [
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": prompt},
-            ]
-            request_kwargs = {
-                "model": model_name,
-                "messages": messages,
-                "temperature": temperature,
-                "top_p": top_p,
-            }
-            if max_output_tokens is not None:
-                request_kwargs["max_tokens"] = max_output_tokens
-            if stop_sequences:
-                request_kwargs["stop"] = stop_sequences
+                # Try the original model first
+                try:
+                    response = create_openai_chat_completion(client, request_kwargs)
+                except Exception as e:
+                    # Handle 429 rate limit error for gemma-4-31b by falling back to gemma-4-26b
+                    error_str = str(e)
+                    if "429" in error_str and "gemma-4-31b" in model_name.lower():
+                        # Automatically switch to gemma-4-26b as fallback
+                        fallback_model = "google/gemma-4-26b-a4b-it:free"
+                        request_kwargs["model"] = fallback_model
+                        # Rebuild messages for the fallback model
+                        messages = _build_messages_for_model(
+                            fallback_model,
+                            "You are a helpful assistant.",
+                            prompt
+                        )
+                        request_kwargs["messages"] = messages
+                        # Retry with fallback model
+                        response = create_openai_chat_completion(client, request_kwargs)
+                    else:
+                        # Re-raise if it's not a 429 for gemma-4-31b
+                        raise
 
-            # Many local vLLM deployments may not support logprobs; attempt only if requested
-            if return_logprobs:
-                request_kwargs["logprobs"] = True
-                request_kwargs["top_logprobs"] = 5
-            response = create_openai_chat_completion(client, request_kwargs)
-            result_text = _extract_chat_message_text(response)
-            if return_logprobs:
-                logprobs_data = _extract_logprobs_from_response(response)
-        
-        else:
-            error_message = f"Error: Unsupported provider {provider}"
-            complete_llm_progress(
-                label_placeholder,
-                bar_placeholder,
-                progress_bar,
-                final_message=error_message,
-                success=False,
-                linger=0.5,
-            )
-            if return_logprobs:
-                return error_message, None
-            return error_message
-    
+                result_text = _extract_chat_message_text(response)
+
+                # Extract logprobs if requested
+                if return_logprobs:
+                    logprobs_data = _extract_logprobs_from_response(response)
+
+            elif provider == "Anthropic":
+                client = resources.enter_context(
+                    anthropic.Anthropic(api_key=api_key, **sdk_request_options)
+                )
+                request_kwargs = {
+                    "model": model_name,
+                    "max_tokens": max_output_tokens or 1000,
+                    "messages": [
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": temperature,
+                    "top_p": top_p,
+                }
+                if stop_sequences:
+                    request_kwargs["stop_sequences"] = stop_sequences
+                response = client.messages.create(**request_kwargs)
+                result_text = response.content[0].text.strip()
+                # Anthropic doesn't support logprobs in the same way
+
+            elif provider == "Google Gemini":
+                timeout_seconds = request_timeout
+                # Google Gen AI's HTTP timeout is expressed in milliseconds.
+                client_options = {
+                    "api_key": api_key,
+                    "http_options": {"timeout": max(1, int(timeout_seconds * 1000))},
+                }
+                if request_max_retries is not None:
+                    # Gemini counts the original request as an attempt.
+                    client_options["http_options"]["retry_options"] = {
+                        "attempts": max(0, int(request_max_retries)) + 1
+                    }
+                normalized_model = _normalize_gemini_model(model_name)
+                config = {}
+                if temperature is not None:
+                    config["temperature"] = temperature
+                if top_p is not None:
+                    config["top_p"] = top_p
+                if max_output_tokens is not None:
+                    config["max_output_tokens"] = max_output_tokens
+                if stop_sequences:
+                    config["stop_sequences"] = stop_sequences
+                with genai.Client(**client_options) as client:
+                    response = client.models.generate_content(
+                        model=normalized_model,
+                        contents=prompt,
+                        config=config or None
+                    )
+                    result_text = _extract_gemini_response_text(response)
+                if result_text.startswith("Error"):
+                    complete_llm_progress(
+                        label_placeholder,
+                        bar_placeholder,
+                        progress_bar,
+                        final_message="Gemini returned no text",
+                        success=False,
+                        linger=0.6,
+                    )
+                    if return_logprobs:
+                        return result_text, None
+                    return result_text
+                # Google Gemini doesn't support logprobs in the same way
+
+            elif provider == "Kimi":
+                # Kimi (Moonshot) exposes an OpenAI-compatible endpoint
+                client = resources.enter_context(openai.OpenAI(
+                    api_key=api_key,
+                    base_url="https://api.moonshot.cn/v1",
+                    **sdk_request_options,
+                ))
+                messages = [
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": prompt},
+                ]
+                kimi_temperature, kimi_top_p = normalize_kimi_sampling_params(
+                    model_name, temperature, top_p
+                )
+                request_kwargs = {
+                    "model": model_name,
+                    "messages": messages,
+                    "temperature": kimi_temperature,
+                    "top_p": kimi_top_p,
+                }
+                if max_output_tokens is not None:
+                    request_kwargs["max_tokens"] = max_output_tokens
+                if stop_sequences:
+                    request_kwargs["stop"] = stop_sequences
+
+                # Kimi currently does not expose logprobs; ignore if requested
+                response = create_openai_chat_completion(client, request_kwargs)
+                result_text = _extract_chat_message_text(response)
+                if return_logprobs:
+                    logprobs_data = _extract_logprobs_from_response(response)
+
+            elif provider == "Local vLLM":
+                # Local vLLM via OpenAI-compatible endpoint
+                if base_url is not None:
+                    # Background callers supply the endpoint and key explicitly.
+                    resolved_base = base_url or "http://localhost:8000/v1"
+                    resolved_key = api_key
+                else:
+                    resolved_base = st.session_state.get("sidebar_local_vllm_base_url", "http://localhost:8000/v1")
+                    resolved_key = api_key or st.session_state.get("sidebar_local_vllm_api_key", "")
+                client = resources.enter_context(openai.OpenAI(
+                    # Supplying a placeholder avoids remote environment credentials.
+                    api_key=resolved_key or "local-vllm",
+                    base_url=resolved_base,
+                    **sdk_request_options,
+                ))
+                messages = [
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": prompt},
+                ]
+                request_kwargs = {
+                    "model": model_name,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                }
+                if max_output_tokens is not None:
+                    request_kwargs["max_tokens"] = max_output_tokens
+                if stop_sequences:
+                    request_kwargs["stop"] = stop_sequences
+
+                # Many local vLLM deployments may not support logprobs; attempt only if requested
+                if return_logprobs:
+                    request_kwargs["logprobs"] = True
+                    request_kwargs["top_logprobs"] = 5
+                response = create_openai_chat_completion(client, request_kwargs)
+                result_text = _extract_chat_message_text(response)
+                if return_logprobs:
+                    logprobs_data = _extract_logprobs_from_response(response)
+
+            else:
+                error_message = f"Error: Unsupported provider {provider}"
+                complete_llm_progress(
+                    label_placeholder,
+                    bar_placeholder,
+                    progress_bar,
+                    final_message=error_message,
+                    success=False,
+                    linger=0.5,
+                )
+                if return_logprobs:
+                    return error_message, None
+                return error_message
+
     except Exception as e:
         complete_llm_progress(
             label_placeholder,
@@ -746,7 +817,7 @@ def _execute_llm_completion(
             success=False,
             linger=0.6,
         )
-        error_msg = f"Error calling API: {e}"
+        error_msg = f"Error calling API: {type(e).__name__}: {e}"
         if return_logprobs:
             return error_msg, None
         return error_msg
@@ -759,7 +830,7 @@ def _execute_llm_completion(
         final_message=f"LLM request completed ({provider} · {model_name})",
         success=True,
     )
-    
+
     if return_logprobs:
         return result_text, logprobs_data
     return result_text
@@ -898,6 +969,10 @@ def compare_texts(
     target_word_count: Optional[int] = None,
     extra_prompt_instructions: Optional[str] = None,
     return_logprobs: bool = False,
+    *,
+    request_timeout: Optional[float] = None,
+    request_max_retries: Optional[int] = None,
+    base_url: Optional[str] = None,
 ):
     """
     Generates text based on the input_text according to prompt_type and compares it to reference_text.
@@ -974,7 +1049,10 @@ def compare_texts(
         result = get_llm_completion(
             prompt, api_key, model_name, provider, 
             temperature=temperature, top_p=top_p,
-            return_logprobs=True
+            return_logprobs=True,
+            request_timeout=request_timeout,
+            request_max_retries=request_max_retries,
+            base_url=base_url,
         )
         if isinstance(result, tuple):
             generated_text, logprobs_data = result
@@ -983,7 +1061,10 @@ def compare_texts(
     else:
         generated_text = get_llm_completion(
             prompt, api_key, model_name, provider, 
-            temperature=temperature, top_p=top_p
+            temperature=temperature, top_p=top_p,
+            request_timeout=request_timeout,
+            request_max_retries=request_max_retries,
+            base_url=base_url,
         )
     
     # Return early if API error to avoid post-processing masking the error message

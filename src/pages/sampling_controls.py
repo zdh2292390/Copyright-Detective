@@ -1,9 +1,21 @@
 """Reusable sampling control helpers (temperature, top-p) for Streamlit pages."""
 
 from typing import Optional, Tuple
+import math
+from contextlib import nullcontext
 
 import streamlit as st
 from src.job_guard import get_ui_disabled
+
+
+def _sampling_value(value, default, limits):
+    try:
+        number = float(value)
+        if isinstance(value, bool) or not math.isfinite(number) or not limits[0] <= number <= limits[1]:
+            raise ValueError("Invalid cached sampling value")
+        return number
+    except (TypeError, ValueError, OverflowError):
+        return float(default)
 
 
 def render_temperature_top_p(
@@ -37,11 +49,24 @@ def render_temperature_top_p(
     st.session_state.setdefault(top_p_session_key, default_top_p)
 
     # Allow caller to supply columns; fall back to page root.
-    temp_container = col_temp or st
-    top_p_container = col_top_p or st
+    temp_container = col_temp if col_temp is not None else nullcontext()
+    top_p_container = col_top_p if col_top_p is not None else nullcontext()
 
     temp_key = f"{slider_key_prefix}{temp_session_key}_slider"
     top_p_key = f"{slider_key_prefix}{top_p_session_key}_slider"
+
+    st.session_state[temp_session_key] = _sampling_value(
+        st.session_state[temp_session_key], default_temp, temp_range,
+    )
+    st.session_state[top_p_session_key] = _sampling_value(
+        st.session_state[top_p_session_key], default_top_p, top_p_range,
+    )
+    for widget_key, default, limits in ((temp_key, default_temp, temp_range), (top_p_key, default_top_p, top_p_range)):
+        if widget_key in st.session_state:
+            value = st.session_state[widget_key]
+            recovered = _sampling_value(value, default, limits)
+            if not isinstance(value, float) or not math.isfinite(value) or value != recovered:
+                st.session_state[widget_key] = recovered
 
     with temp_container:
         temperature = st.slider(

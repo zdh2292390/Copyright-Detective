@@ -38,10 +38,9 @@ def extract_text_from_pdf(pdf_file):
     try:
         _reset_stream(pdf_file)
         pdf_reader = PyPDF2.PdfReader(pdf_file)
-        text = ""
-        for page in pdf_reader.pages:
-            text += page.extract_text()
-        return text
+        # Blank/scanned pages may return None; keep boundaries between pages.
+        pages = [page.extract_text() or "" for page in pdf_reader.pages]
+        return "\n\n".join(pages)
     except Exception as e:
         return f"Error reading PDF file: {e}"
 
@@ -49,7 +48,7 @@ def extract_text_from_pdf(pdf_file):
 def extract_text_from_txt(txt_file):
     """Extract text from a plain text file, attempting several encodings."""
 
-    encoding_candidates = ("utf-8", "utf-8-sig", "utf-16", "latin-1")
+    encoding_candidates = ("utf-8-sig", "utf-16", "utf-8", "latin-1")
     try:
         raw_data = _read_uploaded_file(txt_file)
         if isinstance(raw_data, str):
@@ -89,6 +88,8 @@ def split_text_into_chunks(text, chunk_size=500, overlap=50):
     """
     Splits a long text into overlapping chunks.
     """
+    if chunk_size <= 0 or overlap < 0 or overlap >= chunk_size:
+        raise ValueError("Chunk size must be positive and greater than the non-negative overlap.")
     words = text.split()
     chunks = []
     for i in range(0, len(words), chunk_size - overlap):
