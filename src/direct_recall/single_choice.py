@@ -17,8 +17,15 @@ from anthropic import Anthropic
 
 from src.direct_recall.comparison import get_llm_completion
 from src.api_concurrency import limit_api_concurrency
-from src.kimi_utils import normalize_kimi_sampling_params
-from src.openai_utils import apply_openai_request_compat
+from src.kimi_utils import normalize_kimi_sampling_params, kimi_request_extra_body
+from src.anthropic_utils import (
+    anthropic_short_answer_error, create_anthropic_message,
+    extract_anthropic_response_text,
+)
+from src.model_catalog import DEFAULT_MODELS, model_unavailability_error
+from src.openai_utils import (
+    apply_openai_short_answer_compat,
+)
 from src.direct_recall.pdf_utils import extract_text_from_document
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -670,29 +677,28 @@ def _try_openai_style_completion(
             model_choice,
             request_kwargs["temperature"],
             request_kwargs["top_p"],
+            thinking_enabled=False,
         )
         request_kwargs["temperature"] = kimi_temperature
         request_kwargs["top_p"] = kimi_top_p
+        extra_body = kimi_request_extra_body(model_choice)
+        if extra_body:
+            request_kwargs["extra_body"] = extra_body
+        if str(model_choice or "").lower().startswith("kimi-k3"):
+            request_kwargs["max_completion_tokens"] = request_kwargs.pop("max_tokens")
 
-    request_kwargs = apply_openai_request_compat(request_kwargs)
+    # Modern reasoning models use Chat Completions. The legacy Completions
+    # endpoint has no max_completion_tokens/reasoning_effort capability.
+    if provider in {"OpenAI", "OpenRouter"} and "max_completion_tokens" in apply_openai_short_answer_compat({"model": model_choice, "max_tokens": 1}):
+        return None
+    if provider == "Kimi" and str(model_choice or "").lower().startswith(("kimi-k2", "kimi-k3")):
+        return None
 
     try:
         with limit_api_concurrency(timeout=120), OpenAI(**client_kwargs) as client:
-            # Try the original model first
-            try:
-                response = client.completions.create(**request_kwargs)
-            except Exception as e:
-                # Handle 429 rate limit error for gemma-4-31b by falling back to gemma-4-26b
-                error_str = str(e)
-                if "429" in error_str and "gemma-4-31b" in model_choice.lower():
-                    # Automatically switch to gemma-4-26b as fallback
-                    fallback_model = "google/gemma-4-26b-a4b-it:free"
-                    request_kwargs["model"] = fallback_model
-                    # Retry with fallback model
-                    response = client.completions.create(**request_kwargs)
-                else:
-                    # Re-raise if it's not a 429 for gemma-4-31b
-                    raise
+            # A rate limit must not switch the evaluator behind its saved
+            # model/settings. Surface the error without another API call.
+            response = client.completions.create(**request_kwargs)
     except Exception as exc:
         if _compatibility_failure(exc):
             return None
@@ -728,18 +734,22 @@ def _try_anthropic_style_completion(
     api_key: str,
     model_choice: str,
 ) -> Optional[Dict[str, Any]]:
+    unsupported = anthropic_short_answer_error(model_choice)
+    if unsupported:
+        return _sc_error_result(unsupported)
     try:
         with limit_api_concurrency(timeout=120), Anthropic(api_key=api_key, timeout=120, max_retries=0) as client:
-            response = client.messages.create(
-                model=model_choice, max_tokens=1,
-                messages=[{"role": "user", "content": prompt}], temperature=0,
-            )
+            response = create_anthropic_message(client, {
+                "model": model_choice, "max_tokens": 1,
+                "messages": [{"role": "user", "content": prompt}], "temperature": 0,
+            })
     except Exception as exc:
-        if _compatibility_failure(exc):
-            return None
+        # Basic fallback uses the same Messages endpoint, so another request
+        # cannot add a missing capability or restore a retired model.
         return _sc_error_result(f"Error calling API: {type(exc).__name__}: {exc}")
-    blocks = getattr(response, "content", None) or []
-    token_text = "".join(getattr(block, "text", "") or "" for block in blocks).strip()
+    token_text = extract_anthropic_response_text(response)
+    if token_text.startswith("Error"):
+        return _sc_error_result(token_text)
     selected = _extract_option_from_text(token_text)
     if not selected:
         return _sc_error_result("Error: Model returned no valid option.")
@@ -769,6 +779,7 @@ def _evaluate_with_basic_completion(
         max_output_tokens=1,
         stop_sequences=["\n"],
         progress_message="Running single-choice evaluation",
+        **({"short_answer": True} if provider in {"OpenAI", "OpenRouter"} else {}),
     )
 
     text = response.strip() if isinstance(response, str) else ""
@@ -805,6 +816,22 @@ def evaluate_single_choice_question(
         labels.append(option["label"])
     if len(set(labels)) != len(labels) or question.get("correct_option") not in labels:
         return _sc_error_result("Error: Invalid single-choice correct option.")
+    model_choice = model_choice or DEFAULT_MODELS.get(provider)
+    unavailable = model_unavailability_error(provider, model_choice)
+    if unavailable:
+        error = unavailable if unavailable.startswith("Error") else f"Error: {unavailable}"
+        return _sc_error_result(error)
+    if provider in {"OpenAI", "OpenRouter"}:
+        try:
+            apply_openai_short_answer_compat({"model": model_choice, "max_tokens": 1})
+        except ValueError as exc:
+            return _sc_error_result(f"Error: {exc}")
+    if provider == "Kimi" and str(model_choice or "").lower().startswith(("kimi-k3", "kimi-k2.7-code")):
+        return _sc_error_result(
+            f"Error: {model_choice} requires thinking and does not support this "
+            "one-token single-choice evaluation. Choose kimi-k2.6, which "
+            "supports non-thinking text-only evaluation."
+        )
     prompt = _build_sc_prompt_body(question)
 
     result = None

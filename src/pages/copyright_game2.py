@@ -669,9 +669,9 @@ def _render_provider_settings(
     model_help = ""
     if provider == KIMI_PROVIDER and model.startswith("kimi-k2"):
         model_help = (
-            '<span title="Kimi K2 models normalize sampling to temperature 1.00 '
-            'and top-p 0.95 at request time; Moonshot v1 models use your selected '
-            'values." aria-label="Kimi sampling behavior" style="display:inline-flex;'
+            f'<span title="{model} uses non-thinking mode with temperature 0.60 '
+            'and top-p 0.95 at request time." '
+            'aria-label="Kimi sampling behavior" style="display:inline-flex;'
             'align-items:center;justify-content:center;width:1.15rem;height:1.15rem;'
             'margin-left:0.35rem;border:1px solid #8a94a6;border-radius:50%;color:#5d687b;'
             'font-size:0.75rem;font-weight:700;cursor:help;vertical-align:middle;">?</span>'

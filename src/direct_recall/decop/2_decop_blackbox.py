@@ -9,6 +9,13 @@ import torch
 
 from openai import OpenAI
 from anthropic import Anthropic
+from pathlib import Path
+
+# Keep standalone script execution able to use the shared provider adapter.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from src.anthropic_utils import create_anthropic_message, extract_anthropic_response_text
 
 
 
@@ -61,13 +68,16 @@ def Query_LLM(data_type, model_name, query_data, document_name, author_name):
         return probabilities
     else:
         prompt = QA_prompt + extra_prompt + 'A. ' + query_data[0] + '\n' + 'B. ' + query_data[1] + '\n' + 'C. ' + query_data[2] + '\n' + 'D. ' + query_data[3]
-        response = anthropic.messages.create(
-            model=DECOP_ANTHROPIC_MODEL,
-            max_tokens=1,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-        )
-        return response.content[0].text.strip()
+        response = create_anthropic_message(anthropic, {
+            "model": DECOP_ANTHROPIC_MODEL,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0,
+        })
+        answer = extract_anthropic_response_text(response)
+        if answer.startswith("Error"):
+            raise ValueError(answer)
+        return answer
     
 
 

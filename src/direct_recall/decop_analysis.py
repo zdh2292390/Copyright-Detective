@@ -20,6 +20,7 @@ from openai import OpenAI
 from anthropic import Anthropic
 from tqdm import tqdm
 from src.api_concurrency import limit_api_concurrency
+from src.anthropic_utils import create_anthropic_message, extract_anthropic_response_text
 
 # Add the data directory to the path
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -155,16 +156,14 @@ def query_llm_claude(
     )
     
     with limit_api_concurrency(timeout=120):
-        response = anthropic_client.messages.create(
-            model=DECOP_ANTHROPIC_MODEL,
-            max_tokens=1,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-        )
+        response = create_anthropic_message(anthropic_client, {
+            "model": DECOP_ANTHROPIC_MODEL,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0,
+        })
 
-
-    blocks = getattr(response, "content", None) or []
-    answer = "".join(getattr(block, "text", "") or "" for block in blocks).strip()
+    answer = extract_anthropic_response_text(response)
     match = re.fullmatch(r"[A-D][.)]?", answer, flags=re.IGNORECASE)
     if not match:
         raise ValueError("Model returned no valid single-choice answer.")

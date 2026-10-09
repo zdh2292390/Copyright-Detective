@@ -46,6 +46,16 @@ The existing prompts, sampling controls, sample counts and scientific scoring fo
 
 Shared provider requests default to a 120-second request timeout; internal callers can override it. Client connections and API slots are released on failure. Remote representational tasks retry temporary status-check failures within the polling deadline, without automatically resubmitting a possibly accepted task. Game scaling continues independent runs after a temporary failure and stops repeated requests for invalid credentials or model configuration; official competition scores still require a complete successful batch.
 
+## Hosted model availability
+
+The shared model catalog in `src/model_catalog.py` was checked on **2026-10-07** against the official [OpenAI catalog](https://developers.openai.com/api/docs/models/all) and [deprecations](https://developers.openai.com/api/docs/deprecations), [OpenRouter model API](https://openrouter.ai/api/v1/models), [Claude models](https://platform.claude.com/docs/en/models/overview), [Gemini models](https://ai.google.dev/gemini-api/docs/models), and [Kimi models](https://platform.kimi.ai/docs/models). Listed models can still require account access, quota, or regional availability. No paid inference was used to verify the catalog.
+
+New choices include GPT-6, Claude 5.5 / Fable 5.1, Gemini 3.8 Flash / 3.5 Flash-Lite, and Kimi K3. Defaults are `gpt-4o-mini`, `claude-sonnet-5-5`, `gemini-3.8-flash`, `kimi-k2.6`, and the existing free Gemma OpenRouter route. Kimi K2.6 uses explicit non-thinking mode for text continuation, with its required temperature 0.6 / top_p 0.95. K3 always reasons and requires temperature 1 / top_p 0.95. Current Claude and OpenAI models also receive compatible request parameters. Always-thinking models cannot fulfill a one-token choice request and show an actionable error rather than a fabricated answer or probability.
+
+Direct Kimi `kimi-k2.5` and all `moonshot-v1` models were shut down on 2026-08-31. Five old OpenRouter free routes are absent from its current catalog and have been removed; their paid counterparts are never silently substituted. Gemini 1.5 / 2.0 and retired previews are rejected instead of being silently mapped to another model. OpenRouter's separately listed Kimi K2.5 route remains available in its own provider catalog. Gemini 2.5 is still served but restricted to accounts with prior usage. OpenAI `gpt-5.1` and `gpt-5.4-nano` remain available until 2027-04-01; Claude Sonnet 4.5 retires on 2026-11-30. Standard API `gpt-4o` and `gpt-4o-mini` are still available, so competition baselines and stored scores remain unchanged.
+
+An unavailable saved sidebar choice is visibly replaced for **new** runs. A saved document analysis retains its exact provider/model and completed results. If that model has been shut down, resume is blocked before inference with a replacement suggestion; start a new run to analyze the entire document with the replacement model. Restart the application after deploying model updates so the new catalog and workers are loaded.
+
 ## Document analysis completion and recovery
 
 Document chunk sizes range from 50 to 2000 words. A 50-word chunk uses a 25-word overlap; larger chunks retain the usual 50-word overlap. The preview, execution, and saved analysis settings use the same overlap.

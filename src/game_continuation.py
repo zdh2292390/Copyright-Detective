@@ -17,11 +17,12 @@ from src.direct_recall.comparison import (
     get_llm_completion,
 )
 from src.prompt_utils import get_full_prompt
+from src.kimi_utils import normalize_kimi_sampling_params
 
 OPENAI_PROVIDER = "OpenAI"
 KIMI_PROVIDER = "Kimi"
 OPENAI_MODEL = "gpt-4o-mini"
-KIMI_MODEL = "moonshot-v1-32k"
+KIMI_MODEL = "kimi-k2.6"
 FIXED_MODELS = {
     OPENAI_PROVIDER: OPENAI_MODEL,
     KIMI_PROVIDER: KIMI_MODEL,
@@ -187,6 +188,13 @@ def run_provider_scaling(
         raise ContinuationValidationError("Temperature must be between 0 and 2.")
     if not 0.0 < float(top_p) <= 1.0:
         raise ContinuationValidationError("Top-p must be greater than 0 and at most 1.")
+
+    if provider == KIMI_PROVIDER:
+        # The shared Kimi provider also sends an explicit disabled thinking body.
+        # Capture the actual fixed sampling values in new batch metadata.
+        temperature, top_p = normalize_kimi_sampling_params(
+            model, float(temperature), float(top_p), thinking_enabled=False,
+        )
 
     prompt = build_challenge_prompt(prompt_method, prompt_mode, custom_template)
     completion = completion_fn or _default_completion()

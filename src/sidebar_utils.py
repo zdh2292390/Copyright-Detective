@@ -11,6 +11,7 @@ from src.auth import (
     render_keep_button,
 )
 from src.config import DEFAULT_KIMI_KEY, DEFAULT_OPENROUTER_KEY
+from src.model_catalog import MODEL_CONFIG, model_replacement
 
 HIDDEN_SIDEBAR_API_KEY_PROVIDERS = ()
 
@@ -24,92 +25,6 @@ SIDEBAR_DEFAULTS = {
     "sidebar_local_vllm_api_key": "",
     "sidebar_local_vllm_model": "",
     "sidebar_provider_selectbox": "OpenAI",
-}
-
-# Model configuration for sidebar
-MODEL_CONFIG = {
-    "OpenAI": {
-        "models": [
-            "gpt-5.5",
-            "gpt-5.4",
-            "gpt-5.4-mini",
-            "gpt-5.4-nano",
-            "gpt-5.2",
-            "gpt-5.1",
-            "gpt-4o",
-            "gpt-4o-mini",
-        ],
-        "help": "Default: gpt-4o-mini. Newest: gpt-5.5 / gpt-5.4.",
-        "key": "sidebar_openai_model_selectbox",
-        "default_index": 7,
-    },
-    "OpenRouter": {
-        "models": [
-            "google/gemma-4-26b-a4b-it:free",
-            "inclusionai/ling-3.0-flash:free",
-            "openai/gpt-oss-20b:free",
-            "google/gemma-4-31b-it:free",
-            "nvidia/nemotron-3-super-120b-a12b:free",
-            "nvidia/nemotron-3-ultra-550b-a55b:free",
-            "nvidia/nemotron-3-nano-30b-a3b:free",
-            "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-            "nvidia/nemotron-nano-12b-v2-vl:free",
-            "nvidia/nemotron-nano-9b-v2:free",
-            "cohere/north-mini-code:free",
-            "openrouter/free",
-            "moonshotai/kimi-k2.6",
-            "moonshotai/kimi-k2.5",
-            "qwen/qwen3-235b-a22b-thinking-2507",
-        ],
-        "help": (
-            "Free models verified against OpenRouter's official model API. "
-            "The free catalog changes often; openrouter/free provides automatic routing."
-        ),
-        "key": "sidebar_openrouter_model_selectbox",
-        "default_index": 0,
-    },    "Anthropic": {
-        "models": [
-            "claude-opus-4-8",
-            "claude-opus-4-7",
-            "claude-opus-4-6",
-            "claude-sonnet-4-6",
-            "claude-sonnet-4-5-20250929",
-            "claude-haiku-4-5-20251001",
-        ],
-        "help": "Newest flagship: claude-opus-4-8. claude-sonnet-4-6 is the balanced default for everyday tasks.",
-        "key": "sidebar_anthropic_model_selectbox",
-        "default_index": 3,
-    },
-    "Google Gemini": {
-        "models": [
-            "gemini-3.5-flash",
-            "gemini-3.1-flash-lite",
-            "gemini-2.5-pro",
-            "gemini-2.5-flash",
-            "gemini-2.5-flash-lite",
-            "gemini-3-flash-preview",
-        ],
-        "help": "Recommended: gemini-3.5-flash (GA). gemini-2.5-* remains available; Gemini 1.5/2.0 are shut down.",
-        "key": "sidebar_google_model_selectbox",
-        "default_index": 0,
-    },
-    "Kimi": {
-        "models": [
-            "kimi-k2.7-code-highspeed",
-            "kimi-k2.7-code",
-            "kimi-k2.6",
-            "kimi-k2.5",
-            "moonshot-v1-8k",
-            "moonshot-v1-32k",
-            "moonshot-v1-128k",
-            "moonshot-v1-8k-vision-preview",
-            "moonshot-v1-32k-vision-preview",
-            "moonshot-v1-128k-vision-preview",
-        ],
-        "help": "Default: moonshot-v1-128k. K2 models auto-use temperature=1 and top_p=0.95.",
-        "key": "sidebar_kimi_model_selectbox",
-        "default_index": 6,
-    },
 }
 
 API_KEY_CONFIG = [
@@ -178,9 +93,17 @@ def render_model_selectbox(provider: str, config: Dict[str, Any], *, disabled: b
     models = list(config["models"])
     widget_key = str(config["key"])
     current_model = st.session_state.get(widget_key)
-    if current_model is not None and current_model not in models:
-        # Hot deployments can leave a removed OpenRouter model in this session.
-        st.session_state.pop(widget_key, None)
+    if widget_key in st.session_state and current_model not in models:
+        # Saved profiles and hot deployments can retain removed IDs or None.
+        replacement = model_replacement(provider, current_model)
+        if replacement in models:
+            st.session_state[widget_key] = replacement
+        else:
+            st.session_state.pop(widget_key, None)
+        if isinstance(current_model, str) and current_model:
+            selected = replacement if replacement in models else models[config.get("default_index", 0)]
+            st.info(f"The saved model {current_model} is no longer an option. "
+                    f"Selected {selected} for new analyses. Saved analyses keep their original model.")
 
     kwargs = {
         "label": "Model name",
@@ -193,6 +116,7 @@ def render_model_selectbox(provider: str, config: Dict[str, Any], *, disabled: b
     if config.get("help"):
         kwargs["help"] = config["help"]
     return st.selectbox(**kwargs)
+
 
 def get_api_key_for_provider(provider: str, api_keys: Dict[str, str]) -> str:
     from src.user_settings import get_secure_api_key

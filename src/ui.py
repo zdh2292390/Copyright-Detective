@@ -967,7 +967,8 @@ def render_sidebar():
                 render_api_configuration_section(disabled=False, include_auth=False)
             with st.expander("\U0001F916 Challenge Models", expanded=True):
                 st.caption("OpenAI: gpt-4o-mini (locked)")
-                st.caption("Kimi: moonshot-v1-32k (locked)")
+                from src.game_continuation import KIMI_MODEL
+                st.caption(f"Kimi: {KIMI_MODEL} (locked)")
                 st.caption("Scaling and sampling settings remain independent for each provider.")
             api_key = ""
             model_choice = ""

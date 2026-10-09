@@ -20,8 +20,13 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 from src.api_concurrency import ApiConcurrencyTimeout, limit_api_concurrency
 from src.prompt_utils import get_full_prompt
-from src.kimi_utils import normalize_kimi_sampling_params
-from src.openai_utils import apply_openai_request_compat, unsupported_openai_sampling_param
+from src.kimi_utils import normalize_kimi_sampling_params, kimi_request_extra_body
+from src.anthropic_utils import create_anthropic_message, extract_anthropic_response_text
+from src.model_catalog import DEFAULT_MODELS, model_unavailability_error
+from src.openai_utils import (
+    apply_openai_request_compat, apply_openai_short_answer_compat,
+    unsupported_openai_sampling_param,
+)
 from src.common.progress import (
     start_llm_progress,
     update_llm_progress,
@@ -50,31 +55,16 @@ _MINHASH_COEFFICIENTS = [
 ]
 
 
-_GEMINI_MODEL_ALIASES = {
-    # Retired 1.5 / 2.0 names → current GA model
-    "gemini-1.5-flash": "gemini-3.5-flash",
-    "gemini-1.5-pro": "gemini-3.5-flash",
-    "gemini-pro": "gemini-3.5-flash",
-    "gemini-1.5-flash-001": "gemini-3.5-flash",
-    "gemini-1.5-pro-001": "gemini-3.5-flash",
-    "gemini-1.5-flash-latest": "gemini-3.5-flash",
-    "gemini-1.5-pro-latest": "gemini-3.5-flash",
-    "gemini-2.0-flash": "gemini-3.5-flash",
-    "gemini-2.0-flash-001": "gemini-3.5-flash",
-    "gemini-2.0-flash-lite": "gemini-3.1-flash-lite",
-    "gemini-3-pro-preview": "gemini-3.5-flash",
-}
-
-_GEMINI_DEFAULT_MODEL = "gemini-3.5-flash"
 _GEMINI_DEFAULT_TIMEOUT_SECONDS = 120.0
 
 
 def _normalize_gemini_model(model_name: Optional[str]) -> str:
-    """Map legacy Gemini names to current v1 identifiers."""
-
-    if not model_name:
-        return _GEMINI_DEFAULT_MODEL
-    return _GEMINI_MODEL_ALIASES.get(model_name, model_name)
+    """Use the selected model unchanged; a retired model cannot resume."""
+    model = model_name or DEFAULT_MODELS["Google Gemini"]
+    unavailable = model_unavailability_error("Google Gemini", model)
+    if unavailable:
+        raise ValueError(unavailable)
+    return model
 
 
 def _is_gemma_model(model_name: str) -> bool:
@@ -165,9 +155,12 @@ def _is_logprobs_error(exc: Exception) -> bool:
     return "logprob" in str(exc).lower()
 
 
-def create_openai_chat_completion(client, request_kwargs: Dict[str, Any]):
+def create_openai_chat_completion(
+    client, request_kwargs: Dict[str, Any], *, short_answer: bool = False,
+):
     """Call OpenAI chat completions with compatibility retries."""
-    kwargs = apply_openai_request_compat(dict(request_kwargs))
+    compat = apply_openai_short_answer_compat if short_answer else apply_openai_request_compat
+    kwargs = compat(dict(request_kwargs))
     last_exc: Optional[Exception] = None
     for _ in range(5):
         try:
@@ -474,6 +467,7 @@ def get_llm_completion(
     return_logprobs: bool = False,
     request_timeout: Optional[float] = None,
     request_max_retries: Optional[int] = None,
+    short_answer: bool = False,
 ) -> Any:
     """
     Gets a completion from the specified LLM.
@@ -501,6 +495,17 @@ def get_llm_completion(
         progress_message or f"Calling {provider} · {model_name}"
     )
     update_llm_progress(progress_bar, value=15)
+
+    model_name = model_name or DEFAULT_MODELS.get(provider)
+    unavailable = model_unavailability_error(provider, model_name)
+    if unavailable:
+        complete_llm_progress(
+            label_placeholder, bar_placeholder, progress_bar,
+            final_message="Selected model is unavailable",
+            success=False, linger=0.5,
+        )
+        error = unavailable if unavailable.startswith("Error") else f"Error: {unavailable}"
+        return (error, None) if return_logprobs else error
 
     missing_key = _require_api_key(api_key, provider)
     if missing_key:
@@ -532,6 +537,7 @@ def get_llm_completion(
                 return_logprobs=return_logprobs,
                 request_timeout=request_timeout,
                 request_max_retries=request_max_retries,
+                short_answer=short_answer,
                 label_placeholder=label_placeholder,
                 bar_placeholder=bar_placeholder,
                 progress_bar=progress_bar,
@@ -568,6 +574,7 @@ def _execute_llm_completion(
     label_placeholder,
     bar_placeholder,
     progress_bar,
+    short_answer=False,
 ) -> Any:
     logprobs_data: Optional[List[Dict[str, Any]]] = None
     try:
@@ -597,7 +604,7 @@ def _execute_llm_completion(
                 if return_logprobs:
                     request_kwargs["logprobs"] = True
                     request_kwargs["top_logprobs"] = 5
-                response = create_openai_chat_completion(client, request_kwargs)
+                response = create_openai_chat_completion(client, request_kwargs, short_answer=short_answer)
                 result_text = _extract_chat_message_text(response)
 
                 if return_logprobs:
@@ -633,29 +640,11 @@ def _execute_llm_completion(
                     request_kwargs["logprobs"] = True
                     request_kwargs["top_logprobs"] = 5
 
-                # Try the original model first
-                try:
-                    response = create_openai_chat_completion(client, request_kwargs)
-                except Exception as e:
-                    # Handle 429 rate limit error for gemma-4-31b by falling back to gemma-4-26b
-                    error_str = str(e)
-                    if "429" in error_str and "gemma-4-31b" in model_name.lower():
-                        # Automatically switch to gemma-4-26b as fallback
-                        fallback_model = "google/gemma-4-26b-a4b-it:free"
-                        request_kwargs["model"] = fallback_model
-                        # Rebuild messages for the fallback model
-                        messages = _build_messages_for_model(
-                            fallback_model,
-                            "You are a helpful assistant.",
-                            prompt
-                        )
-                        request_kwargs["messages"] = messages
-                        # Retry with fallback model
-                        response = create_openai_chat_completion(client, request_kwargs)
-                    else:
-                        # Re-raise if it's not a 429 for gemma-4-31b
-                        raise
-
+                # Preserve the selected model's identity. Rate limits belong
+                # to the caller's retry/backoff policy, never another model.
+                response = create_openai_chat_completion(
+                    client, request_kwargs, short_answer=short_answer,
+                )
                 result_text = _extract_chat_message_text(response)
 
                 # Extract logprobs if requested
@@ -677,8 +666,8 @@ def _execute_llm_completion(
                 }
                 if stop_sequences:
                     request_kwargs["stop_sequences"] = stop_sequences
-                response = client.messages.create(**request_kwargs)
-                result_text = response.content[0].text.strip()
+                response = create_anthropic_message(client, request_kwargs)
+                result_text = extract_anthropic_response_text(response)
                 # Anthropic doesn't support logprobs in the same way
 
             elif provider == "Google Gemini":
@@ -736,7 +725,7 @@ def _execute_llm_completion(
                     {"role": "user", "content": prompt},
                 ]
                 kimi_temperature, kimi_top_p = normalize_kimi_sampling_params(
-                    model_name, temperature, top_p
+                    model_name, temperature, top_p, thinking_enabled=False,
                 )
                 request_kwargs = {
                     "model": model_name,
@@ -744,8 +733,12 @@ def _execute_llm_completion(
                     "temperature": kimi_temperature,
                     "top_p": kimi_top_p,
                 }
+                extra_body = kimi_request_extra_body(model_name)
+                if extra_body:
+                    request_kwargs["extra_body"] = extra_body
                 if max_output_tokens is not None:
-                    request_kwargs["max_tokens"] = max_output_tokens
+                    token_field = "max_completion_tokens" if str(model_name or "").lower().startswith("kimi-k3") else "max_tokens"
+                    request_kwargs[token_field] = max_output_tokens
                 if stop_sequences:
                     request_kwargs["stop"] = stop_sequences
 
@@ -821,6 +814,14 @@ def _execute_llm_completion(
         if return_logprobs:
             return error_msg, None
         return error_msg
+
+    if isinstance(result_text, str) and result_text.startswith("Error"):
+        complete_llm_progress(
+            label_placeholder, bar_placeholder, progress_bar,
+            final_message="Model returned no usable text",
+            success=False, linger=0.6,
+        )
+        return (result_text, None) if return_logprobs else result_text
 
     update_llm_progress(progress_bar, value=80)
     complete_llm_progress(

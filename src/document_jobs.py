@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 from src.document_analysis import run_chunk_analysis, validate_analysis_state
 from src.document_checkpoints import CheckpointError, DocumentCheckpointStore
+from src.model_catalog import model_unavailability_error
 
 
 DEFAULT_CHUNK_CONCURRENCY = 3
@@ -139,6 +140,13 @@ class DocumentAnalysisJobs:
                 raise CheckpointError("The saved analysis has invalid generation settings. Start a new run.")
 
     @staticmethod
+    def _check_model_available(state):
+        settings = state["settings"]
+        error = model_unavailability_error(settings["provider"], settings["model"])
+        if error:
+            raise ValueError(error)
+
+    @staticmethod
     def _check_owner(state, owner_id):
         if state.get("owner_id") and state["owner_id"] != owner_id:
             raise CheckpointError("Sign in to the account that created this analysis to restore it.")
@@ -146,6 +154,7 @@ class DocumentAnalysisJobs:
     def create(self, state, pairs, *, owner_id=None):
         validate_analysis_state(pairs, state)
         self._validate_settings(state)
+        self._check_model_available(state)
         base_url = state["settings"].get("base_url")
         if base_url:
             endpoint = urlsplit(base_url)
@@ -209,6 +218,7 @@ class DocumentAnalysisJobs:
                 raise ValueError("Enter an API key before starting or resuming analysis.")
             if state["status"] == "complete":
                 return False
+            self._check_model_available(state)
             state["status"] = "running"
             state["stop_requested"] = False
             state["active_chunks"] = []
