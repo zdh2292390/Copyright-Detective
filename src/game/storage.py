@@ -65,6 +65,28 @@ JEJU_TIME_ZONE = ZoneInfo(JEJU_TIME_ZONE_NAME)
 LEADERBOARD_REFRESH_LOCAL_TIME = time(hour=12)
 
 
+def _checkpoint_task_id() -> Optional[str]:
+    try:
+        from src.resumable_analysis import current_task_id
+    except ModuleNotFoundError as exc:
+        if exc.name != "src.resumable_analysis":
+            raise
+        return None
+    return current_task_id()
+
+
+def _checkpoint_rpc(client, name, params):
+    try:
+        return client.rpc(name, params).execute()
+    except Exception as exc:
+        if name.endswith("_checkpoint") and ("PGRST202" in str(exc) or "could not find the function" in str(exc).lower()):
+            raise GameStorageError(
+                "Competition recovery is not configured. Run supabase/analysis_game_recovery.sql "
+                "in the Supabase SQL Editor, then restore this task."
+            ) from exc
+        raise
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -520,9 +542,10 @@ def save_stage_one(
             raise GameStorageError("Every Stage 1 ROUGE-L score must be between 0 and 1.")
 
         _upsert_profile(participant)
-        response = _admin_client().rpc(
-            "save_copyright_game_stage_one_run",
-            {
+        task_id = _checkpoint_task_id()
+        response = _checkpoint_rpc(_admin_client(),
+            "save_copyright_game_stage_one_checkpoint" if task_id else "save_copyright_game_stage_one_run",
+            {**({"p_task_id": task_id} if task_id else {}),
                 "p_competition_slug": COMPETITION_SLUG,
                 "p_user_id": participant.user_id,
                 "p_book_key": result.book_key,
@@ -532,7 +555,7 @@ def save_stage_one(
                 "p_top_p": float(result.top_p),
                 "p_attempts": attempt_payload,
             },
-        ).execute()
+        )
         saved_run = _row(response)
         if not saved_run:
             raise GameStorageError("Supabase did not return the saved Stage 1 run.")
@@ -733,9 +756,10 @@ def begin_stage_two(
 
     try:
         _upsert_profile(participant)
-        response = _admin_client().rpc(
-            "begin_copyright_game_run",
-            {
+        task_id = _checkpoint_task_id()
+        response = _checkpoint_rpc(_admin_client(),
+            "begin_copyright_game_run_checkpoint" if task_id else "begin_copyright_game_run",
+            {**({"p_task_id": task_id} if task_id else {}),
                 "p_competition_slug": COMPETITION_SLUG,
                 "p_user_id": participant.user_id,
                 "p_shot_mode": config.database_shot_mode,
@@ -747,7 +771,7 @@ def begin_stage_two(
                 "p_book_key": config.book_key,
                 "p_book_keys": list(config.selected_book_keys),
             },
-        ).execute()
+        )
         created = _row(response)
         run_id = str((created or {}).get("id") or "").strip()
         if not run_id:
@@ -766,6 +790,48 @@ def begin_stage_two(
             raise GameSubmissionLocked(
                 "An official run is already active for this account."
             ) from exc
+        raise GameStorageError(_format_database_error(exc)) from exc
+
+
+def get_stage_two_checkpoint_task(run_id: str, participant: VerifiedParticipant) -> Optional[str]:
+    """Identify a durable reservation before treating an absent worker as failed."""
+    try:
+        rows = _rows(_admin_client().table("analysis_game_task_links").select("task_id")
+            .eq("stage", "stage_two").eq("run_id", run_id)
+            .eq("user_id", participant.user_id).eq("competition_slug", COMPETITION_SLUG)
+            .limit(1).execute())
+        return str(rows[0]["task_id"]) if rows else None
+    except Exception as exc:
+        # Existing installations without cloud recovery keep their old lifecycle.
+        text = str(exc).lower()
+        if "42p01" in text or ("analysis_game_task_links" in text and "pgrst205" in text):
+            return None
+        raise GameStorageError(_format_database_error(exc)) from exc
+
+
+def get_stage_two_checkpoint_run(participant: VerifiedParticipant, config: GameConfig, run_id: str) -> Optional[Dict[str, Any]]:
+    """Revalidate a replayed reservation on the server before any paid request."""
+    task_id = _checkpoint_task_id()
+    if not task_id:
+        return None
+    config.validate()
+    try:
+        response = _checkpoint_rpc(_admin_client(), "begin_copyright_game_run_checkpoint", {
+            "p_expected_run_id": run_id,
+            "p_task_id": task_id, "p_competition_slug": COMPETITION_SLUG,
+            "p_user_id": participant.user_id, "p_shot_mode": config.database_shot_mode,
+            "p_strategy": config.strategy_label, "p_attempts_per_strategy": config.total_mutations,
+            "p_attempts_per_prompt": config.attempts_per_prompt,
+            "p_temperature": float(config.temperature), "p_top_p": float(config.top_p),
+            "p_book_key": config.book_key, "p_book_keys": list(config.selected_book_keys),
+        })
+        row = _row(response)
+        if not row:
+            raise GameStorageError("The saved official reservation could not be verified.")
+        return row
+    except GameStorageError:
+        raise
+    except Exception as exc:
         raise GameStorageError(_format_database_error(exc)) from exc
 
 
@@ -850,15 +916,16 @@ def complete_stage_two(
         client.table("copyright_game_attempts").select(
             "book_key,mutated_prompt,response_text,metrics,trace"
         ).limit(1).execute()
-        response = client.rpc(
-            "complete_copyright_game_run",
-            {
+        task_id = _checkpoint_task_id()
+        response = _checkpoint_rpc(client,
+            "complete_copyright_game_run_checkpoint" if task_id else "complete_copyright_game_run",
+            {**({"p_task_id": task_id} if task_id else {}),
                 "p_run_id": run_id,
                 "p_user_id": participant.user_id,
                 "p_competition_slug": COMPETITION_SLUG,
                 "p_attempts": attempt_rows,
             },
-        ).execute()
+        )
         completed = _row(response)
         if not completed:
             raise GameSubmissionLocked("The official run was no longer active.")

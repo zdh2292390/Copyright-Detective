@@ -1,6 +1,7 @@
 """Actual text-page UI regressions with fake providers and report generation."""
 
 import unittest
+from unittest.mock import patch
 from streamlit.testing.v1 import AppTest
 
 
@@ -54,6 +55,83 @@ class TextAnalysisPageTests(unittest.TestCase):
         app.button(key='run_snippet_analysis_button').click().run()
         self.assertEqual(len(app.exception), 0)
         return app
+
+    def assert_no_widget_default_warning(self, app, render):
+        from streamlit.elements.lib import policies
+        # Streamlit emits this warning once globally; reset it so another
+        # widget/test cannot hide the reported inference-runs regression.
+        with patch.object(policies, '_shown_default_value_warning', False):
+            render()
+        self.assertFalse(app.exception)
+        self.assertFalse(any('created with a default value' in item.value for item in app.warning))
+
+    def test_restored_inference_runs_preserve_widget_value_without_warning(self):
+        app = AppTest.from_string(APP, default_timeout=30)
+        app.session_state['text_inference_runs'] = 4
+        app.session_state['text_inference_runs_input'] = 7
+        self.assert_no_widget_default_warning(app, app.run)
+        self.assertEqual(app.number_input(key='text_inference_runs_input').value, 7)
+        self.assertEqual(app.session_state['text_inference_runs'], 7)
+        self.assert_no_widget_default_warning(
+            app, lambda: app.number_input(key='text_inference_runs_input').set_value(3).run(),
+        )
+        self.assertEqual(app.session_state['text_inference_runs'], 3)
+        self.assert_no_widget_default_warning(app, app.run)
+
+    def test_canonical_inference_runs_seed_missing_widget_without_warning(self):
+        app = AppTest.from_string(APP, default_timeout=30)
+        app.session_state['text_inference_runs'] = 4
+        self.assert_no_widget_default_warning(app, app.run)
+        self.assertEqual(app.number_input(key='text_inference_runs_input').value, 4)
+
+    def test_restored_text_inputs_preserve_edits_without_default_warning(self):
+        app = AppTest.from_string(APP, default_timeout=30)
+        input_key = 'text_input_text1_widget_Next-Passage Prediction'
+        truth_key = 'text_input_text2_widget_Next-Passage Prediction'
+        app.session_state[input_key] = 'restored source excerpt'
+        app.session_state[truth_key] = 'restored reference'
+        self.assert_no_widget_default_warning(app, app.run)
+        self.assertEqual(app.text_area(key=input_key).value, 'restored source excerpt')
+        self.assertEqual(app.text_area(key=truth_key).value, 'restored reference')
+        self.assert_no_widget_default_warning(
+            app, lambda: app.text_area(key=input_key).set_value('edited restored source').run(),
+        )
+        self.assert_no_widget_default_warning(app, app.run)
+        self.assertEqual(app.text_area(key=input_key).value, 'edited restored source')
+
+    def test_restored_user_defined_prompt_preserves_selection_and_text(self):
+        app = AppTest.from_string(APP, default_timeout=30)
+        app.session_state['text_prompt_type_index'] = 2
+        app.session_state['text_prompt_type_selectbox'] = 'User-Defined Evaluation'
+        app.session_state['custom_user_prompt'] = 'Complete restored instruction'
+        app.session_state['text_ground_truth_user_defined'] = 'Restored expected response'
+        self.assert_no_widget_default_warning(app, app.run)
+        self.assertEqual(app.selectbox(key='text_prompt_type_selectbox').value, 'User-Defined Evaluation')
+        self.assertEqual(app.text_area(key='custom_user_prompt').value, 'Complete restored instruction')
+        self.assertEqual(app.text_area(key='text_ground_truth_user_defined').value, 'Restored expected response')
+        self.assert_no_widget_default_warning(app, app.run)
+
+    def test_restored_direct_probing_template_preserves_nondefault_choices(self):
+        app = AppTest.from_string(APP, default_timeout=30)
+        book = "Example: Harry Potter and the Sorcerer's Stone"
+        method = 'Prompt Template 2'
+        input_key = f'text_input_text1_example_{book}_{method}_Direct Probing'
+        settings = {
+            'text_prompt_type_index': 1,
+            'text_prompt_type_selectbox': 'Direct Probing',
+            'text_input_method_index': 1,
+            'text_input_method_selectbox': book,
+            'text_prompting_method_index': 2,
+            'text_prompting_method_selectbox': method,
+            input_key: 'Restored customized book prompt',
+        }
+        for key, value in settings.items():
+            app.session_state[key] = value
+        self.assert_no_widget_default_warning(app, app.run)
+        self.assertEqual(app.selectbox(key='text_input_method_selectbox').value, book)
+        self.assertEqual(app.selectbox(key='text_prompting_method_selectbox').value, method)
+        self.assertEqual(app.text_area(key=input_key).value, 'Restored customized book prompt')
+        self.assert_no_widget_default_warning(app, app.run)
 
     def test_partial_tuple_failure_preserves_success_and_unlocks_controls(self):
         app = self.make_app()

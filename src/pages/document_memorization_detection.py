@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import streamlit as st
+from src.widget_defaults import widget_defaults
 from src.pages.sampling_controls import render_temperature_top_p
 from src.upload_cache import clear_upload_cache, resolve_uploaded_file
 
@@ -131,7 +132,10 @@ def _clear_pdf_cache() -> None:
     token = st.session_state.get(PDF_JOB_TOKEN_KEY)
     if token:
         try:
-            if DOCUMENT_JOBS.is_running(token):
+            from src.supabase_document_checkpoints import is_cloud_document_token
+            if is_cloud_document_token(token) and not _prepare_document_cloud():
+                raise CheckpointError("Sign in to clear this cloud document analysis.")
+            if _document_job_is_active(token, st.session_state.get("user_id")):
                 DOCUMENT_JOBS.stop(token, owner_id=st.session_state.get("user_id"))
                 st.warning("Stop requested. Wait for the current request to finish, then clear the cache.")
                 return
@@ -277,11 +281,75 @@ def _sync_document_job(state) -> None:
     st.session_state["pdf_analysis_chunk_size"] = settings["chunk_size"]
 
 
+def _document_job_is_active(token, owner_id=None):
+    active = getattr(DOCUMENT_JOBS, "is_active", None)
+    return active(token, owner_id=owner_id) if active is not None else DOCUMENT_JOBS.is_running(token)
+
+
+def _prepare_document_cloud():
+    # Authentication and service-key initialization stay on the Streamlit
+    # thread. Background workers only receive an already bound account store.
+    from src.resumable_analysis import AnalysisCheckpointError as CloudSetupError, get_cloud_store_for_current_user
+    st.session_state.pop("_pdf_verified_cloud_owner", None)
+    try:
+        cloud = get_cloud_store_for_current_user()
+    except CloudSetupError as exc:
+        raise CheckpointError(str(exc)) from exc
+    if cloud is not None:
+        DOCUMENT_JOBS.configure_cloud_store(cloud)
+        st.session_state["_pdf_verified_cloud_owner"] = cloud.owner_id
+    return cloud is not None
+
+
+def _render_document_recovery_list(active_token=None, *, disabled=False):
+    owner_id = st.session_state.get("user_id")
+    if not owner_id or st.session_state.get("_pdf_verified_cloud_owner") != owner_id or not DOCUMENT_JOBS.cloud_enabled_for(owner_id):
+        return
+    try:
+        saved = DOCUMENT_JOBS.list_saved(owner_id=owner_id)
+    except (CheckpointError, ValueError) as exc:
+        st.error(f"Could not list saved document analyses: {exc}")
+        return
+    if not saved:
+        return
+    st.markdown("**Your unfinished document analyses**")
+    entries = {item["token"]: item for item in saved}
+    def label(token):
+        if token is None:
+            return "Choose a saved analysis"
+        item = entries[token]
+        settings = item["settings"]
+        progress = f"{item['completed_chunks']}/{item['total_chunks']} chunks"
+        activity = "running" if item.get("active") else "ready to resume"
+        return f"{settings['filename']} · {settings['model']} · {progress} · {activity} · {token[:8]}"
+    options = [None, *entries]
+    selection_key = "pdf_cloud_recovery_selection"
+    if st.session_state.get(selection_key) not in options:
+        st.session_state.pop(selection_key, None)
+    selected = st.selectbox("Saved document analysis", options, format_func=label, key=selection_key)
+    if st.button("Open saved analysis", key="open_saved_pdf_analysis", disabled=disabled or not selected or selected == active_token):
+        try:
+            state = DOCUMENT_JOBS.get(selected, owner_id=owner_id)
+            if state is None:
+                raise CheckpointError("The saved document analysis is no longer available.")
+            st.session_state[PDF_JOB_TOKEN_KEY] = selected
+            st.query_params[PDF_JOB_QUERY_KEY] = selected
+            st.session_state.pop("pdf_report_bytes", None)
+            st.session_state.pop("pdf_report_fingerprint", None)
+            _sync_document_job(state)
+            _trigger_pdf_rerun()
+        except (CheckpointError, ValueError) as exc:
+            st.error(f"Could not open the saved analysis: {exc}")
+
+
 def _restore_document_job():
     token = st.query_params.get(PDF_JOB_QUERY_KEY) or st.session_state.get(PDF_JOB_TOKEN_KEY)
     if not token:
         return None
     try:
+        from src.supabase_document_checkpoints import is_cloud_document_token
+        if is_cloud_document_token(token) and (not st.session_state.get("_pdf_verified_cloud_owner") or st.session_state.get("_pdf_verified_cloud_owner") != st.session_state.get("user_id")):
+            raise CheckpointError("Sign in to restore this cloud document analysis.")
         state = DOCUMENT_JOBS.get(token, owner_id=st.session_state.get("user_id"))
         if state is None:
             raise CheckpointError("The saved analysis is no longer available. Start a new run.")
@@ -316,6 +384,10 @@ def _render_saved_pdf_results(state) -> None:
 @st.fragment(run_every=2)
 def _poll_document_job(token, owner_id) -> None:
     try:
+        from src.supabase_document_checkpoints import is_cloud_document_token
+        if is_cloud_document_token(token):
+            if not _prepare_document_cloud() or st.session_state.get("_pdf_verified_cloud_owner") != owner_id:
+                raise CheckpointError("Sign in to the account that created this cloud analysis to view its progress.")
         state = DOCUMENT_JOBS.get(token, owner_id=owner_id)
     except (CheckpointError, ValueError) as exc:
         st.error(f"Could not read analysis progress: {exc}")
@@ -324,7 +396,7 @@ def _poll_document_job(token, owner_id) -> None:
         st.error("The saved analysis is no longer available.")
         return
     _sync_document_job(state)
-    if not DOCUMENT_JOBS.is_running(token):
+    if not _document_job_is_active(token, owner_id):
         # Remove timed polling after the task ends and render its final report.
         st.rerun()
     completed = len(state["results"])
@@ -365,7 +437,7 @@ def _render_document_job(token, api_key, provider) -> None:
     st.markdown("---")
     st.markdown(f"**Saved analysis: {settings['filename']} · {settings['model']}**")
     st.caption("Bookmark this page to restore this analysis after reconnecting. The recovery link provides access to this document; keep it private.")
-    if DOCUMENT_JOBS.is_running(token):
+    if _document_job_is_active(token, owner_id):
         _poll_document_job(token, owner_id)
         return
     if state["status"] == "running":
@@ -393,8 +465,15 @@ def _render_document_job(token, api_key, provider) -> None:
 def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_header: bool = True):
     """Render the document-scale analysis workflow for PDF/TXT uploads."""
     
+    try:
+        cloud_enabled = _prepare_document_cloud()
+    except Exception as exc:
+        # Configured cloud storage must fail visibly instead of silently
+        # accepting a checkpoint on an ephemeral local filesystem.
+        st.error(f"Cloud document recovery is unavailable: {exc}")
+        return
     token = _restore_document_job()
-    job_running = bool(token and DOCUMENT_JOBS.is_running(token))
+    job_running = bool(token and _document_job_is_active(token, st.session_state.get("user_id")))
 
     # Initialize session state for PDF Analysis
     st.session_state['pdf_chunk_size'] = _normalise_document_chunk_size(
@@ -444,6 +523,12 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         with button_col:
             if st.button("🗑️ Clear Cache", key="clear_pdf_cache", help="Remove cached PDF analysis results", disabled=job_running):
                 _clear_pdf_cache()
+
+    if cloud_enabled:
+        st.caption("Document progress is saved to your account. Open an unfinished analysis below without uploading the document again.")
+    else:
+        st.info("Cloud recovery is unavailable for this session. Document progress uses local server storage and may be lost after redeployment.")
+    _render_document_recovery_list(token, disabled=job_running)
 
     # Initialize variables to avoid UnboundLocalError
     score_type = None
@@ -544,7 +629,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
     if continuation_method == "Custom Prompt":
         custom_pdf_prompt = st.text_area(
             "Custom prompt template",
-            value=st.session_state['pdf_custom_prompt_text'],
+            **widget_defaults('pdf_custom_prompt', value=st.session_state['pdf_custom_prompt_text']),
             height=180,
             placeholder="Write the instruction to use for each document chunk. Include {input_text} where the chunk should appear (e.g., '[Document chunk]'). Optional placeholders: {word_count}, {char_count}.",
             key="pdf_custom_prompt",
@@ -625,8 +710,8 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         )
     elif saved_analysis and saved_analysis.get("status") != "complete":
         st.caption(
-            "An incomplete analysis is saved. Restore its document and generation "
-            "settings to resume, or use Run to start a new analysis with these settings."
+            "An incomplete analysis is saved. Use Resume saved analysis below to "
+            "continue with its original document and settings, or use Run to start a new analysis."
         )
 
     analyze_document = render_run_button(
@@ -671,7 +756,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                     return
                 state = new_analysis_state(fingerprint, analysis_settings, len(chunk_pairs))
                 token = DOCUMENT_JOBS.create(
-                    state, chunk_pairs, owner_id=st.session_state.get("user_id")
+                    state, chunk_pairs, owner_id=st.session_state.get("user_id"), use_cloud=cloud_enabled
                 )
                 st.session_state[PDF_JOB_TOKEN_KEY] = token
                 st.query_params[PDF_JOB_QUERY_KEY] = token
@@ -682,7 +767,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                     overlap=analysis_settings["overlap"],
                 )
                 token = DOCUMENT_JOBS.create(
-                    saved_analysis, chunk_pairs, owner_id=st.session_state.get("user_id")
+                    saved_analysis, chunk_pairs, owner_id=st.session_state.get("user_id"), use_cloud=cloud_enabled
                 )
                 st.session_state[PDF_JOB_TOKEN_KEY] = token
                 st.query_params[PDF_JOB_QUERY_KEY] = token

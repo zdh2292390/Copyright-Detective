@@ -35,6 +35,17 @@ def submit_background_job(key: str, label: str, runner: JobRunner) -> bool:
         existing = _JOBS.get(key)
         if existing and existing.get("status") in {"queued", "running"}:
             return False
+    from src.resumable_analysis import prepare_background_journal, journal_scope
+    journal = prepare_background_journal(key, label)
+    with _LOCK:
+        existing = _JOBS.get(key)
+        if existing and existing.get("status") in {"queued", "running"}:
+            if journal is not None:
+                try:
+                    journal.finish(False)
+                except Exception:
+                    pass
+            return False
         _JOBS[key] = {
             "key": key,
             "label": label,
@@ -86,10 +97,13 @@ def submit_background_job(key: str, label: str, runner: JobRunner) -> bool:
                     return
                 record["status"] = "running"
                 record["message"] = "Starting"
-            result = runner(report)
+            with journal_scope(journal):
+                result = runner(report)
             # Snapshotting is part of execution and can itself fail. Publish
             # completed only after the result can be safely delivered.
             saved_result = deepcopy(result)
+            if journal is not None:
+                journal.finish(True)
             with _LOCK:
                 if _JOBS.get(key) is not record:
                     return
@@ -101,17 +115,32 @@ def submit_background_job(key: str, label: str, runner: JobRunner) -> bool:
                     finished_at=_now(),
                 )
         except BaseException as exc:
+            if journal is not None:
+                try:
+                    journal.finish(False)
+                except Exception:
+                    pass
             # SystemExit in a worker must also release the UI's active-job lock.
             fail(exc)
 
     def on_done(future: Any) -> None:
         if future.cancelled():
+            if journal is not None:
+                try:
+                    journal.finish(False)
+                except Exception:
+                    pass
             fail(RuntimeError("The background task was cancelled before it could finish."))
 
     try:
         future = _EXECUTOR.submit(execute)
         future.add_done_callback(on_done)
     except Exception as exc:
+        if journal is not None:
+            try:
+                journal.finish(False)
+            except Exception:
+                pass
         fail(exc)
     # True means this request was accepted, including an immediately visible
     # submission failure. False is reserved for an already active job.

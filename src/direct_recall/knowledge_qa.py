@@ -115,6 +115,8 @@ def generate_qa_pairs_from_document(
     num_pairs: int = 5,
     temperature: float = 0.7,
     top_p: float = 0.9,
+    *,
+    source_text: Optional[str] = None,
 ) -> Tuple[List[Dict[str, str]], str]:
     """
     Extract text from an uploaded document and generate Q&A pairs.
@@ -133,7 +135,9 @@ def generate_qa_pairs_from_document(
     """
     
     # Extract text from document
-    text = extract_text_from_document(document_file)
+    text = source_text if source_text is not None else extract_text_from_document(document_file)
+    if not isinstance(text, str):
+        return [], "Error: The saved document text is invalid."
     
     if isinstance(text, str) and text.startswith("Error"):
         return [], text
@@ -220,6 +224,14 @@ Answer:"""
             stop_sequences=["\n\n", "\nQuestion"],
         )
     except Exception as exc:
+        try:
+            from src.resumable_analysis import AnalysisCheckpointError
+        except ModuleNotFoundError as missing:
+            if missing.name != "src.resumable_analysis":
+                raise
+        else:
+            if isinstance(exc, AnalysisCheckpointError):
+                raise
         return f"Error answering question: {type(exc).__name__}: {exc}"
     if not isinstance(response, str) or not response.strip():
         return "Error: Model returned empty or invalid answer."

@@ -796,7 +796,7 @@ def _evaluate_with_basic_completion(
     }
 
 
-def evaluate_single_choice_question(
+def _evaluate_single_choice_question_uncached(
     question: Dict[str, Any],
     api_key: str,
     model_choice: str,
@@ -847,6 +847,57 @@ def evaluate_single_choice_question(
     return result
 
 
+def evaluate_single_choice_question(
+    question: Dict[str, Any],
+    api_key: str,
+    model_choice: str,
+    provider: str,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
+) -> Dict[str, Any]:
+    """Replay a saved item without changing direct or fallback evaluation."""
+    def invoke():
+        return _evaluate_single_choice_question_uncached(
+            question, api_key, model_choice, provider, temperature, top_p,
+        )
+    try:
+        from src.resumable_analysis import checkpoint_call
+    except ModuleNotFoundError as exc:
+        if exc.name != "src.resumable_analysis":
+            raise
+        return invoke()
+    endpoint = {
+        "OpenAI": "https://api.openai.com/v1",
+        "OpenRouter": "https://openrouter.ai/api/v1",
+        "Kimi": "https://api.moonshot.cn/v1",
+        "Anthropic": "https://api.anthropic.com",
+    }.get(provider)
+    if provider == "Local vLLM":
+        import streamlit as st
+        endpoint = st.session_state.get("sidebar_local_vllm_base_url", "http://localhost:8000/v1")
+    return checkpoint_call(
+        "single_choice.evaluate", {
+            "question": question, "model": model_choice or DEFAULT_MODELS.get(provider),
+            "provider": provider, "temperature": temperature, "top_p": top_p,
+            "endpoint": endpoint,
+        }, invoke,
+        is_success=lambda result: isinstance(result, dict) and not result.get("error")
+            and result.get("choice") in OPTION_LABELS,
+    )
+
+
+def _raise_checkpoint_error(exc):
+    """Storage failures must stop the loop before another paid request."""
+    try:
+        from src.resumable_analysis import AnalysisCheckpointError
+    except ModuleNotFoundError as missing:
+        if missing.name != "src.resumable_analysis":
+            raise
+        return
+    if isinstance(exc, AnalysisCheckpointError):
+        raise exc
+
+
 def run_single_choice_evaluation(
     questions: List[Dict[str, Any]],
     api_key: str,
@@ -876,6 +927,7 @@ def run_single_choice_evaluation(
                     top_p=top_p,
                 )
             except Exception as exc:
+                _raise_checkpoint_error(exc)
                 evaluation = _sc_error_result(f"Error evaluating question: {type(exc).__name__}: {exc}")
             if not isinstance(evaluation, dict) or evaluation.get("choice") not in OPTION_LABELS:
                 evaluation = _sc_error_result(

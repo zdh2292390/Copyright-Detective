@@ -469,6 +469,44 @@ def get_llm_completion(
     request_max_retries: Optional[int] = None,
     short_answer: bool = False,
 ) -> Any:
+    from src.resumable_analysis import checkpoint_call
+    resolved_model = model_name or DEFAULT_MODELS.get(provider)
+    payload = {
+        "prompt": prompt, "provider": provider, "model_name": resolved_model,
+        "temperature": temperature, "top_p": top_p, "base_url": base_url,
+        "max_output_tokens": max_output_tokens, "stop_sequences": stop_sequences,
+        "return_logprobs": return_logprobs, "short_answer": short_answer,
+        "request_timeout": request_timeout, "request_max_retries": request_max_retries,
+    }
+    return checkpoint_call(
+        "llm.completion", payload,
+        lambda: _get_llm_completion_uncheckpointed(
+            prompt, api_key, resolved_model, provider, temperature, top_p, base_url,
+            progress_message=progress_message, max_output_tokens=max_output_tokens,
+            stop_sequences=stop_sequences, return_logprobs=return_logprobs,
+            request_timeout=request_timeout, request_max_retries=request_max_retries,
+            short_answer=short_answer,
+        ),
+    )
+
+
+def _get_llm_completion_uncheckpointed(
+    prompt,
+    api_key,
+    model_name,
+    provider="OpenAI",
+    temperature=0.7,
+    top_p=0.9,
+    base_url: Optional[str] = None,
+    *,
+    progress_message: Optional[str] = None,
+    max_output_tokens: Optional[int] = None,
+    stop_sequences: Optional[List[str]] = None,
+    return_logprobs: bool = False,
+    request_timeout: Optional[float] = None,
+    request_max_retries: Optional[int] = None,
+    short_answer: bool = False,
+) -> Any:
     """
     Gets a completion from the specified LLM.
     

@@ -48,6 +48,8 @@ def render_run_button(label: str, trigger_key: str, button_label: str, **kwargs:
     """Render a Run button that locks the UI and returns True when it should execute."""
     should_run = should_execute_detection_run(trigger_key)
     if should_run:
+        from src.resumable_analysis import register_ui_run
+        register_ui_run(label, trigger_key)
         start_detection_job(label)
 
     extra_disabled = bool(kwargs.pop("disabled", False))
@@ -111,8 +113,14 @@ def reset_detection_job() -> None:
 def detection_job(label: str) -> Iterator[None]:
     if not is_detection_job_running():
         start_detection_job(label)
+    from src.resumable_analysis import finish_ui_run
     try:
         yield
+    except BaseException:
+        finish_ui_run(False)
+        raise
+    else:
+        finish_ui_run(True)
     finally:
         finish_detection_job()
 

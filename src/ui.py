@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import streamlit as st
+from src.widget_defaults import widget_defaults
 import pandas as pd
 from Levenshtein import distance
 import html
@@ -554,6 +555,9 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
             for example in few_shot_examples:
                 general_prompt += f"Question: {example['question']}\nAnswer: {example['answer']}\n\n"
 
+        if st.session_state.get("_analysis_resume_task") and "qa_knowmem_general_prompt" in st.session_state:
+            general_prompt = st.session_state["qa_knowmem_general_prompt"]
+        st.session_state["qa_knowmem_general_prompt"] = general_prompt
         progress_bar.progress(0.3, text=" Running evaluation...")
 
         max_new_tokens = int(st.session_state.get("qa_knowmem_max_new_tokens", 64) or 64)
@@ -595,6 +599,7 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
                 st.error(f"Evaluation of question {i + 1} failed: {detail}")
                 continue
 
+        st.session_state["qa_knowmem_saved_entries"] = list(logger.entries)
         progress_bar.progress(1.0, text="Done:All evaluations completed!")
         progress_bar.empty()
         
@@ -760,7 +765,8 @@ def render_evaluation_queue(api_key, model_choice, provider) -> None:
         "qa_run_knowmem_eval",
         "🧠 Run: Knowmem Evaluation",
     ):
-        run_knowmem_evaluation(api_key, model_choice, provider)
+        with detection_job("Knowmem Evaluation"):
+            run_knowmem_evaluation(api_key, model_choice, provider)
     
     if st.button("Clear evaluation batch", key="qa_clear_eval_batch"):
         st.session_state[QA_EVAL_QUEUE_KEY] = []
@@ -1023,11 +1029,9 @@ def render_sidebar():
                     "Go to game",
                     game_pages,
                     label_visibility="collapsed",
-                    index=(
-                        game_pages.index(current_navigation)
+                    index=game_pages.index(current_navigation)
                         if current_navigation in game_pages
-                        else None
-                    ),
+                        else None,
                     key="game_navigation",
                     on_change=_activate_game_page,
                 )
@@ -1267,6 +1271,14 @@ def render_qa_based_detection(api_key, model_choice, provider):
             key="knowledge_qa_pdf_upload"
         )
         uploaded_document = resolve_uploaded_file(KNOWLEDGE_QA_UPLOAD_CACHE_KEY, uploaded_document)
+        if uploaded_document is not None:
+            from src.direct_recall.pdf_utils import extract_text_from_document
+            decoded_text = extract_text_from_document(uploaded_document)
+            if isinstance(decoded_text, str) and decoded_text.strip() and not decoded_text.startswith("Error"):
+                words = decoded_text.split()
+                st.session_state["qa_document_text_content"] = " ".join(words[:3000]) if len(words) > 3000 else decoded_text
+        elif st.session_state.get("qa_document_text_content"):
+            st.caption("Using the document text saved with this task. No re-upload is required.")
     elif qa_source_mode == "Predefined Examples":
         literature_options = list_knowledge_book_titles()
 
@@ -1279,7 +1291,10 @@ def render_qa_based_detection(api_key, model_choice, provider):
 
         # Display selected literature info
         st.caption(f" Selected: {selected_literature}")
-        qa_pairs = get_knowledge_question_bank_by_title(selected_literature)
+        if st.session_state.get("_analysis_resume_task") and st.session_state.get("qa_pairs_source") == "predefined" and st.session_state.get("qa_generated_qa_pairs"):
+            qa_pairs = st.session_state["qa_generated_qa_pairs"]
+        else:
+            qa_pairs = get_knowledge_question_bank_by_title(selected_literature)
         if st.session_state.get('qa_generated_qa_pairs') != qa_pairs:
             st.session_state['qa_evaluation_results'] = None
             st.session_state['qa_sleek_results'] = None
@@ -1334,7 +1349,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 "Number of Q/A Pairs to Generate",
                 min_value=1,
                 max_value=20,
-                value=st.session_state['qa_num_qa_pairs'],
+                **widget_defaults('num_qa_pairs', value=st.session_state['qa_num_qa_pairs']),
                 step=1,
                 help="How many question-answer pairs to generate from the uploaded document",
                 key="num_qa_pairs"
@@ -1345,7 +1360,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 "Temperature",
                 min_value=0.0,
                 max_value=1.2,
-                value=0.7,
+                **widget_defaults('qa_gen_temperature', value=0.7),
                 step=0.05,
                 help="Controls randomness in Q/A generation. Higher = more diverse questions.",
                 key="qa_gen_temperature"
@@ -1356,7 +1371,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 "Top-P",
                 min_value=0.0,
                 max_value=1.0,
-                value=0.9,
+                **widget_defaults('qa_gen_top_p', value=0.9),
                 step=0.05,
                 help="Nucleus sampling parameter for controlling diversity during Q/A generation.",
                 key="qa_gen_top_p"
@@ -1406,7 +1421,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                                         top_p=qa_gen_top_p,
                                     )
                             elif qa_source_mode == "Upload Document":
-                                if not uploaded_document:
+                                if not uploaded_document and not st.session_state.get("qa_document_text_content"):
                                     st.warning("Warning: Please upload a document first.")
                                 else:
                                     qa_pairs, document_text = generate_qa_pairs_from_document(
@@ -1417,6 +1432,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                                         num_pairs=num_qa_pairs,
                                         temperature=qa_gen_temperature,
                                         top_p=qa_gen_top_p,
+                                        source_text=st.session_state.get("qa_document_text_content") or None,
                                     )
                             if isinstance(document_text, str) and document_text.startswith("Error"):
                                 st.error(f"Error:{document_text}")
@@ -1460,7 +1476,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
         evaluation_mode = st.radio(
             "Choose evaluation method",
             ["Standard", "Step-by-step Leaking and Extraction"],
-            index=0 if st.session_state.get('qa_evaluation_mode', 'Standard') == 'Standard' else 1,
+            **widget_defaults('qa_evaluation_mode_radio', index=0 if st.session_state.get('qa_evaluation_mode', 'Standard') == 'Standard' else 1),
             horizontal=True,
             key="qa_evaluation_mode_radio",
             help="Standard: Direct Q/A evaluation. Step-by-step Leaking and Extraction: Decompose question ->COT reasoning ->Compare final answer with ground truth using Standard metrics."
@@ -1478,7 +1494,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                     "Number of Evaluation Runs",
                     min_value=1,
                     max_value=500,
-                    value=st.session_state['qa_num_eval_runs'],
+                    **widget_defaults('num_eval_runs', value=st.session_state['qa_num_eval_runs']),
                     step=1,
                     help="How many times to run the evaluation (for consistency testing). Maximum 500.",
                     key="num_eval_runs"
@@ -1489,7 +1505,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                     "Temperature",
                     min_value=0.0,
                     max_value=1.2,
-                    value=st.session_state['qa_eval_temperature'],
+                    **widget_defaults('eval_temperature', value=st.session_state['qa_eval_temperature']),
                     step=0.05,
                     help="Controls randomness in answering. 0 = deterministic.",
                     key="eval_temperature"
@@ -1500,7 +1516,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                     "Top-P",
                     min_value=0.0,
                     max_value=1.0,
-                    value=st.session_state['qa_eval_top_p'],
+                    **widget_defaults('eval_top_p', value=st.session_state['qa_eval_top_p']),
                     step=0.05,
                     help="Nucleus sampling parameter.",
                     key="eval_top_p"
@@ -1509,7 +1525,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
             # LLM Judge configuration
             enable_llm_judge = st.checkbox(
                 "Enable LLM as a Judge",
-                value=st.session_state.get('qa_enable_llm_judge', False),
+                **widget_defaults('enable_llm_judge', value=st.session_state.get('qa_enable_llm_judge', False)),
                 key="enable_llm_judge",
                 help="Use the same LLM to evaluate the semantic correctness of answers by comparing model output with ground truth."
             )
@@ -1930,7 +1946,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                     "Number of Evaluation Runs",
                     min_value=1,
                     max_value=500,
-                    value=st.session_state.get('sleek_num_eval_runs', 1),
+                    **widget_defaults('sleek_num_eval_runs', value=st.session_state.get('sleek_num_eval_runs', 1)),
                     step=1,
                     help="How many times to run each sub-question evaluation. Maximum 500.",
                     key="sleek_num_eval_runs"
@@ -1941,7 +1957,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                     "Temperature",
                     min_value=0.0,
                     max_value=1.2,
-                    value=st.session_state.get('sleek_eval_temperature', 0.7),
+                    **widget_defaults('sleek_eval_temperature', value=st.session_state.get('sleek_eval_temperature', 0.7)),
                     step=0.05,
                     help="Controls randomness in answering. 0 = deterministic.",
                     key="sleek_eval_temperature"
@@ -1952,7 +1968,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                     "Top-P",
                     min_value=0.0,
                     max_value=1.0,
-                    value=st.session_state.get('sleek_eval_top_p', 0.9),
+                    **widget_defaults('sleek_eval_top_p', value=st.session_state.get('sleek_eval_top_p', 0.9)),
                     step=0.05,
                     help="Nucleus sampling parameter.",
                     key="sleek_eval_top_p"
@@ -3645,9 +3661,13 @@ def render_sleek_attack_page(api_key, model_choice, provider):
             try:
                 from src.direct_recall.pdf_utils import extract_text_from_document
                 document_text = extract_text_from_document(uploaded_document)
+                st.session_state["sleek_document_text_content"] = document_text
                 st.caption(f"Extracted text length: {len(document_text)} characters - {len(document_text.split())} words")
             except Exception as e:
                 st.error(f"Error extracting text from document: {e}")
+        elif st.session_state.get("sleek_document_text_content"):
+            document_text = st.session_state["sleek_document_text_content"]
+            st.caption("Using the document text saved with this task. No re-upload is required.")
     
     # Step 2: Configure evaluation
     st.markdown('<p class="analysis-step-label">Step 2 - Configure evaluation</p>', unsafe_allow_html=True)
@@ -3658,7 +3678,7 @@ def render_sleek_attack_page(api_key, model_choice, provider):
             "Temperature",
             min_value=0.0,
             max_value=1.0,
-            value=0.7,
+            **widget_defaults('sleek_temperature', value=0.7),
             step=0.05,
             help="Controls randomness in LLM responses during the attack.",
             key="sleek_temperature"
@@ -3669,7 +3689,7 @@ def render_sleek_attack_page(api_key, model_choice, provider):
             "Top-P",
             min_value=0.0,
             max_value=1.0,
-            value=0.9,
+            **widget_defaults('sleek_top_p', value=0.9),
             step=0.05,
             help="Nucleus sampling parameter for controlling diversity.",
             key="sleek_top_p"

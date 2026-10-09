@@ -843,6 +843,7 @@ def _render_provider_workspace(
             )
 
     if clicked:
+        resume_background_key = st.session_state.pop("_analysis_resume_background_key", None)
         round_id = uuid4().hex
         started_at = datetime.now(_KST).strftime("%Y-%m-%d %H:%M:%S KST")
         history = _round_history()
@@ -857,6 +858,8 @@ def _render_provider_workspace(
 
         failed_to_start: List[str] = []
         for provider in _PROVIDERS:
+            if resume_background_key and _job_key(provider) != resume_background_key:
+                continue
             model, temperature, top_p, runs, api_key = provider_settings[provider]
             if runs == 0:
                 forget_background_job(_job_key(provider))

@@ -61,19 +61,25 @@ def render_temperature_top_p(
     st.session_state[top_p_session_key] = _sampling_value(
         st.session_state[top_p_session_key], default_top_p, top_p_range,
     )
-    for widget_key, default, limits in ((temp_key, default_temp, temp_range), (top_p_key, default_top_p, top_p_range)):
+    # Widget state owns the slider value. Seed missing keys from the canonical
+    # settings so restored widgets never also receive an explicit default.
+    for widget_key, session_key, default, limits in (
+        (temp_key, temp_session_key, default_temp, temp_range),
+        (top_p_key, top_p_session_key, default_top_p, top_p_range),
+    ):
         if widget_key in st.session_state:
             value = st.session_state[widget_key]
             recovered = _sampling_value(value, default, limits)
             if not isinstance(value, float) or not math.isfinite(value) or value != recovered:
                 st.session_state[widget_key] = recovered
+        else:
+            st.session_state[widget_key] = st.session_state[session_key]
 
     with temp_container:
         temperature = st.slider(
             temp_label,
             min_value=float(temp_range[0]),
             max_value=float(temp_range[1]),
-            value=float(st.session_state[temp_session_key]),
             step=float(temp_step),
             help=help_temp,
             key=temp_key,
@@ -86,7 +92,6 @@ def render_temperature_top_p(
             top_p_label,
             min_value=float(top_p_range[0]),
             max_value=float(top_p_range[1]),
-            value=float(st.session_state[top_p_session_key]),
             step=float(top_p_step),
             help=help_top_p,
             key=top_p_key,

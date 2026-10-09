@@ -139,74 +139,93 @@ def execute_analysis_remotely(
     code_files = read_analysis_code_files(feature)
     headers = {"X-API-Key": api_key} if api_key else {}
     submit_timeout = min(90, timeout)
-    try:
-        response = requests.post(
-            f"{agent_url}/run_analysis",
-            json={
-                "feature": feature, "model_reference_path": model_reference_path,
-                "model_path": model_path, "query": query, "device": device,
-                "batch_size": batch_size, "num_batches": num_batches,
-                "max_length": max_length, "analysis_code": json.dumps(code_files),
-            },
-            headers=headers, timeout=submit_timeout,
-        )
-    except requests.exceptions.RequestException as exc:
-        # A submission timeout may still have created a task. Never resubmit it automatically.
-        raise RuntimeError("Unable to submit representational analysis. The server may have accepted the request; check the server before starting another task.") from exc
-    try:
-        if response.status_code not in (200, 202):
-            raise RuntimeError(f"Analysis submission failed with HTTP {response.status_code}. Check deployment agent connectivity and credentials.")
-        result = _response_object(response, "Analysis submission")
-        if response.status_code == 200:
-            return _completed_result(result, api_key=api_key)
-        task_id = result.get("task_id")
-        if not isinstance(task_id, str) or not task_id.strip() or len(task_id) > 256:
-            raise RuntimeError("Server returned 202 without a valid task_id.")
-    finally:
-        response.close()
+    from src.resumable_analysis import checkpoint_call
+    submission = {
+        "agent_url": agent_url, "feature": feature,
+        "model_reference_path": model_reference_path, "model_path": model_path,
+        "query": query, "device": device, "batch_size": batch_size,
+        "num_batches": num_batches, "max_length": max_length,
+        "analysis_code": json.dumps(code_files, sort_keys=True),
+    }
 
-    deadline = time.monotonic() + max_poll_time
-    last_error = ""
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            detail = f" Last status error: {last_error}" if last_error else ""
-            raise RuntimeError(f"Polling timeout after {max_poll_time} seconds. Task {task_id} may still be running on the server.{detail}")
+    def submit_once():
         try:
-            status_response = requests.get(
-                f"{agent_url}/task_status/{quote(task_id, safe='')}",
-                headers=headers, timeout=min(timeout, 30, remaining),
+            response = requests.post(
+                f"{agent_url}/run_analysis",
+                json={key: value for key, value in submission.items() if key != "agent_url"},
+                headers=headers, timeout=submit_timeout,
             )
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
-            last_error = "The deployment agent could not be reached during the last status check."
         except requests.exceptions.RequestException as exc:
-            raise RuntimeError(f"Unable to check analysis task {task_id} status.") from exc
-        else:
+            raise RuntimeError("Unable to submit representational analysis. The server may have accepted the request; check the server before starting another task.") from exc
+        try:
+            if response.status_code not in (200, 202):
+                raise RuntimeError(f"Analysis submission failed with HTTP {response.status_code}. Check deployment agent connectivity and credentials.")
+            result = _response_object(response, "Analysis submission")
+            if response.status_code == 200:
+                _completed_result(result, api_key=api_key)
+            else:
+                task_id = result.get("task_id")
+                if not isinstance(task_id, str) or not task_id.strip() or len(task_id) > 256:
+                    raise RuntimeError("Server returned 202 without a valid task_id.")
+            return {"http_status": response.status_code, "response": result}
+        finally:
+            response.close()
+
+    submitted = checkpoint_call("representational.submit", submission, submit_once)
+    if submitted["http_status"] == 200:
+        return _completed_result(submitted["response"], api_key=api_key)
+    task_id = submitted["response"]["task_id"]
+
+    def wait_for_result():
+        deadline = time.monotonic() + max_poll_time
+        last_error = ""
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                detail = f" Last status error: {last_error}" if last_error else ""
+                raise RuntimeError(f"Polling timeout after {max_poll_time} seconds. Task {task_id} may still be running on the server.{detail}")
             try:
-                code = status_response.status_code
-                if code in (408, 429, 500, 502, 503, 504, 524, 530):
-                    last_error = f"HTTP {code} while checking task status."
-                elif code not in (200, 202):
-                    raise RuntimeError(f"Task {task_id} status check failed with HTTP {code}. Check server availability and credentials.")
-                else:
-                    status_data = _response_object(status_response, "Task status")
-                    status = status_data.get("status")
-                    if status == "completed":
-                        return _completed_result(status_data.get("result"), api_key=api_key)
-                    if status == "failed":
-                        error = status_data.get("error")
-                        message = error.get("msg", "Unknown error") if isinstance(error, dict) else str(error or "Unknown error")
-                        if api_key:
-                            message = str(message).replace(api_key, "[redacted]")
-                        raise RuntimeError(f"Analysis task {task_id} failed: {str(message)[:1000]}")
-                    if status not in ("pending", "running"):
-                        raise RuntimeError(f"Task {task_id} returned an invalid or missing task status.")
-                    last_error = ""
-            finally:
-                status_response.close()
-        remaining = deadline - time.monotonic()
-        if remaining > 0:
-            time.sleep(min(poll_interval, remaining))
+                status_response = requests.get(
+                    f"{agent_url}/task_status/{quote(task_id, safe='')}",
+                    headers=headers, timeout=min(timeout, 30, remaining),
+                )
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+                last_error = "The deployment agent could not be reached during the last status check."
+            except requests.exceptions.RequestException as exc:
+                raise RuntimeError(f"Unable to check analysis task {task_id} status.") from exc
+            else:
+                try:
+                    code = status_response.status_code
+                    if code in (408, 429, 500, 502, 503, 504, 524, 530):
+                        last_error = f"HTTP {code} while checking task status."
+                    elif code not in (200, 202):
+                        raise RuntimeError(f"Task {task_id} status check failed with HTTP {code}. Check server availability and credentials.")
+                    else:
+                        status_data = _response_object(status_response, "Task status")
+                        status = status_data.get("status")
+                        if status == "completed":
+                            _completed_result(status_data.get("result"), api_key=api_key)
+                            return status_data["result"]
+                        if status == "failed":
+                            error = status_data.get("error")
+                            message = error.get("msg", "Unknown error") if isinstance(error, dict) else str(error or "Unknown error")
+                            if api_key:
+                                message = str(message).replace(api_key, "[redacted]")
+                            raise RuntimeError(f"Analysis task {task_id} failed: {str(message)[:1000]}")
+                        if status not in ("pending", "running"):
+                            raise RuntimeError(f"Task {task_id} returned an invalid or missing task status.")
+                        last_error = ""
+                finally:
+                    status_response.close()
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(poll_interval, remaining))
+
+    result = checkpoint_call(
+        "representational.result", {"agent_url": agent_url, "task_id": task_id},
+        wait_for_result,
+    )
+    return _completed_result(result, api_key=api_key)
 
 
 def _response_object(response, context: str) -> Dict[str, Any]:

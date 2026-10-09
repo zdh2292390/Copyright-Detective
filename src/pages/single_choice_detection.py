@@ -13,6 +13,7 @@ from typing import Any, Dict
 
 import pandas as pd
 import streamlit as st
+from src.widget_defaults import widget_defaults
 
 from src.pages.sampling_controls import render_temperature_top_p
 from src.direct_recall import (
@@ -29,6 +30,7 @@ from src.pdf_preview import (
 )
 from src.job_guard import detection_job, render_run_button, wd
 from src.upload_cache import resolve_uploaded_file
+from src.direct_recall.pdf_utils import extract_text_from_document
 
 SC_UPLOAD_CACHE_KEY = "sc_cached_upload"
 
@@ -47,6 +49,8 @@ def _sync_source_identity(identity):
         st.session_state["sc_evaluation_results"] = None
         st.session_state["sc_document_text"] = ""
         st.session_state.pop("sc_evaluation_metadata", None)
+        for key in ("sc_upload_source_text", "sc_upload_source_name", "sc_upload_source_identity"):
+            st.session_state.pop(key, None)
     st.session_state["sc_source_identity"] = identity
 
 
@@ -115,7 +119,29 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
             key="sc_document_upload",
         )
         uploaded_document = resolve_uploaded_file(SC_UPLOAD_CACHE_KEY, uploaded_document)
-        _sync_source_identity(_source_identity(source_mode, document=uploaded_document))
+        if uploaded_document is not None:
+            identity = _source_identity(source_mode, document=uploaded_document)
+            _sync_source_identity(identity)
+            if st.session_state.get("sc_upload_source_identity") != identity:
+                decoded_text = extract_text_from_document(uploaded_document)
+                if isinstance(decoded_text, str) and not decoded_text.startswith("Error"):
+                    words = decoded_text.split()
+                    if len(words) > 3500:
+                        decoded_text = " ".join(words[:3500])
+                    st.session_state["sc_upload_source_text"] = decoded_text
+                    st.session_state["sc_upload_source_name"] = uploaded_document.name
+                    st.session_state["sc_upload_source_identity"] = identity
+                else:
+                    st.error(decoded_text if isinstance(decoded_text, str) else "The document text could not be extracted.")
+        elif st.session_state.get("sc_upload_source_text"):
+            # A recovered cloud snapshot contains text, not an upload widget.
+            # Retain its source identity so existing MCQs/results survive rendering.
+            identity = st.session_state.get("sc_upload_source_identity") or st.session_state.get("sc_source_identity")
+            if identity:
+                st.session_state["sc_source_identity"] = identity
+            st.caption(f"Recovered source: {st.session_state.get('sc_upload_source_name', 'uploaded document')}")
+        else:
+            _sync_source_identity(_source_identity(source_mode, document=None))
     elif source_mode == "Predefined Examples":
         st.markdown("**📚 Select predefined evaluation dataset**")
         dataset_options = ["arXivTection", "BookTection"]
@@ -283,7 +309,7 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
             st.number_input(
                 "Number of distractors",
                 min_value=1,
-                value=3,
+                **widget_defaults('sc_num_distractors', value=3),
                 step=1,
                 help="Number of incorrect options to generate for each question.",
                 key="sc_num_distractors",
@@ -346,9 +372,23 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
                                 progress_callback=update_generation_progress,
                             )
                     elif source_mode == "Upload Document":
-                        if not uploaded_document:
+                        saved_upload_text = st.session_state.get("sc_upload_source_text", "")
+                        if not uploaded_document and not saved_upload_text:
                             st.warning("⚠️ Upload a PDF/TXT document first.")
                             generated_mcqs, document_text = [], ""
+                        elif uploaded_document is None:
+                            document_text = saved_upload_text
+                            generated_mcqs = generate_single_choice_questions_from_fragments(
+                                document_text,
+                                effective_api_key,
+                                generation_model,
+                                generation_provider,
+                                num_questions=st.session_state['sc_num_questions'],
+                                num_distractors=st.session_state['sc_num_distractors'],
+                                temperature=st.session_state['sc_gen_temperature'],
+                                top_p=st.session_state['sc_gen_top_p'],
+                                progress_callback=update_generation_progress,
+                            )
                         else:
                             generated_mcqs, document_text = generate_single_choice_questions_from_document_fragments(
                                 uploaded_document,

@@ -21,6 +21,7 @@ from io import BytesIO
 
 import requests
 import streamlit as st
+from src.widget_defaults import widget_defaults
 import pandas as pd
 from src.job_guard import detection_job, render_run_button, reset_detection_job, wd
 from src.floating_clear_cache import (
@@ -326,7 +327,7 @@ def render_min_k_prob_page(api_key, model_choice, provider):
     with col_url:
         agent_url = st.text_input(
             "Deployment Agent URL",
-            value=st.session_state.get('min_k_deploy_agent_url', ''),
+            **widget_defaults('min_k_deploy_agent_url_input', value=st.session_state.get('min_k_deploy_agent_url', '')),
             placeholder="https://cool-server-link.trycloudflare.com",
             help="The URL of your server deployment agent (from Cloudflare Tunnel or similar)",
             type="password",
@@ -335,7 +336,7 @@ def render_min_k_prob_page(api_key, model_choice, provider):
     with col_key:
         agent_key = st.text_input(
             "Key",
-            value=st.session_state.get('min_k_deploy_agent_key', ''),
+            **widget_defaults('min_k_deploy_agent_key_input', value=st.session_state.get('min_k_deploy_agent_key', '')),
             placeholder="YOUR_API_KEY",
             help="API key set on your server (YOUR_API_KEY environment variable)",
             type="password",
@@ -352,7 +353,7 @@ def render_min_k_prob_page(api_key, model_choice, provider):
     
     model_path = st.text_input(
         "Model path",
-        value=st.session_state['min_k_model_path'],
+        **widget_defaults('min_k_model_path_input', value=st.session_state['min_k_model_path']),
         placeholder="e.g. gpt2, Qwen/Qwen2.5-7B, or /path/to/local/model",
         help="Hugging Face model ID (e.g., 'gpt2') or absolute path to local model directory containing config.json",
         type="password",
@@ -378,7 +379,7 @@ def render_min_k_prob_page(api_key, model_choice, provider):
         st.markdown("##### Input Prompt")
         prompt = st.text_area(
             "Prompt",
-            value=st.session_state[_get_mode_key(input_mode, 'prompt')],
+            **widget_defaults('min_k_user_input_prompt_input', value=st.session_state[_get_mode_key(input_mode, 'prompt')]),
             height=180,
             placeholder="Enter one or multiple lines; each non-empty line will be treated as a separate prompt.",
             help="Multiple lines supported: each non-empty line is treated as one prompt.",
@@ -500,7 +501,7 @@ def render_min_k_prob_page(api_key, model_choice, provider):
             dataset_type = st.selectbox(
                 "Choose dataset",
                 options=["WikiMIA", "BookMIA"],
-                index=0 if current_dataset_type == 'WikiMIA' else 1,
+                **widget_defaults('min_k_predefined_dataset_type_select', index=0 if current_dataset_type == 'WikiMIA' else 1),
                 help="Select a predefined dataset for evaluation",
                 key="min_k_predefined_dataset_type_select",
             )
@@ -543,7 +544,7 @@ def render_min_k_prob_page(api_key, model_choice, provider):
                 selected_length = st.selectbox(
                     "Select Text Length",
                     options=length_options,
-                    index=length_options.index(st.session_state[wikimia_length_key]) if st.session_state[wikimia_length_key] in length_options else 1,
+                    **widget_defaults('min_k_predefined_wikimia_length_select', index=length_options.index(st.session_state[wikimia_length_key]) if st.session_state[wikimia_length_key] in length_options else 1),
                     help="Select the length of text sequences in the WikiMIA dataset",
                     key=f"min_k_predefined_wikimia_length_select",
                 )
@@ -566,7 +567,7 @@ def render_min_k_prob_page(api_key, model_choice, provider):
                 "Sample count (balanced labels)",
                 min_value=2,
                 max_value=5000,
-                value=int(st.session_state.get(sample_count_key, 50)),
+                **widget_defaults('min_k_predefined_sample_count_input', value=int(st.session_state.get(sample_count_key, 50))),
                 step=2,
                 help="Total number of samples to load; will try to split evenly between label=0 and label=1.",
                 key="min_k_predefined_sample_count_input",
@@ -749,7 +750,7 @@ def render_min_k_prob_page(api_key, model_choice, provider):
                 "Chunk size (words)",
                 min_value=10,
                 max_value=5000,
-                value=int(st.session_state.get('min_k_upload_chunk_size', 200)),
+                **widget_defaults('min_k_upload_chunk_size_input', value=int(st.session_state.get('min_k_upload_chunk_size', 200))),
                 step=10,
                 help="Number of words per chunk.",
                 key="min_k_upload_chunk_size_input",
@@ -760,7 +761,7 @@ def render_min_k_prob_page(api_key, model_choice, provider):
                 "Chunk count",
                 min_value=1,
                 max_value=200,
-                value=int(st.session_state.get('min_k_upload_chunk_count', 10)),
+                **widget_defaults('min_k_upload_chunk_count_input', value=int(st.session_state.get('min_k_upload_chunk_count', 10))),
                 step=1,
                 help="How many chunks to sample.",
                 key="min_k_upload_chunk_count_input",
@@ -771,7 +772,7 @@ def render_min_k_prob_page(api_key, model_choice, provider):
                 "K Percentage (%)",
                 min_value=1,
                 max_value=50,
-                value=st.session_state[_get_mode_key(input_mode, 'percentage')],
+                **widget_defaults('min_k_upload_percentage_input', value=st.session_state[_get_mode_key(input_mode, 'percentage')]),
                 step=1,
                 help="Percentage of lowest probability tokens to analyze (e.g., 10 means bottom 10%).",
                 key="min_k_upload_percentage_input",
@@ -782,7 +783,7 @@ def render_min_k_prob_page(api_key, model_choice, provider):
                 "Max Tokens",
                 min_value=1,
                 max_value=4000,
-                value=st.session_state[_get_mode_key(input_mode, 'max_tokens')],
+                **widget_defaults('min_k_upload_max_tokens_input', value=st.session_state[_get_mode_key(input_mode, 'max_tokens')]),
                 step=50,
                 help="Maximum number of tokens to generate.",
                 key="min_k_upload_max_tokens_input",
@@ -795,7 +796,7 @@ def render_min_k_prob_page(api_key, model_choice, provider):
                 "K Percentage (%)",
                 min_value=1,
                 max_value=50,
-                value=st.session_state[_get_mode_key(input_mode, 'percentage')],
+                **widget_defaults(f"min_k_{input_mode.lower().replace(' ', '_')}_percentage_input", value=st.session_state[_get_mode_key(input_mode, 'percentage')]),
                 step=1,
                 help="Percentage of lowest probability tokens to analyze (e.g., 10 means bottom 10%).",
                 key=f"min_k_{input_mode.lower().replace(' ', '_')}_percentage_input",
@@ -806,7 +807,7 @@ def render_min_k_prob_page(api_key, model_choice, provider):
                 "Max Tokens",
                 min_value=1,
                 max_value=4000,
-                value=st.session_state[_get_mode_key(input_mode, 'max_tokens')],
+                **widget_defaults(f"min_k_{input_mode.lower().replace(' ', '_')}_max_tokens_input", value=st.session_state[_get_mode_key(input_mode, 'max_tokens')]),
                 step=50,
                 help="Maximum number of tokens to generate.",
                 key=f"min_k_{input_mode.lower().replace(' ', '_')}_max_tokens_input",
@@ -1700,6 +1701,31 @@ def _validate_logprob(value):
 
 
 def _get_completion_logprobs(prompt: str, api_key: str, model_name: str, base_url: Optional[str] = None, progress_message: Optional[str] = None) -> Tuple[List[float], Optional[str]]:
+    """Replay the optional Completion probe, including unsupported-endpoint results."""
+    def invoke():
+        return _get_completion_logprobs_uncached(prompt, api_key, model_name, base_url, progress_message)
+    try:
+        from src.resumable_analysis import checkpoint_call
+    except ModuleNotFoundError as exc:
+        if exc.name != "src.resumable_analysis":
+            raise
+        return invoke()
+    result = checkpoint_call(
+        "min_k.completion_probe", {
+            "prompt": prompt.replace('\x00', ''), "model": model_name,
+            "endpoint": base_url or "https://api.openai.com/v1",
+            "max_tokens": 0, "temperature": 1.0, "logprobs": 5, "echo": True,
+        }, invoke,
+        is_success=lambda value: isinstance(value, (list, tuple)) and len(value) == 2
+            and (value[1] is None or isinstance(value[1], str))
+            and isinstance(value[0], (list, tuple))
+            and all(isinstance(logprob, Real) and not isinstance(logprob, bool)
+                    and math.isfinite(logprob) and logprob <= 0 for logprob in value[0]),
+    )
+    return list(result[0]), result[1]
+
+
+def _get_completion_logprobs_uncached(prompt: str, api_key: str, model_name: str, base_url: Optional[str] = None, progress_message: Optional[str] = None) -> Tuple[List[float], Optional[str]]:
     """Get prompt log probabilities with bounded requests and validated responses."""
     if not OPENAI_AVAILABLE:
         return [], "OpenAI library not available"
@@ -2139,7 +2165,7 @@ def render_representational_analysis_page(api_key, model_choice, provider):
             "Batch size",
             min_value=1,
             max_value=128,
-            value=st.session_state['unlearn_batch_size'],
+            **widget_defaults('representational_batch_size', value=st.session_state['unlearn_batch_size']),
             step=1,
             help="Mini-batch size for analyses that stream batches (FIM, CKA).",
             key="representational_batch_size",
@@ -2151,7 +2177,7 @@ def render_representational_analysis_page(api_key, model_choice, provider):
             "Batches",
             min_value=1,
             max_value=200,
-            value=st.session_state['unlearn_num_batches'],
+            **widget_defaults('representational_num_batches', value=st.session_state['unlearn_num_batches']),
             step=1,
             help="Number of dataloader batches to use when estimating statistics (FIM, CKA).",
             key="representational_num_batches",
@@ -2163,7 +2189,7 @@ def render_representational_analysis_page(api_key, model_choice, provider):
             "Max length",
             min_value=16,
             max_value=4096,
-            value=st.session_state['unlearn_max_length'],
+            **widget_defaults('representational_max_length', value=st.session_state['unlearn_max_length']),
             step=16,
             help="Maximum sequence length for tokenization.",
             key="representational_max_length",

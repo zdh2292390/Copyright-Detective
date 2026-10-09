@@ -61,7 +61,7 @@ from src.game import (
     run_stage_one,
     run_stage_two,
 )
-from src.game.constants import MAX_ATTEMPTS_PER_STRATEGY, MAX_SCORED_GENERATIONS
+from src.game.constants import COMPETITION_SLUG, MAX_ATTEMPTS_PER_STRATEGY, MAX_SCORED_GENERATIONS
 from src.game.storage import (
     GameIdentityError,
     GameStorageError,
@@ -73,6 +73,8 @@ from src.game.storage import (
     fail_stage_two,
     format_jeju_leaderboard_window,
     get_active_run,
+    get_stage_two_checkpoint_task,
+    get_stage_two_checkpoint_run,
     get_completed_run,
     get_competition,
     get_jeju_today,
@@ -1436,6 +1438,43 @@ def _render_stage_one_view(
         )
 
 
+def _reserve_checkpoint_stage_two(participant, config):
+    from dataclasses import asdict
+    from src.resumable_analysis import checkpoint_call
+    return checkpoint_call(
+        "game.stage_two.reserve", {
+            "competition_slug": COMPETITION_SLUG,
+            "owner_id": participant.user_id, "config": asdict(config),
+        }, lambda: begin_stage_two(participant, config),
+        is_success=lambda value: isinstance(value, str) and bool(value.strip()),
+    )
+
+
+def _execute_checkpoint_stage_two(participant, config, invoke, report):
+    """Retain durable reservations after interruption; terminal runs stay immutable."""
+    from src.resumable_analysis import acknowledge_task_completion, current_task_id
+    run_id = None
+    task_id = current_task_id()
+    try:
+        run_id = _reserve_checkpoint_stage_two(participant, config)
+        if task_id:
+            saved = get_stage_two_checkpoint_run(participant, config, run_id)
+            if str((saved or {}).get("id") or "") != run_id:
+                raise GameStorageError("The restored official reservation differs from this task.")
+            if saved.get("status") == "completed":
+                acknowledge_task_completion()
+                report(1, 1, "The leaderboard entry is already saved")
+                return
+            if saved.get("status") != "running":
+                raise GameStorageError("This official run is failed and cannot resume. Start a new task.")
+        result = invoke()
+        complete_stage_two(run_id, participant, result)
+    except Exception:
+        if not task_id:
+            _mark_run_failed_safely(run_id, participant, "background_run_error")
+        raise
+
+
 def _render_play_tab(
     competition: Dict[str, Any],
     identity_slot: Any,
@@ -1678,11 +1717,20 @@ def _render_play_tab(
     if active_run and not background_job_running(
         _player_key(participant.user_id, "stage_two_background_job")
     ):
-        _mark_run_failed_safely(
-            str(active_run.get("id") or ""),
-            participant,
-            "interrupted_run_ignored",
-        )
+        try:
+            linked_task = get_stage_two_checkpoint_task(str(active_run.get("id") or ""), participant)
+        except GameStorageError as exc:
+            st.error(str(exc))
+            return participant.user_id
+        if linked_task:
+            from src.resumable_analysis import RESUME_TASK
+            if str(st.session_state.get(RESUME_TASK) or "") != linked_task:
+                st.info("This official run has a saved checkpoint. Use Restore and continue to resume the same run.")
+                return participant.user_id
+        else:
+            _mark_run_failed_safely(
+                str(active_run.get("id") or ""), participant, "interrupted_run_ignored",
+            )
 
     try:
         strategies = list_game_strategies()
@@ -1938,20 +1986,15 @@ def _render_play_tab(
                     message = f"Scoring responses: {current}/{total}"
                 report(completed, planned_api_calls, message)
 
-            try:
-                report(0, planned_api_calls, "Reserving official run")
-                run_id = begin_stage_two(participant, config)
+            report(0, planned_api_calls, "Reserving official run")
+            def generate_result():
                 result = run_stage_two(
-                    api_key,
-                    config,
-                    available_strategies=strategies,
+                    api_key, config, available_strategies=strategies,
                     on_progress=update_progress,
                 )
                 report(planned_api_calls, planned_api_calls, "Saving leaderboard entry")
-                complete_stage_two(run_id, participant, result)
-            except Exception:
-                _mark_run_failed_safely(run_id, participant, "background_run_error")
-                raise
+                return result
+            _execute_checkpoint_stage_two(participant, config, generate_result, report)
 
         started = submit_background_job(
             job_key,

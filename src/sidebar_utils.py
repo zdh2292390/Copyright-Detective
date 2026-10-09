@@ -3,6 +3,7 @@
 from typing import Any, Dict, List, Tuple
 
 import streamlit as st
+from src.widget_defaults import widget_defaults
 
 from src.auth import (
     auth_enabled,
@@ -112,7 +113,7 @@ def render_model_selectbox(provider: str, config: Dict[str, Any], *, disabled: b
         "disabled": disabled,
     }
     if config.get("default_index") is not None:
-        kwargs["index"] = config["default_index"]
+        kwargs.update(widget_defaults(widget_key, index=config["default_index"]))
     if config.get("help"):
         kwargs["help"] = config["help"]
     return st.selectbox(**kwargs)

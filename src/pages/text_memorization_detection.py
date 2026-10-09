@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 from src.pages.sampling_controls import render_temperature_top_p
+from src.widget_defaults import widget_defaults
 from src.text_analysis import (
     TextAnalysisError, run_text_inferences, safe_numeric_setting,
     safe_selection_index, text_report_fingerprint, validate_text_parameters,
@@ -207,9 +208,14 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             st.session_state.get(canonical), default, minimum, maximum, integer=integer,
         )
         if widget in st.session_state:
-            st.session_state[widget] = safe_numeric_setting(
-                st.session_state[widget], default, minimum, maximum, integer=integer,
+            current = st.session_state[widget]
+            recovered = safe_numeric_setting(
+                current, default, minimum, maximum, integer=integer,
             )
+            if type(current) is not type(recovered) or current != recovered:
+                st.session_state[widget] = recovered
+        else:
+            st.session_state[widget] = st.session_state[canonical]
 
     set_active_clear_cache_id(TEXT_CLEAR_CACHE_ID)
     pending_api_failure = st.session_state.pop(TEXT_API_FAILURE_KEY, None)
@@ -251,7 +257,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     prompt_type = st.selectbox(
         "Choose the recall type",
         prompt_type_options,
-        index=safe_selection_index(st.session_state['text_prompt_type_index'], len(prompt_type_options)),
+        **widget_defaults("text_prompt_type_selectbox", index=safe_selection_index(st.session_state['text_prompt_type_index'], len(prompt_type_options))),
         help="Select the recall mode to guide the Text Memorization Detection. (Choose only; typing custom values is not allowed.)",
         key="text_prompt_type_selectbox",
     )
@@ -281,7 +287,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             st.markdown("**Custom Prompt**")
             custom_user_prompt = st.text_area(
                 "Custom Prompt",
-                value=st.session_state.get('custom_user_prompt', ''),
+                **widget_defaults("custom_user_prompt", value=st.session_state.get('custom_user_prompt', '')),
                 height=200,
                 placeholder="Enter your complete custom prompt. The model will respond to this exact prompt.",
                 label_visibility="collapsed",
@@ -292,7 +298,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             st.markdown("**Ground Truth**")
             text2 = st.text_area(
                 "Ground Truth",
-                value=st.session_state.get('text_custom_ground_truth', ''),
+                **widget_defaults("text_ground_truth_user_defined", value=st.session_state.get('text_custom_ground_truth', '')),
                 height=200,
                 placeholder="Enter the expected correct response from the model. This will be compared with the actual model output for evaluation.",
                 label_visibility="collapsed",
@@ -331,7 +337,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 input_method = st.selectbox(
                     "Choose an input type",
                     input_options,
-                    index=safe_selection_index(st.session_state.get('text_input_method_index', 0), len(input_options)),
+                    **widget_defaults("text_input_method_selectbox", index=safe_selection_index(st.session_state.get('text_input_method_index', 0), len(input_options))),
                     help="Select custom input or choose from predefined book examples.",
                     key="text_input_method_selectbox",
                 )
@@ -341,7 +347,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 prompting_method = st.selectbox(
                     "Choose a prompting method",
                     prompting_method_options,
-                    index=safe_selection_index(st.session_state.get('text_prompting_method_index', 0), len(prompting_method_options)),
+                    **widget_defaults("text_prompting_method_selectbox", index=safe_selection_index(st.session_state.get('text_prompting_method_index', 0), len(prompting_method_options))),
                     help="Select a prompt template (1-6) to use for the analysis.",
                     key="text_prompting_method_selectbox",
                 )
@@ -367,7 +373,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             input_method = st.selectbox(
                 "Choose an input type",
                 input_options,
-                index=safe_selection_index(st.session_state['text_input_method_index'], len(input_options)),
+                **widget_defaults("text_input_method_selectbox", index=safe_selection_index(st.session_state['text_input_method_index'], len(input_options))),
                 help="Select custom input or choose from examples.",
                 key="text_input_method_selectbox",
             )
@@ -479,7 +485,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     "Choose an example",
                     range(len(example_options)),
                     format_func=lambda x: example_options[x],
-                    index=safe_selection_index(st.session_state.get('text_literal_selected_index', 0), len(literal_examples)),
+                    **widget_defaults("text_literal_example_selector", index=safe_selection_index(st.session_state.get('text_literal_selected_index', 0), len(literal_examples))),
                     key="text_literal_example_selector",
                 )
                 st.session_state['text_literal_selected_index'] = selected_example_idx
@@ -491,7 +497,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     st.markdown("**Input Text**")
                     text1 = st.text_area(
                         "Input Text",
-                        value=selected_example["input"],
+                        **widget_defaults(f"text_input_text1_literal_{selected_example_idx}", value=selected_example["input"]),
                         height=150,
                         label_visibility="collapsed",
                         key=f"text_input_text1_literal_{selected_example_idx}"
@@ -500,7 +506,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     st.markdown("**Ground Truth**")
                     text2 = st.text_area(
                         "Ground Truth",
-                        value=selected_example["reference"],
+                        **widget_defaults(f"text_input_text2_literal_{selected_example_idx}", value=selected_example["reference"]),
                         height=150,
                         label_visibility="collapsed",
                         key=f"text_input_text2_literal_{selected_example_idx}"
@@ -543,7 +549,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                         # Both are Custom Input - completely free, no template
                         text1 = st.text_area(
                             "Input Text",
-                            value=st.session_state.get('text_custom_input_text1', ''),
+                            **widget_defaults(f"text_input_text1_custom_free_{prompt_type}", value=st.session_state.get('text_custom_input_text1', '')),
                             height=150,
                             placeholder="Enter your custom prompt (completely free input)",
                             label_visibility="collapsed",
@@ -574,7 +580,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                         # Display the template (with {book_title} placeholder) in Input Text field
                         text1 = st.text_area(
                             "Input Text",
-                            value=default_text,
+                            **widget_defaults(f"text_input_text1_custom_template_{prompting_method}_{prompt_type}", value=default_text),
                             height=150,
                             placeholder="Template with {book_title} placeholder - fill in the book title",
                             label_visibility="collapsed",
@@ -590,7 +596,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     ground_truth_key = "text_custom_ground_truth"
                     text2 = st.text_area(
                         "Ground Truth",
-                        value=st.session_state.get(ground_truth_key, ''),
+                        **widget_defaults(f"text_input_text2_widget_{prompt_type}", value=st.session_state.get(ground_truth_key, '')),
                         height=150,
                         placeholder="Enter the expected ground truth text",
                         label_visibility="collapsed",
@@ -603,7 +609,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     st.markdown("**Input Text**")
                     text1 = st.text_area(
                         "Input Text",
-                        value=st.session_state['text_custom_input_text1'],
+                        **widget_defaults(f"text_input_text1_widget_{prompt_type}", value=st.session_state['text_custom_input_text1']),
                         height=150,
                         placeholder="Enter the input snippet (e.g., a previous sentence, a continuation, or an excerpt). The role of this field depends on the selected prompt type.",
                         label_visibility="collapsed",
@@ -614,7 +620,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     st.markdown("**Ground Truth**")
                     text2 = st.text_area(
                         "Ground Truth",
-                        value=st.session_state['text_custom_input_text2'],
+                        **widget_defaults(f"text_input_text2_widget_{prompt_type}", value=st.session_state['text_custom_input_text2']),
                         height=150,
                         placeholder="Enter the ground truth text or expected target to compare against (e.g., the known reference or target continuation). Leave blank if not applicable.",
                         label_visibility="collapsed",
@@ -665,7 +671,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 # Include prompting_method in key to force update when template changes
                 text1 = st.text_area(
                     "Input Text",
-                    value=default_prompt,
+                    **widget_defaults(f"text_input_text1_example_{input_method}_{prompting_method}_{prompt_type}", value=default_prompt),
                     height=150,
                     label_visibility="collapsed",
                     key=f"text_input_text1_example_{input_method}_{prompting_method}_{prompt_type}"
@@ -675,7 +681,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 st.markdown("**Ground Truth**")
                 text2 = st.text_area(
                     "Ground Truth",
-                    value=ground_truth,
+                    **widget_defaults(f"text_input_text2_example_widget_{input_method}_{prompt_type}", value=ground_truth),
                     height=150,
                     label_visibility="collapsed",
                     key=f"text_input_text2_example_widget_{input_method}_{prompt_type}",
@@ -692,7 +698,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 st.markdown("**Input Text**")
                 text1 = st.text_area(
                     "Input Text",
-                    value=example["input"],
+                    **widget_defaults(f"text_input_text1_example_widget_{input_method}_{prompt_type}", value=example["input"]),
                     height=150,
                     label_visibility="collapsed",
                     key=f"text_input_text1_example_widget_{input_method}_{prompt_type}"
@@ -701,7 +707,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 st.markdown("**Ground Truth**")
                 text2 = st.text_area(
                     "Ground Truth",
-                    value=example["ground_truth"],
+                    **widget_defaults(f"text_input_text2_example_widget_{input_method}_{prompt_type}", value=example["ground_truth"]),
                     height=150,
                     label_visibility="collapsed",
                     key=f"text_input_text2_example_widget_{input_method}_{prompt_type}"
@@ -778,7 +784,6 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             "Number of Inference Runs",
             min_value=1,
             max_value=1000,
-            value=st.session_state['text_inference_runs'],
             step=1,
             help="Specify how many times to run the inference for statistical analysis.",
             key="text_inference_runs_input",

@@ -23,6 +23,8 @@ elif sys.path[0] != project_root_str:
 os.chdir(project_root_str)
 
 from src.auth import init_auth
+from src.analysis_recovery_ui import apply_pending_analysis_restore, render_analysis_recovery
+from src.resumable_analysis import AnalysisCheckpointError, page_analysis_scope
 from src.job_guard import (
     finish_detection_job,
     handle_interrupted_job,
@@ -53,6 +55,11 @@ st.set_page_config(
 install_widget_guards()
 
 init_auth()
+
+try:
+    apply_pending_analysis_restore()
+except AnalysisCheckpointError as exc:
+    st.error(str(exc))
 
 # Handle draggable Clear Cache button clicks before rendering the page
 if handle_clear_cache_query_param():
@@ -93,43 +100,48 @@ api_key, model_choice, provider, page = render_sidebar()
 # Render main content behind a final safety boundary. Streamlit rerun/stop signals
 # inherit from BaseException, so this catches real page failures without blocking navigation.
 try:
-    if page == "Content Recall Detection":
-        render_snippet_to_document_page(api_key, model_choice, provider)
-    elif page == "Knowledge Memorization Detection":
-        render_knowledge_memorization_page(api_key, model_choice, provider)
-    elif page == "Persuasive Jailbreak Detection":
-        render_adversarial_persuasion_page(api_key, model_choice, provider)
-    elif page == "Unlearning Detection":
-        render_unlearning_detection_page(api_key, model_choice, provider)
-    elif page == "Legal Cases Display":
-        render_legal_case_display_page()
-    elif GAMES_ENABLED and page in {
-        "Game 1: The Hidden Passage Hunt",
-        "Game 2: The Hidden Passage Hunt",
-        "Copyright Challenge",
-        "Copyright Challenge 1",
-    }:
-        from src.pages.copyright_game import render_copyright_game_page
+    with page_analysis_scope(page, st.session_state):
+        render_analysis_recovery(page)
+        if page == "Content Recall Detection":
+            render_snippet_to_document_page(api_key, model_choice, provider)
+        elif page == "Knowledge Memorization Detection":
+            render_knowledge_memorization_page(api_key, model_choice, provider)
+        elif page == "Persuasive Jailbreak Detection":
+            render_adversarial_persuasion_page(api_key, model_choice, provider)
+        elif page == "Unlearning Detection":
+            render_unlearning_detection_page(api_key, model_choice, provider)
+        elif page == "Legal Cases Display":
+            render_legal_case_display_page()
+        elif GAMES_ENABLED and page in {
+            "Game 1: The Hidden Passage Hunt",
+            "Game 2: The Hidden Passage Hunt",
+            "Copyright Challenge",
+            "Copyright Challenge 1",
+        }:
+            from src.pages.copyright_game import render_copyright_game_page
 
-        render_copyright_game_page()
-    elif GAMES_ENABLED and page in {
-        "Game 2: The Cross-Model Scaling Quest",
-        "Game 1: The Cross-Model Scaling Quest",
-        "Game 2: The Twin Oracle Duel",
-        "Game 2: The Two-Model Continuation Duel",
-        "Copyright Challenge 2",
-    }:
-        from src.pages.copyright_game2 import render_copyright_game2_page
+            render_copyright_game_page()
+        elif GAMES_ENABLED and page in {
+            "Game 2: The Cross-Model Scaling Quest",
+            "Game 1: The Cross-Model Scaling Quest",
+            "Game 2: The Twin Oracle Duel",
+            "Game 2: The Two-Model Continuation Duel",
+            "Copyright Challenge 2",
+        }:
+            from src.pages.copyright_game2 import render_copyright_game2_page
 
-        render_copyright_game2_page()
-    elif GAMES_ENABLED and page in {
-        "Game 3: The Memory Vault Hunt",
-        "Copyright Challenge 3",
-        "Game 3: The Knowledge Memorization Challenge",
-    }:
-        from src.pages.copyright_game3 import render_copyright_game3_page
+            render_copyright_game2_page()
+        elif GAMES_ENABLED and page in {
+            "Game 3: The Memory Vault Hunt",
+            "Copyright Challenge 3",
+            "Game 3: The Knowledge Memorization Challenge",
+        }:
+            from src.pages.copyright_game3 import render_copyright_game3_page
 
-        render_copyright_game3_page(api_key, model_choice)
+            render_copyright_game3_page(model_choice)
+except AnalysisCheckpointError as exc:
+    st.error(str(exc))
+    st.caption("Saved successful calls are preserved. Use Saved analysis tasks on this page to continue.")
 except Exception:
     logger.exception("Unhandled page error on %s", page)
     st.error(

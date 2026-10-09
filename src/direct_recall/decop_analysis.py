@@ -79,7 +79,7 @@ def _parse_chat_top_logprobs(response) -> Dict[str, float]:
     return dict_probs
 
 
-def query_llm_chatgpt(
+def _query_llm_chatgpt_uncached(
     query_data: pd.Series,
     document_name: str,
     author_name: str,
@@ -129,7 +129,7 @@ def query_llm_chatgpt(
     return probabilities
 
 
-def query_llm_claude(
+def _query_llm_claude_uncached(
     query_data: pd.Series,
     document_name: str,
     author_name: str,
@@ -170,6 +170,63 @@ def query_llm_claude(
     return answer[0].upper()
 
 
+def _decop_checkpoint(operation, payload, invoke, is_success):
+    try:
+        from src.resumable_analysis import checkpoint_call
+    except ModuleNotFoundError as exc:
+        if exc.name != "src.resumable_analysis":
+            raise
+        return invoke()
+    return checkpoint_call(operation, payload, invoke, is_success=is_success)
+
+
+def _decop_payload(query_data, document_name, author_name, data_type, model, provider):
+    return {
+        "options": {label: str(query_data[f"Example_{label}"]) for label in mapping.values()},
+        "document_name": document_name, "author_name": author_name,
+        "data_type": data_type, "model": model, "provider": provider,
+        "temperature": 0, "max_tokens": 1,
+    }
+
+
+def query_llm_chatgpt(query_data: pd.Series, document_name: str, author_name: str,
+                      data_type: str, client: OpenAI) -> torch.Tensor:
+    """Save JSON probabilities and restore the original float32 tensor API."""
+    payload = _decop_payload(query_data, document_name, author_name, data_type, DECOP_OPENAI_MODEL, "OpenAI")
+    payload["endpoint"] = str(getattr(client, "base_url", "https://api.openai.com/v1"))
+    values = _decop_checkpoint(
+        "decop.openai", payload,
+        lambda: _query_llm_chatgpt_uncached(query_data, document_name, author_name, data_type, client).tolist(),
+        lambda result: isinstance(result, list) and len(result) == 4
+            and all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and math.isfinite(value) and 0 <= value <= 1 for value in result)
+            and sum(result) > 0,
+    )
+    return torch.tensor(values, dtype=torch.float32)
+
+
+def query_llm_claude(query_data: pd.Series, document_name: str, author_name: str,
+                     data_type: str, anthropic_client: Anthropic) -> str:
+    payload = _decop_payload(query_data, document_name, author_name, data_type, DECOP_ANTHROPIC_MODEL, "Anthropic")
+    payload["endpoint"] = str(getattr(anthropic_client, "base_url", "https://api.anthropic.com"))
+    return _decop_checkpoint(
+        "decop.anthropic", payload,
+        lambda: _query_llm_claude_uncached(query_data, document_name, author_name, data_type, anthropic_client),
+        lambda result: isinstance(result, str) and result in mapping.values(),
+    )
+
+
+def _raise_checkpoint_error(exc):
+    try:
+        from src.resumable_analysis import AnalysisCheckpointError
+    except ModuleNotFoundError as missing:
+        if missing.name != "src.resumable_analysis":
+            raise
+        return
+    if isinstance(exc, AnalysisCheckpointError):
+        raise exc
+
+
 _DATASET_EVALUATION_LOCK = Lock()
 
 
@@ -188,6 +245,7 @@ def run_dataset_evaluation(
             data_type, model_name, api_key, passage_size, progress_callback
         )
     except Exception as exc:
+        _raise_checkpoint_error(exc)
         return False, f"Evaluation failed: {type(exc).__name__}: {exc}", None
     finally:
         _DATASET_EVALUATION_LOCK.release()
@@ -351,6 +409,7 @@ def _run_dataset_evaluation(
 
         return True, f"Successfully processed {total_docs} documents. Results saved to {out_dir}", out_dir
     except Exception as exc:
+        _raise_checkpoint_error(exc)
         return False, f"Evaluation failed: {type(exc).__name__}: {exc}", out_dir
     finally:
         try:

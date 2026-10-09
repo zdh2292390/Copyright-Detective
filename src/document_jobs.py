@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timezone
 import os
-from threading import Event, RLock
+from threading import Event, RLock, Thread
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -18,6 +18,7 @@ from src.model_catalog import model_unavailability_error
 DEFAULT_CHUNK_CONCURRENCY = 3
 DEFAULT_PARALLEL_THRESHOLD = 8
 DEFAULT_CHUNK_WORKERS = 8
+LEASE_HEARTBEAT_SECONDS = 20
 
 
 def _configured_limit(name, default, maximum):
@@ -122,7 +123,47 @@ class DocumentAnalysisJobs:
         self._lock = RLock()
         self._max_pending = max_pending
         self._jobs = {}
+        self._cloud_stores = {}
         self._analyze_chunk = analyze_chunk or _analyze_chunk
+
+    def configure_cloud_store(self, cloud_store):
+        """Bind a store supplied by the UI after Supabase verifies its user."""
+        if cloud_store is None:
+            return
+        from src.supabase_document_checkpoints import SupabaseDocumentCheckpointStore
+        adapter = SupabaseDocumentCheckpointStore(cloud_store)
+        with self._lock:
+            self._cloud_stores.setdefault(adapter.owner_id, adapter)
+
+    def cloud_enabled_for(self, owner_id):
+        with self._lock:
+            return bool(owner_id and owner_id in self._cloud_stores)
+
+    def _store_for(self, token=None, *, owner_id=None):
+        # Existing random hexadecimal links remain local. New cloud links are
+        # UUIDs and must be routed through the authenticated owner's binding.
+        from src.supabase_document_checkpoints import is_cloud_document_token
+        if token is not None and not is_cloud_document_token(token):
+            return self.store
+        with self._lock:
+            cloud = self._cloud_stores.get(owner_id) if owner_id else None
+        if token is not None and cloud is None:
+            raise CheckpointError("Sign in to the account that created this cloud analysis to restore it.")
+        return cloud or self.store
+
+    def list_saved(self, *, owner_id=None):
+        with self._lock:
+            store = self._cloud_stores.get(owner_id) if owner_id else None
+        return store.list_for_owner() if store is not None else []
+
+    def is_active(self, token, *, owner_id=None):
+        with self._lock:
+            job = self._jobs.get(token)
+            if job is not None and not job.get("finished"):
+                self._check_owner(job["state"], owner_id)
+                return True
+        store = self._store_for(token, owner_id=owner_id)
+        return bool(getattr(store, "remote", False) and store.is_active(token))
 
     def concurrency_for(self, remaining_chunks):
         if remaining_chunks < self.parallel_threshold:
@@ -151,7 +192,7 @@ class DocumentAnalysisJobs:
         if state.get("owner_id") and state["owner_id"] != owner_id:
             raise CheckpointError("Sign in to the account that created this analysis to restore it.")
 
-    def create(self, state, pairs, *, owner_id=None):
+    def create(self, state, pairs, *, owner_id=None, use_cloud=True):
         validate_analysis_state(pairs, state)
         self._validate_settings(state)
         self._check_model_available(state)
@@ -163,7 +204,8 @@ class DocumentAnalysisJobs:
         state = deepcopy(state)
         state["owner_id"] = owner_id
         state["updated_at"] = _now()
-        return self.store.create(state, pairs)
+        store = self._store_for(owner_id=owner_id) if use_cloud else self.store
+        return store.create(state, pairs)
 
     def is_running(self, token):
         with self._lock:
@@ -178,20 +220,32 @@ class DocumentAnalysisJobs:
             if job is not None:
                 self._check_owner(job["state"], owner_id)
                 return deepcopy(job["state"])
-            saved = self.store.load(token)
+            store = self._store_for(token, owner_id=owner_id)
+            saved = store.load(token)
             if saved is None:
                 return None
             state, pairs = saved
             self._check_owner(state, owner_id)
             validate_analysis_state(pairs, state)
             self._validate_settings(state)
-            if state["status"] == "running":
+            remote = getattr(store, "remote", False)
+            active = remote and store.is_active(token)
+            if remote and state["status"] == "running" and not active:
+                # Completion may have committed after the first snapshot.
+                latest = store.load(token)
+                if latest is None:
+                    return None
+                state, pairs = latest
+                self._check_owner(state, owner_id)
+                validate_analysis_state(pairs, state)
+            if state["status"] == "running" and not active:
                 state["status"] = "incomplete"
                 state["error"] = "The server stopped before this analysis finished. Resume to process the remaining chunks."
                 state["retry_in_seconds"] = 0
                 state["stop_requested"] = False
                 state["active_chunks"] = []
-                self.store.save(token, state)
+                if not getattr(store, "remote", False):
+                    store.save(token, state)
             return state
 
     def submit(self, token, api_key, *, owner_id=None):
@@ -204,13 +258,11 @@ class DocumentAnalysisJobs:
             active_count = sum(not job.get("finished") for job in self._jobs.values())
             if active_count >= self._max_pending:
                 raise CheckpointError("Document analysis capacity is busy. Try starting this saved run again shortly.")
-            saved = self.store.load(token)
+            store = self._store_for(token, owner_id=owner_id)
+            saved = store.load(token)
             if saved is None:
                 raise CheckpointError("The saved analysis is no longer available.")
             state, pairs = saved
-            if existing is not None:
-                # Recover results retained in memory after a disk write failure.
-                state = deepcopy(existing["state"])
             self._check_owner(state, owner_id)
             validate_analysis_state(pairs, state)
             self._validate_settings(state)
@@ -219,29 +271,75 @@ class DocumentAnalysisJobs:
             if state["status"] == "complete":
                 return False
             self._check_model_available(state)
-            state["status"] = "running"
-            state["stop_requested"] = False
-            state["active_chunks"] = []
-            limit = self.concurrency_for(state["total_chunks"] - len(state["results"]))
-            state["concurrency_limit"] = limit
-            state["effective_concurrency"] = limit
-            state["error"] = None
-            state["started_at"] = _now()
-            state["updated_at"] = state["started_at"]
-            self.store.save(token, state)
-            stop = Event()
-            self._jobs[token] = {"state": _snapshot(state), "stop": stop}
+            claimed = False
             try:
-                self._executor.submit(self._run, token, state, pairs, str(api_key or "").strip(), stop)
-            except Exception:
-                self._jobs.pop(token, None)
-                state["status"] = "incomplete"
-                state["error"] = "The analysis worker could not start. Retry the run."
-                self.store.save(token, state)
+                if getattr(store, "remote", False):
+                    if not store.claim(token):
+                        return False
+                    claimed = True
+                    # Claim fences competing processes. Re-read progress after
+                    # acquiring it so a just-finished chunk is never repeated.
+                    state, pairs = store.load(token)
+                    self._check_owner(state, owner_id)
+                    validate_analysis_state(pairs, state)
+                    self._validate_settings(state)
+                if existing is not None:
+                    retained = existing["state"]
+                    if not getattr(store, "remote", False):
+                        state = deepcopy(retained)
+                    else:
+                        # A newer worker's persisted successes take precedence
+                        # over results retained during a previous storage outage.
+                        for index, result in retained["results"].items():
+                            state["results"].setdefault(index, deepcopy(result))
+                            state["failures"].pop(index, None)
+                        for index, attempts in retained["attempts"].items():
+                            state["attempts"][index] = max(attempts, state["attempts"].get(index, 0))
+                state["status"] = "running"
+                state["stop_requested"] = False
+                state["active_chunks"] = []
+                limit = self.concurrency_for(state["total_chunks"] - len(state["results"]))
+                state["concurrency_limit"] = limit
+                state["effective_concurrency"] = limit
+                state["error"] = None
+                state["started_at"] = _now()
+                state["updated_at"] = state["started_at"]
+                store.save(token, state)
+                stop = Event()
+                self._jobs[token] = {"state": _snapshot(state), "stop": stop, "store": store}
+                try:
+                    self._executor.submit(self._run, token, state, pairs, str(api_key or "").strip(), stop, store)
+                except Exception:
+                    self._jobs.pop(token, None)
+                    state["status"] = "incomplete"
+                    state["error"] = "The analysis worker could not start. Retry the run."
+                    store.save(token, state)
+                    raise
+                return True
+            except BaseException:
+                if claimed:
+                    store.release(token)
                 raise
-            return True
 
-    def _run(self, token, state, pairs, api_key, stop):
+    def _run(self, token, state, pairs, api_key, stop, store):
+        heartbeat_done = Event()
+        lease_errors = []
+
+        def heartbeat():
+            while not heartbeat_done.wait(LEASE_HEARTBEAT_SECONDS):
+                try:
+                    if store.heartbeat(token).get("stop_requested"):
+                        stop.set()
+                except Exception as exc:
+                    lease_errors.append(exc)
+                    stop.set()
+                    return
+
+        heartbeat_thread = None
+        if getattr(store, "remote", False):
+            heartbeat_thread = Thread(target=heartbeat, name="document-lease-heartbeat", daemon=True)
+            heartbeat_thread.start()
+
         def checkpoint(updated):
             updated["updated_at"] = _now()
             if updated["status"] == "complete" and not updated.get("completed_at"):
@@ -255,7 +353,12 @@ class DocumentAnalysisJobs:
             # Stop outbound work if progress cannot be persisted.
             try:
                 current = updated.get("current_chunk")
-                self.store.save_progress(token, updated, current - 1 if current else None)
+                if lease_errors:
+                    raise CheckpointError("The cloud task lease could not be renewed. Resume after the active lease expires.") from lease_errors[0]
+                saved = store.save_progress(token, updated, current - 1 if current else None)
+                if isinstance(saved, dict) and saved.get("stop_requested"):
+                    stop.set()
+                    updated["stop_requested"] = True
             finally:
                 with self._lock:
                     if token in self._jobs:
@@ -284,7 +387,7 @@ class DocumentAnalysisJobs:
                 # An interrupted parallel coordinator may have drained several
                 # in-flight results after its first checkpoint failure. Persist
                 # all of them atomically instead of only the last changed row.
-                self.store.save(token, state)
+                store.save(token, state)
             except Exception:
                 # Keep every drained success available while storage is down.
                 with self._lock:
@@ -295,6 +398,15 @@ class DocumentAnalysisJobs:
                     if token in self._jobs:
                         self._jobs[token]["state"] = _snapshot(state)
         finally:
+            heartbeat_done.set()
+            if heartbeat_thread is not None:
+                heartbeat_thread.join(timeout=1)
+                try:
+                    store.release(token)
+                except Exception:
+                    # Expiry provides recovery if the server cannot release a
+                    # lease. Never overwrite another worker's fenced progress.
+                    pass
             with self._lock:
                 job = self._jobs.get(token)
                 if job is not None and not job.get("storage_failed"):
@@ -305,20 +417,25 @@ class DocumentAnalysisJobs:
     def stop(self, token, *, owner_id=None):
         with self._lock:
             job = self._jobs.get(token)
-            if job is None or job.get("finished"):
-                return False
-            self._check_owner(job["state"], owner_id)
-            job["stop"].set()
-            job["state"]["stop_requested"] = True
-            return True
+            if job is not None and not job.get("finished"):
+                self._check_owner(job["state"], owner_id)
+                job["stop"].set()
+                job["state"]["stop_requested"] = True
+                store = job["store"]
+                if getattr(store, "remote", False):
+                    store.request_stop(token)
+                return True
+            store = self._store_for(token, owner_id=owner_id)
+            if getattr(store, "remote", False):
+                return store.request_stop(token)
+            return False
 
     def delete(self, token, *, owner_id=None):
         with self._lock:
-            job = self._jobs.get(token)
-            if job is not None and not job.get("finished"):
+            if self.is_active(token, owner_id=owner_id):
                 raise CheckpointError("Stop the analysis and wait for its in-flight requests before clearing it.")
             self.get(token, owner_id=owner_id)
-            self.store.delete(token)
+            self._store_for(token, owner_id=owner_id).delete(token)
             self._jobs.pop(token, None)
 
     def close(self):
