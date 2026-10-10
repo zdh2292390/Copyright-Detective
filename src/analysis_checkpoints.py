@@ -91,12 +91,14 @@ def classify_checkpoint_error(exc: Exception, *, operation: str = "write") -> An
         messages.append(raw_message[:8192].lower())
         current_status = getattr(current, "status_code", None)
         if type(current_status) is not int:
+            current_status = getattr(current, "status", None)  # Supabase AuthApiError
+        if type(current_status) is not int:
             current_status = getattr(getattr(current, "response", None), "status_code", None)
         if status is None and type(current_status) is int and 100 <= current_status <= 599:
             status = current_status
         # SDK auth/gateway failures may have an HTTP string code instead of a
         # response. It is used for classification, never displayed raw.
-        if status is None and raw_code in {"401", "403", "408", "429", "500", "502", "503", "504"}:
+        if status is None and isinstance(raw_code, str) and raw_code in {"401", "403", "408", "429", "500", "502", "503", "504"}:
             status = int(raw_code)
         current = current.__cause__
     message = "\n".join(messages)

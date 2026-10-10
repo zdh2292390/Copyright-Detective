@@ -77,6 +77,7 @@ def get_authenticated_client() -> Optional[Client]:
     access_token = st.session_state.get("access_token")
     if not access_token:
         return None
+    from src.analysis_checkpoints import AnalysisCheckpointError
     refresh_token = st.session_state.get("refresh_token") or ""
     owner_id = str(st.session_state.get("user_id") or "")
     client = create_supabase_client()
@@ -84,16 +85,17 @@ def get_authenticated_client() -> Optional[Client]:
     session = getattr(response, "session", None)
     user = getattr(response, "user", None) or getattr(session, "user", None)
     verified_owner = str(getattr(user, "id", "") or "")
-    if not owner_id or verified_owner != owner_id:
-        raise RuntimeError("Your Supabase account could not be verified. Sign in again.")
+    session_owner = str(getattr(getattr(session, "user", None), "id", "") or "")
+    if not owner_id or verified_owner != owner_id or (session is not None and session_owner != owner_id):
+        raise AnalysisCheckpointError("Your Supabase account could not be verified. Sign in again.", kind="auth")
     if (str(st.session_state.get("user_id") or "") != owner_id
             or st.session_state.get("access_token") != access_token
             or (st.session_state.get("refresh_token") or "") != refresh_token):
-        raise RuntimeError("Your Supabase session changed while being verified. Retry the action.")
+        raise AnalysisCheckpointError("Your Supabase session changed while being verified. Retry the action.", kind="auth")
     next_access = getattr(session, "access_token", None)
     next_refresh = getattr(session, "refresh_token", None)
     if not next_access or next_refresh is None:
-        raise RuntimeError("Supabase returned an incomplete session. Sign in again.")
+        raise AnalysisCheckpointError("Supabase returned an incomplete session. Sign in again.", kind="auth")
     if next_access != access_token or next_refresh != refresh_token:
         from src.auth import _set_user_session, sync_auth_browser_storage
         _set_user_session(user, next_access, next_refresh)

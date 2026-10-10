@@ -238,4 +238,6 @@ grant execute on function public.begin_copyright_game_run_checkpoint(
 ) to service_role;
 grant execute on function public.complete_copyright_game_run_checkpoint(uuid, uuid, uuid, text, jsonb)
 to service_role;
+-- Refresh API discovery only after this transaction commits successfully.
+notify pgrst, 'reload schema';
 commit;

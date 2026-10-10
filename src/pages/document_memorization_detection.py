@@ -287,12 +287,12 @@ def _document_job_is_active(token, owner_id=None):
 
 
 def _prepare_document_cloud():
-    # Authentication and service-key initialization stay on the Streamlit
+    # Authentication and owner-bound client initialization stay on the Streamlit
     # thread. Background workers only receive an already bound account store.
     from src.resumable_analysis import AnalysisCheckpointError as CloudSetupError, get_cloud_store_for_current_user
     st.session_state.pop("_pdf_verified_cloud_owner", None)
     try:
-        cloud = get_cloud_store_for_current_user()
+        cloud = get_cloud_store_for_current_user(page_key="Content Recall Detection")
     except CloudSetupError as exc:
         raise CheckpointError(str(exc)) from exc
     if cloud is not None:

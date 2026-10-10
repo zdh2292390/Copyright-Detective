@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
+from urllib.parse import urlsplit
 import streamlit as st
 
-from src.analysis_checkpoints import OFFICIAL_GAME_PAGE_KEYS
+from src.analysis_checkpoints import OFFICIAL_GAME_PAGE_KEYS, classify_checkpoint_error
 from src.resumable_analysis import (
     AnalysisCheckpointError, PENDING_RESTORE, RESUME_TASK,
     decode, get_cloud_store_for_current_user, is_safe_state_key, key_belongs_to_page, unpack_snapshot,
@@ -129,17 +131,24 @@ def render_analysis_recovery(page_key: str):
     if page_key == "Legal Cases Display":
         return
     try:
-        store = get_cloud_store_for_current_user()
+        store = get_cloud_store_for_current_user(page_key=page_key)
         if store is None:
             return
         limit_key = f"_analysis_task_list_limit:{page_key}"
         limit = int(st.session_state.get(limit_key, 50))
         tasks = store.list_tasks(page_key=page_key, limit=limit, summary_only=True)
-    except Exception:
-        st.warning(
-            "Cloud recovery is unavailable. Apply supabase/analysis_checkpoints.sql "
-            "and check the Supabase connection. New cloud analyses will wait until checkpoints are available."
-        )
+    except Exception as exc:
+        diagnostic = classify_checkpoint_error(exc, operation="read")
+        st.warning(f"Cloud recovery is unavailable. {diagnostic}")
+        from src.supabase_client import get_secret
+        try:
+            hostname = urlsplit(get_secret("SUPABASE_URL")).hostname or ""
+            match = re.fullmatch(r"([a-z0-9]{20})\.supabase\.co", hostname)
+        except (TypeError, ValueError):
+            match = None
+        if match:
+            st.caption(f"Configured Supabase project: {match.group(1)}. Apply migrations in this same project.")
+        st.caption("New signed-in analyses will wait until cloud checkpoints are available.")
         return
     has_more = len(tasks) >= limit
     tasks = [task for task in tasks if task.get("dynamic_items")]

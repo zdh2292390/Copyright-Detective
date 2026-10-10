@@ -527,4 +527,6 @@ begin
 end;
 $$;
 
+-- Refresh API discovery only after this transaction commits successfully.
+notify pgrst, 'reload schema';
 commit;

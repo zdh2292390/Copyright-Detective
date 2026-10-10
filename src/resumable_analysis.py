@@ -18,6 +18,10 @@ import io
 from threading import Event, RLock, Thread
 from typing import Any, Callable
 
+from src.analysis_checkpoints import (
+    AnalysisCheckpointError, OFFICIAL_GAME_PAGE_KEYS, classify_checkpoint_error,
+)
+
 _CURRENT: ContextVar[Any] = ContextVar("analysis_journal", default=None)
 _SUPPRESSED: ContextVar[bool] = ContextVar("analysis_journal_suppressed", default=False)
 _CALL_SCOPE: ContextVar[tuple] = ContextVar("analysis_work_item_scope", default=())
@@ -28,10 +32,6 @@ RUN_TRIGGER = "_analysis_run_trigger"
 RUN_LABEL = "_analysis_run_label"
 LEASE_TTL = 180
 HEARTBEAT_SECONDS = 20
-
-
-class AnalysisCheckpointError(RuntimeError):
-    """Persistence failed; further paid calls must stop until recovery."""
 
 
 class AnalysisResumeMismatch(AnalysisCheckpointError):
@@ -197,12 +197,12 @@ def snapshot_session(state: Any, page_key: str | None = None, *, max_bytes: int 
     return saved
 
 
-def get_cloud_store_for_current_user():
+def get_cloud_store_for_current_user(page_key: str | None = None):
     """Verify account identity before constructing an owner-bound cloud store.
 
     Guests retain existing behavior. Signed-in accounts always use cloud
     recovery: an authenticated client is sufficient for ordinary analyses,
-    while a configured service client supports privileged competition jobs.
+    while official competition jobs require the server-only service client.
     Authentication/configuration failures never fall back to temporary files.
     """
     import streamlit as st
@@ -213,16 +213,22 @@ def get_cloud_store_for_current_user():
     service_key = str(get_secret("SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()
     if not url:
         raise AnalysisCheckpointError(
-            "Cloud recovery requires SUPABASE_URL. Configure Supabase before starting a signed-in analysis."
+            "Cloud recovery requires SUPABASE_URL. Configure Supabase before starting a signed-in analysis.",
+            kind="configuration",
         )
     try:
         authenticated = get_authenticated_client()
         user = authenticated.auth.get_user().user if authenticated else None
         owner_id = str(getattr(user, "id", "") or "")
         if not owner_id or owner_id != str(st.session_state.get("user_id") or ""):
-            raise AnalysisCheckpointError("Sign in again before recovering an analysis task.")
+            raise AnalysisCheckpointError("Sign in again before recovering an analysis task.", kind="auth")
         from src.analysis_checkpoints import SupabaseAnalysisCheckpointStore
-        if service_key:
+        if page_key in OFFICIAL_GAME_PAGE_KEYS:
+            if not service_key:
+                raise AnalysisCheckpointError(
+                    "Official game recovery requires SUPABASE_SERVICE_ROLE_KEY on the server.",
+                    kind="configuration",
+                )
             from supabase import create_client
             client = create_client(url, service_key)
         else:
@@ -231,9 +237,18 @@ def get_cloud_store_for_current_user():
     except AnalysisCheckpointError:
         raise
     except Exception as exc:
-        raise AnalysisCheckpointError(
-            "Cloud recovery could not verify your account. Sign in again or check Supabase availability."
-        ) from exc
+        raise classify_checkpoint_error(exc, operation="read") from exc
+
+
+def _checkpoint_error_with_context(exc: Exception, context: str) -> AnalysisCheckpointError:
+    diagnostic = classify_checkpoint_error(exc)
+    detail = str(diagnostic)
+    if diagnostic.code:
+        detail = detail.removesuffix(f" (code: {diagnostic.code})")
+    return AnalysisCheckpointError(
+        f"{context} {detail}", kind=diagnostic.kind, code=diagnostic.code,
+        status_code=diagnostic.status_code,
+    )
 
 
 def _valid_response(result: Any) -> bool:
@@ -311,7 +326,9 @@ class CallJournal:
                     store.release(self.task_id, self.lease_token, status="incomplete")
                 except Exception:
                     pass
-            raise AnalysisCheckpointError("Unable to load or claim the saved task. It may still be running.") from exc
+            if isinstance(exc, AnalysisCheckpointError):
+                raise
+            raise classify_checkpoint_error(exc) from exc
         self.thread = None
         if heartbeat and not self.read_only:
             self.thread = Thread(target=self._heartbeat, daemon=True, name="analysis-checkpoint-heartbeat")
@@ -382,11 +399,11 @@ class CallJournal:
                 if task.get("stop_requested"):
                     raise AnalysisCheckpointError("This saved task was stopped.")
             except AnalysisCheckpointError:
-                self.failed = True
+                self.failed = self.broken = True
                 raise
             except Exception as exc:
                 self.failed = self.broken = True
-                raise AnalysisCheckpointError("Unable to save the next request. No API call was started.") from exc
+                raise _checkpoint_error_with_context(exc, "Unable to save the next request. No API call was started.") from exc
 
             token = _SUPPRESSED.set(True)
             try:
@@ -412,8 +429,8 @@ class CallJournal:
                             attempts=int(item.get("attempts") or 0) + 1)
             except Exception as exc:
                 self.failed = self.broken = True
-                raise AnalysisCheckpointError(
-                    "The API returned, but its result could not be saved to Supabase. "
+                raise _checkpoint_error_with_context(
+                    exc, "The API returned, but its result could not be saved to Supabase. "
                     "Further calls have stopped; this unsaved call may need to run again."
                 ) from exc
             return result
@@ -433,7 +450,7 @@ class CallJournal:
                                    status="complete" if complete else "incomplete", metadata=metadata)
             except Exception as exc:
                 self.broken = True
-                raise AnalysisCheckpointError("The final checkpoint could not be saved. Saved calls remain available for recovery.") from exc
+                raise _checkpoint_error_with_context(exc, "The final checkpoint could not be saved. Saved calls remain available for recovery.") from exc
 
 
 class PageRun:
@@ -463,7 +480,7 @@ class PageRun:
         if not self.checked_store:
             self.checked_store = True
             try:
-                self.store = get_cloud_store_for_current_user()
+                self.store = get_cloud_store_for_current_user(page_key=self.page_key)
             except Exception:
                 self.broken = True
                 raise
@@ -502,10 +519,7 @@ class PageRun:
             raise
         except Exception as exc:
             self.broken = True
-            raise AnalysisCheckpointError(
-                "Cloud checkpoints are unavailable. Apply supabase/analysis_checkpoints.sql "
-                "or check the database connection before starting analysis."
-            ) from exc
+            raise classify_checkpoint_error(exc) from exc
 
     def finish(self, success: bool):
         if self.journal is not None and not self.journal.closed:
@@ -620,7 +634,7 @@ def prepare_background_journal(key: str, label: str):
     try:
         if not scope.checked_store:
             scope.checked_store = True
-            scope.store = get_cloud_store_for_current_user()
+            scope.store = get_cloud_store_for_current_user(page_key=scope.page_key)
         store = scope.store
         if store is None:
             return None
@@ -646,7 +660,7 @@ def prepare_background_journal(key: str, label: str):
         raise
     except Exception as exc:
         scope.broken = True
-        raise AnalysisCheckpointError("Unable to prepare a cloud checkpoint for the background task.") from exc
+        raise classify_checkpoint_error(exc) from exc
 
 
 def acknowledge_task_completion():
