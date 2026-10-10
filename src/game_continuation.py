@@ -18,6 +18,7 @@ from src.direct_recall.comparison import (
 )
 from src.prompt_utils import get_full_prompt
 from src.kimi_utils import normalize_kimi_sampling_params
+from src.common.metrics.logger import is_api_error_response
 
 OPENAI_PROVIDER = "OpenAI"
 KIMI_PROVIDER = "Kimi"
@@ -149,7 +150,7 @@ def _response_text(result: Any) -> str:
     text = value.strip()
     if not text:
         raise ContinuationRunError("The model returned an empty response.")
-    if text.lower().startswith("error"):
+    if is_api_error_response(text):
         raise ContinuationRunError(text)
     return enforce_exact_word_count(text, TARGET_WORD_COUNT).strip()
 

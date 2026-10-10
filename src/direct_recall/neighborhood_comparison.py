@@ -29,6 +29,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from rouge_score import rouge_scorer
 
+from src.common.metrics.logger import is_api_error_response
+
 from src.direct_recall.comparison import (
     get_llm_completion,
     calculate_similarity_metrics,
@@ -467,7 +469,7 @@ def run_neighborhood_comparison(
         max_output_tokens=max_tokens,
     )
     
-    if isinstance(original_output, str) and original_output.startswith("Error"):
+    if is_api_error_response(original_output):
         complete_llm_progress(
             label_placeholder,
             bar_placeholder,
@@ -537,7 +539,7 @@ def run_neighborhood_comparison(
         )
         
         error = None
-        if isinstance(perturbed_output, str) and perturbed_output.startswith("Error"):
+        if is_api_error_response(perturbed_output):
             error = perturbed_output
             perturbed_output = ""
         

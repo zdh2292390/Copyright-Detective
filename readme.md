@@ -48,17 +48,31 @@ Shared provider requests default to a 120-second request timeout; internal calle
 
 ## Supabase recovery after a browser or server restart
 
-For signed-in accounts, analyses can save source text, frozen model/settings and each successful API response to the existing Supabase project. Reopen the corresponding detection/game page and use **Saved analysis tasks → Restore and continue**. Document mode also lists saved documents and retains its recovery URL. Completed calls are reused while local scoring and reports are reconstructed; only unfinished calls are sent again. A stopped or expired worker cannot overwrite a newer worker's results. Closing the browser does not stop document/game workers while the server stays up. After a server crash, wait up to three minutes for its lease to expire before resuming.
+After GitHub sign-in, API analyses automatically save their original inputs, model/settings, pending work and successful API responses in the existing Supabase project. Open the same detection/game page and choose **Saved analysis tasks → Restore and continue**. Completed calls are replayed locally; only pending or failed calls are sent again. Document mode also lists saved documents and retains its recovery URL, without requiring another upload. Opening the task list or displaying restored results never starts a paid request.
+
+| Feature | Saved work |
+| --- | --- |
+| Content recall | Text inference runs, PDF narrative generation and individual document chunks |
+| Knowledge detection | Q/A and multiple-choice generation/evaluation, LLM judges, SLEEK and Knowmem |
+| Persuasive jailbreak detection | Mutations, repair attempts, generations, judges and continuation probes |
+| Unlearning detection | MIN-K probes/fallback calls; accepted deployment requests and remote analysis task IDs/results |
+| Games | Exploration calls in Games 2/3; Game 1 calls and transactionally linked official reservations/submissions |
 
 Enable this once in the existing Supabase project's SQL Editor:
 
-1. Apply [`supabase/analysis_checkpoints.sql`](supabase/analysis_checkpoints.sql).
-2. For Game 1 official-run recovery, apply [`supabase/analysis_game_recovery.sql`](supabase/analysis_game_recovery.sql) after the existing `copyright_game.sql` and the checkpoint migration.
-3. Configure `SUPABASE_URL`, `SUPABASE_ANON_KEY` and the server-only `SUPABASE_SERVICE_ROLE_KEY` in the same environment/secrets used by existing account and game storage, then restart the app.
+1. Apply [`supabase/analysis_checkpoints.sql`](supabase/analysis_checkpoints.sql), including when upgrading an existing installation.
+2. If Game 1 official competition is enabled, apply [`supabase/analysis_game_recovery.sql`](supabase/analysis_game_recovery.sql) after the existing `copyright_game.sql` and the checkpoint migration.
+3. Keep the existing `SUPABASE_URL` and `SUPABASE_ANON_KEY` used for GitHub login. Ordinary signed-in analyses use the verified user's authenticated client and do not require a service-role key. Game 1 official competition requires the existing server-only `SUPABASE_SERVICE_ROLE_KEY`; a configured service client can also keep background jobs independent of browser sessions. Restart the app after deploying the code.
 
-The migrations are additive and rerunnable. Existing account settings, competition scores and old local document checkpoints are preserved. Task data is scoped to the verified signed-in account with RLS and fenced write RPCs. API keys, access/refresh tokens and deployment-agent keys are excluded from task snapshots; supply the original provider's key when continuing (existing encrypted account preferences can still restore it). A configured cloud database outage or missing schema stops further API calls rather than silently saving to temporary disk. Guests and installations without cloud configuration retain their original behavior; their local SQLite document recovery does not survive deletion of the server's disk.
+The migrations are additive and rerunnable. Task data belongs to the verified Supabase account, with RLS for reads and transactional owner/lease checks for writes. Signing out or switching accounts clears the previous account's page inputs, results and recovery selectors from the browser session; it does not delete saved tasks or competition scores. If authentication, the schema or checkpoint storage fails for a signed-in run, further API work stops with an error instead of silently using temporary storage. Guests retain their original behavior, including local SQLite document recovery.
 
-Exact input, provider, model and request parameters must match a saved call. An unavailable original model requires starting a new analysis with an available model, preserving the earlier results. If the process crashes after the provider accepts a request but before its response is committed to Supabase, that one unsaved request may run again; provider APIs do not offer universal exactly-once execution. Game 1 official saves/reservations use transactionally linked task IDs to prevent duplicate leaderboard entries. Remote representational analysis retains the accepted agent task ID, so recovery resumes status polling rather than submitting a second job; completed remote results are also checkpointed.
+API keys, access/refresh tokens and deployment-agent keys are excluded from task snapshots and request payloads. Supply the original provider's key when continuing; existing encrypted account preferences can restore it. Frozen source text, provider, model, endpoint and request parameters must match. To change them, start a new task. An unavailable original model also requires a new task, while earlier results remain saved.
+
+New tasks also save generated prompts, including the actual randomly selected few-shot examples. Prompt previews stay local; saved steps include both generated inputs and API responses. New tasks identify independent questions, runs and phases separately, so retrying one item or adding its judge/repair request cannot displace a later item's saved response. Earlier ordinary checkpoints retain their original call ordering. Closing the browser does not stop already running document/game workers while the server stays up. After a server crash, a task becomes resumable when its worker lease expires (at most three minutes); an expired worker cannot overwrite a newer worker's results. Accepted remote deployment/analysis responses are saved so recovery can reuse them and resume polling instead of resubmitting the job.
+
+There is one unavoidable request boundary: if a process stops after an external API accepts a request but before its response is committed to Supabase, that unsaved request may run again. Universal exactly-once execution requires support from the external provider. Game 1 official database reservations and final submissions are linked atomically to the analysis task to avoid duplicate scores.
+
+Game 1 official task journals require a server-managed provenance flag. Ordinary authenticated users cannot create or modify those official journals or associate ordinary tasks with official submissions. Legacy official checkpoints without verifiable provenance cannot replay API responses; start a new task if needed. Existing authoritative competition scores remain available. Game 3 is free exploration and uses ordinary authenticated checkpoints.
 
 ## Hosted model availability
 
@@ -84,7 +98,7 @@ Each chunk and active attempt is saved in Supabase for configured signed-in anal
 
 Temporary errors (including rate limits, timeouts, and service failures) are retried up to three times per chunk with exponential backoff and jitter. Provider retry-delay hints are honored up to 60 seconds. Document calls use a 120-second request timeout and disable SDK retries so the worker owns the retry budget. Persistent service/authentication/configuration errors pause the run; fix the key, quota, or service issue before resuming. Empty or blocked model responses remain failed while later chunks are processed. Corrupt checkpoints and non-finite metrics are rejected rather than reported as complete. A checkpoint write failure pauses outbound work and retains all results from already in-flight requests in memory while that server remains available.
 
-Checkpoints default to `.cache/document-analysis/checkpoints.sqlite3` (ignored by Git). Set `COPYRIGHT_DETECTIVE_DOCUMENT_CHECKPOINT_DIR` to a persistent disk directory to retain them across deployments; storage supplied by an ephemeral host can disappear on redeployment. Worker scheduling and duplicate protection currently target a single Streamlit server process. Results created before the checkpoint feature must be rerun to verify full coverage.
+Checkpoints default to `.cache/document-analysis/checkpoints.sqlite3` (ignored by Git). Set `COPYRIGHT_DETECTIVE_DOCUMENT_CHECKPOINT_DIR` to a persistent disk directory to retain them across deployments; storage supplied by an ephemeral host can disappear on redeployment. Guest/local checkpoint scheduling targets a single Streamlit server process; cloud tasks use database leases to fence workers across processes. Results created before the checkpoint feature must be rerun to verify full coverage.
 
 Run the regression tests without API calls:
 

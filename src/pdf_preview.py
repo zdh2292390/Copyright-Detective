@@ -22,6 +22,7 @@ from fpdf import FPDF
 
 from src.components import render_direct_recall_diff, render_streamlit_accordion
 from src.direct_recall.comparison import get_llm_completion
+from src.resumable_analysis import AnalysisCheckpointError
 
 
 class AuditReportPDF(FPDF):
@@ -597,6 +598,8 @@ Keep your analysis professional, objective, and focused on copyright detection i
         
         return analysis_result if analysis_result else "LLM analysis could not be generated."
         
+    except AnalysisCheckpointError:
+        raise
     except Exception as e:
         return f"Error generating LLM analysis: {str(e)}"
 
@@ -729,8 +732,11 @@ def _add_blackbox_analysis_to_pdf(pdf) -> None:
         ))
 
 
-def generate_text_memorization_pdf_report(results_data: Dict[str, Any], prompt_type: str, model_choice: str, api_key: str = None, provider: str = None, plots: Dict[str, bytes] = None) -> bytes:
-    """Generate an audit-style PDF report for text memorization detection results."""
+def generate_text_memorization_pdf_report(results_data: Dict[str, Any], prompt_type: str, model_choice: str, api_key: str = None, provider: str = None, plots: Dict[str, bytes] = None, llm_analysis: Optional[str] = None) -> bytes:
+    """Render a local report from results and an optional saved AI narrative.
+
+    api_key/provider remain accepted for existing callers; rendering makes no API calls.
+    """
     if not results_data or not isinstance(results_data, dict):
         pdf = AuditReportPDF()
         pdf.add_page()
@@ -950,12 +956,11 @@ def generate_text_memorization_pdf_report(results_data: Dict[str, Any], prompt_t
             pdf.ln(2)
         
         # LLM Analysis in appendix if available
-        if api_key and provider:
+        if llm_analysis:
             pdf.ln(2)
             pdf.set_font("Times", style='B', size=12)
             pdf.cell(200, 8, txt="AI-Generated Narrative (non-authoritative):", ln=True)
             pdf.set_font("Times", size=11)
-            llm_analysis = generate_llm_analysis(results_data, prompt_type, model_choice, api_key, provider)
             pdf.multi_cell(0, 6, txt=_sanitize_text_for_pdf(llm_analysis))
     
     elif results_data['type'] == 'multiple':
@@ -1023,12 +1028,11 @@ def generate_text_memorization_pdf_report(results_data: Dict[str, Any], prompt_t
             pdf.ln(2)
         
         # LLM Analysis in appendix if available
-        if api_key and provider:
+        if llm_analysis:
             pdf.ln(2)
             pdf.set_font("Times", style='B', size=12)
             pdf.cell(200, 8, txt="AI-Generated Narrative (non-authoritative):", ln=True)
             pdf.set_font("Times", size=11)
-            llm_analysis = generate_llm_analysis(results_data, prompt_type, model_choice, api_key, provider)
             pdf.multi_cell(0, 6, txt=_sanitize_text_for_pdf(llm_analysis))
 
     return pdf.output(dest='S').encode('latin-1', errors='replace')

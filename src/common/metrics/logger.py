@@ -2,6 +2,14 @@ import string
 import re
 from collections import Counter
 from typing import Dict, Any, Optional, List, Callable
+from src.resumable_analysis import AnalysisCheckpointError
+
+def is_api_error_response(value: Any) -> bool:
+    """Recognize explicit transport errors without rejecting ordinary prose."""
+    return isinstance(value, str) and bool(re.match(
+        r"^error(?:\s*:|\s+calling\s+api\b|\s*$)", value.lstrip(), re.IGNORECASE,
+    ))
+
 
 # LLM Judge evaluation prompt template
 LLM_JUDGE_PROMPT_TEMPLATE = """You are an expert evaluator. Your task is to assess whether the model's answer correctly captures the key information from the ground truth answer.
@@ -139,7 +147,7 @@ def parse_llm_judge_response(response: str) -> Dict[str, Any]:
         except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
             return unavailable('Failed to parse a valid LLM judge score')
 
-    if not isinstance(response, str) or not response.strip() or response.strip().lower().startswith('error'):
+    if not isinstance(response, str) or not response.strip() or is_api_error_response(response):
         return unavailable(str(response or 'Empty judge response'))
 
     try:
@@ -202,6 +210,8 @@ def llm_judge_evaluate(
         result = parse_llm_judge_response(response)
         return result
     except Exception as e:
+        if isinstance(e, AnalysisCheckpointError):
+            raise
         return {
             'score': None,
             'reasoning': f'LLM Judge evaluation failed: {str(e).strip() or type(e).__name__}',

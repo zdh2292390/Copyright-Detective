@@ -378,9 +378,35 @@ def get_full_prompt(
     custom_template: Optional[str] = None,
     mode: str = "Zero-Shot",
 ):
-    """
-    Generates a complete prompt with the given input text and chunk size.
-    """
+    """Build a prompt, retaining the original random selection on recovery."""
+    def invoke():
+        return _get_full_prompt_uncached(
+            prompt_type, input_text, chunk_size, continuation_method, char_count,
+            custom_template, mode,
+        )
+
+    from src.resumable_analysis import checkpoint_local_value
+    return checkpoint_local_value(
+        "prompt.full", {
+            "prompt_type": prompt_type, "input_text": input_text,
+            "chunk_size": chunk_size, "continuation_method": continuation_method,
+            "char_count": char_count, "custom_template": custom_template,
+            "mode": mode,
+        }, invoke,
+        is_success=lambda value: isinstance(value, str) and bool(value.strip()),
+    )
+
+
+def _get_full_prompt_uncached(
+    prompt_type,
+    input_text,
+    chunk_size=None,
+    continuation_method="Normal Continuation",
+    char_count=None,
+    custom_template: Optional[str] = None,
+    mode: str = "Zero-Shot",
+):
+    """Construct the original template and preserve normal random sampling."""
     # Use a placeholder for preview if input_text is empty
     display_text = input_text if input_text else "{input_text}"
     

@@ -17,12 +17,136 @@ from urllib.parse import parse_qsl, urlsplit
 from uuid import UUID, uuid4
 
 
+_SQLSTATE_CLASSES = frozenset({
+    "00", "01", "02", "03", "08", "09", "0A", "0B", "0F", "0L", "0P", "0Z",
+    "20", "21", "22", "23", "24", "25", "26", "27", "28", "2B", "2D", "2F",
+    "34", "38", "39", "3B", "3D", "3F", "40", "42", "44", "53", "54", "55",
+    "57", "58", "F0", "HV", "P0", "XX",
+})
+
+
+def _safe_backend_code(value: Any) -> str | None:
+    # Backend details may contain credentials or arbitrary user content. Only
+    # recognize the fixed PostgreSQL/PostgREST diagnostic-code formats.
+    if not isinstance(value, str):
+        return None
+    if re.fullmatch(r"PGRST[0-9]{3}", value):
+        return value
+    if re.fullmatch(r"[A-Z0-9]{5}", value) and value[:2] in _SQLSTATE_CLASSES:
+        return value
+    return None
+
+
 class AnalysisCheckpointError(RuntimeError):
-    """Checkpoint storage is unavailable or a checkpoint is invalid."""
+    """Safe checkpoint failure with an optional backend diagnostic code.
+
+    ``kind`` selects a recovery action. Raw backend messages, hints and request
+    URLs must never become this error's user-visible text.
+    """
+
+    def __init__(self, message: str, *, kind: str = "checkpoint", code: str | None = None,
+                 status_code: int | None = None):
+        self.kind = kind
+        self.code = _safe_backend_code(code)
+        self.status_code = status_code if type(status_code) is int and 100 <= status_code <= 599 else None
+        diagnostic = f" (code: {self.code})" if self.code else ""
+        super().__init__(message + diagnostic)
 
 
 class AnalysisLeaseError(AnalysisCheckpointError):
     """Another worker owns the task, or this worker's lease has expired."""
+
+
+def classify_checkpoint_error(exc: Exception, *, operation: str = "write") -> AnalysisCheckpointError:
+    """Translate storage/auth/network failures into fixed, actionable diagnostics.
+
+    SQLSTATE and PostgREST codes are retained in safe fields and visible text.
+    Messages are inspected only for classification; they are never interpolated.
+    This also handles HTTP clients whose error carries an HTTP response instead
+    of a PostgREST ``code`` attribute.
+    """
+    if isinstance(exc, AnalysisCheckpointError):
+        return exc
+    code = None
+    status = None
+    messages: list[str] = []
+    raw_codes: list[str] = []
+    errors: list[BaseException] = []
+    current: BaseException | None = exc
+    # Connection/auth helpers sometimes wrap the SDK exception. Inspect only
+    # explicit causes, with a bound and cycle guard, to retain its safe code.
+    for _ in range(4):
+        if current is None or any(current is previous for previous in errors):
+            break
+        if isinstance(current, AnalysisCheckpointError):
+            return current
+        errors.append(current)
+        raw_code = getattr(current, "code", None)
+        if isinstance(raw_code, str):
+            raw_codes.append(raw_code)
+        code = code or _safe_backend_code(raw_code)
+        raw_message = getattr(current, "message", None)
+        if not isinstance(raw_message, str):
+            raw_message = str(current)
+        messages.append(raw_message[:8192].lower())
+        current_status = getattr(current, "status_code", None)
+        if type(current_status) is not int:
+            current_status = getattr(getattr(current, "response", None), "status_code", None)
+        if status is None and type(current_status) is int and 100 <= current_status <= 599:
+            status = current_status
+        # SDK auth/gateway failures may have an HTTP string code instead of a
+        # response. It is used for classification, never displayed raw.
+        if status is None and raw_code in {"401", "403", "408", "429", "500", "502", "503", "504"}:
+            status = int(raw_code)
+        current = current.__cause__
+    message = "\n".join(messages)
+    def failure(text: str, kind: str, error_type: type[AnalysisCheckpointError] = AnalysisCheckpointError):
+        return error_type(text, kind=kind, code=code, status_code=status)
+
+    if "analysis_untrusted_game" in message:
+        return failure(
+            "This older official-game checkpoint has no verified server origin and cannot be replayed. "
+            "Saved official scores remain available; start a new game task.", "untrusted_game")
+    if "analysis_official_game" in message:
+        return failure(
+            "Official game checkpoints require the server's Supabase service-role configuration.", "official_game")
+    if "analysis_lease" in message:
+        return failure(
+            "The analysis task is owned by another worker or its lease expired.", "lease", AnalysisLeaseError)
+    if code in {"PGRST202", "PGRST204", "PGRST205", "42P01", "42703", "42883"}:
+        return failure(
+            "Cloud checkpoint schema is unavailable or outdated. Run the full supabase/analysis_checkpoints.sql "
+            "migration in the app's Supabase project, then reload its PostgREST schema cache.", "schema")
+    if any(marker in message for marker in ("invalid api key", "invalid apikey", "invalid supabase_key", "invalid supabase key")):
+        return failure(
+            "The Supabase API key was rejected. Check that the app's Supabase URL and API key belong to "
+            "the same project, then restart the app.", "api_key")
+    if code in {"PGRST301", "PGRST303", "28000", "28P01"} or status == 401 or any(
+        marker in message for marker in ("jwt expired", "jwt is expired", "invalid jwt", "expired jwt", "invalid refresh token")
+    ) or any(value in {"bad_jwt", "session_not_found", "refresh_token_not_found", "refresh_token_already_used"} for value in raw_codes):
+        return failure(
+            "Your Supabase login session is expired or invalid. Sign out and sign in with GitHub again "
+            "before restoring or starting analysis.", "auth")
+    if code == "42501" and "owner authorization failed" in message:
+        return failure(
+            "The checkpoint account does not match your Supabase login. Sign out and sign in with GitHub "
+            "again before restoring or starting analysis.", "auth")
+    if code in {"42501", "PGRST302"} or status == 403:
+        return failure(
+            "Cloud checkpoint permissions are missing. Reapply supabase/analysis_checkpoints.sql to "
+            "restore the table grants and RPC permissions; keep row level security enabled.", "permission")
+    network_type = any(cls.__name__ in {
+        "RequestError", "ConnectError", "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout",
+        "NetworkError", "ReadError", "WriteError", "RemoteProtocolError", "ConnectionError", "TimeoutError",
+    } for error in errors for cls in type(error).__mro__)
+    if code in {"PGRST000", "PGRST001", "PGRST002", "PGRST003", "08000", "08001", "08003", "08006", "53300", "57P01", "57P02", "57P03"} or network_type or status in {408, 429, 500, 502, 503, 504}:
+        return failure(
+            "Supabase checkpoint storage is temporarily unreachable. Check the project status and the "
+            "app's network connection, then retry; saved progress remains available.", "network")
+    return failure(
+        "Cloud checkpoints could not be read. Check the Supabase connection and retry." if operation == "read"
+        else "Cloud checkpoint operation failed; saved progress was not replaced. Check the Supabase connection and retry.",
+        "checkpoint")
 
 
 _CREDENTIAL_KEYS = frozenset({
@@ -31,18 +155,26 @@ _CREDENTIAL_KEYS = frozenset({
     "clientsecret", "servicerolekey", "supabaseservicerolekey", "anonkey",
     "supabaseanonkey", "credentials", "credential", "bearertoken", "apikeys", "apitoken",
 })
+# All application aliases that execute official Game 1 scoring. These
+# journals can only be written by the trusted server, never a browser client.
+OFFICIAL_GAME_PAGE_KEYS = frozenset({
+    'Game 1: The Hidden Passage Hunt',
+    'Game 2: The Hidden Passage Hunt',
+    'Copyright Challenge',
+    'Copyright Challenge 1',
+})
 _TASK_STATUSES = frozenset({"creating", "queued", "running", "incomplete", "complete"})
 _ITEM_STATUSES = frozenset({"pending", "complete", "failed"})
 _MAX_ITEMS = 500_000
 _MAX_JSON_BYTES = 16 * 1024 * 1024
 _MAX_BATCH_BYTES = 4 * 1024 * 1024
 _TASK_COLUMNS = (
-    "id,owner_id,page_key,fingerprint,settings,source,metadata,dynamic_items,"
+    "id,owner_id,page_key,fingerprint,settings,source,metadata,dynamic_items,server_managed,"
     "total_items,status,completed_items,failed_items,stop_requested,"
     "lease_token,lease_generation,lease_expires_at,revision,created_at,updated_at"
 )
 _SUMMARY_COLUMNS = (
-    "id,owner_id,page_key,settings,dynamic_items,total_items,status,completed_items,"
+    "id,owner_id,page_key,settings,dynamic_items,server_managed,total_items,status,completed_items,"
     "failed_items,stop_requested,lease_expires_at,revision,created_at,updated_at"
 )
 _ITEM_COLUMNS = "task_id,owner_id,item_index,input,status,result,error,attempts,updated_at"
@@ -146,15 +278,7 @@ class SupabaseAnalysisCheckpointStore:
         except AnalysisCheckpointError:
             raise
         except Exception as exc:
-            code = str(getattr(exc, "code", ""))
-            message = str(getattr(exc, "message", ""))
-            if "analysis_lease" in message:
-                raise AnalysisLeaseError("The analysis task is owned by another worker or its lease expired.") from exc
-            if code in {"PGRST202", "PGRST204", "PGRST205", "42P01", "42883"}:
-                raise AnalysisCheckpointError(
-                    "Cloud checkpoint schema is unavailable. Apply supabase/analysis_checkpoints.sql before running analyses."
-                ) from exc
-            raise AnalysisCheckpointError("Cloud checkpoint operation failed; saved progress was not replaced.") from exc
+            raise classify_checkpoint_error(exc, operation="write") from exc
 
     def _query(self, query: Any) -> list[dict[str, Any]]:
         try:
@@ -162,12 +286,7 @@ class SupabaseAnalysisCheckpointStore:
         except AnalysisCheckpointError:
             raise
         except Exception as exc:
-            code = str(getattr(exc, "code", ""))
-            if code in {"PGRST202", "PGRST204", "PGRST205", "42P01", "42883"}:
-                raise AnalysisCheckpointError(
-                    "Cloud checkpoint schema is unavailable. Apply supabase/analysis_checkpoints.sql before running analyses."
-                ) from exc
-            raise AnalysisCheckpointError("Cloud checkpoints could not be read.") from exc
+            raise classify_checkpoint_error(exc, operation="read") from exc
 
     def create_task(
         self, page_key: str, settings: Mapping[str, Any], source: Any,

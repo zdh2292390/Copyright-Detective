@@ -16,6 +16,8 @@ from numbers import Real
 from threading import Event
 from typing import Any
 
+from src.common.metrics.logger import is_api_error_response
+
 
 MAX_RETRY_DELAY = 60.0
 
@@ -119,7 +121,7 @@ def _comparison_error(result: Any) -> str | None:
         return "Error: Invalid chunk analysis result."
     generated, metrics = result
     if (
-        isinstance(generated, str) and generated.startswith("Error")
+        is_api_error_response(generated)
         and (not isinstance(metrics, Mapping) or not metrics)
     ):
         return generated

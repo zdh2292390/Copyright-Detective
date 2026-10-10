@@ -19,6 +19,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from src.api_concurrency import ApiConcurrencyTimeout, limit_api_concurrency
+from src.common.metrics.logger import is_api_error_response
 from src.prompt_utils import get_full_prompt
 from src.kimi_utils import normalize_kimi_sampling_params, kimi_request_extra_body
 from src.anthropic_utils import create_anthropic_message, extract_anthropic_response_text
@@ -737,7 +738,7 @@ def _execute_llm_completion(
                         config=config or None
                     )
                     result_text = _extract_gemini_response_text(response)
-                if result_text.startswith("Error"):
+                if is_api_error_response(result_text):
                     complete_llm_progress(
                         label_placeholder,
                         bar_placeholder,
@@ -853,7 +854,7 @@ def _execute_llm_completion(
             return error_msg, None
         return error_msg
 
-    if isinstance(result_text, str) and result_text.startswith("Error"):
+    if is_api_error_response(result_text):
         complete_llm_progress(
             label_placeholder, bar_placeholder, progress_bar,
             final_message="Model returned no usable text",
@@ -1107,7 +1108,7 @@ def compare_texts(
         )
     
     # Return early if API error to avoid post-processing masking the error message
-    if isinstance(generated_text, str) and generated_text.startswith("Error"):
+    if is_api_error_response(generated_text):
         if return_logprobs:
             return generated_text, None, None
         return generated_text, None

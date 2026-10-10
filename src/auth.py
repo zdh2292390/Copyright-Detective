@@ -459,6 +459,13 @@ def is_logged_in() -> bool:
 
 
 def _set_user_session(user, access_token: str, refresh_token: str) -> None:
+    from src.analysis_recovery_ui import ANALYSIS_SESSION_OWNER, clear_account_analysis_state
+
+    previous_owner = st.session_state.get("user_id") or st.session_state.get(ANALYSIS_SESSION_OWNER)
+    if previous_owner and str(previous_owner) != str(user.id):
+        clear_account_analysis_state()
+        clear_secure_keys()
+    st.session_state[ANALYSIS_SESSION_OWNER] = str(user.id)
     metadata = user.user_metadata or {}
     st.session_state.user_id = user.id
     st.session_state.user_email = user.email or ""
@@ -476,6 +483,9 @@ def _set_user_session(user, access_token: str, refresh_token: str) -> None:
 
 
 def _force_logout_local() -> None:
+    from src.analysis_recovery_ui import clear_account_analysis_state
+
+    clear_account_analysis_state()
     for key in SESSION_AUTH_KEYS:
         st.session_state.pop(key, None)
     st.session_state["_clear_browser_auth_pending"] = True
@@ -687,16 +697,16 @@ def handle_oauth_callback() -> None:
 
     try:
         client = create_supabase_client()
-        session = client.auth.set_session(access_token, refresh_token)
-        user = session.user if session else None
+        response = client.auth.set_session(access_token, refresh_token)
+        user, restored_access, restored_refresh = _user_from_auth_response(response)
         if user is None:
             user_response = client.auth.get_user()
             user = user_response.user if user_response else None
-        if user is None:
+        if user is None or not restored_access:
             st.error("GitHub sign-in failed: could not retrieve user information.")
             return
 
-        _complete_login(user, access_token, refresh_token)
+        _complete_login(user, restored_access, restored_refresh or "")
     except Exception as exc:
         _clear_oauth_query_params()
         st.session_state["_clear_browser_auth_pending"] = True
@@ -706,34 +716,18 @@ def handle_oauth_callback() -> None:
 def ensure_valid_session() -> bool:
     if not is_logged_in():
         return False
-
-    access_token = st.session_state.get("access_token") or ""
-    refresh_token = st.session_state.get("refresh_token") or ""
-
     try:
-        client = create_supabase_client()
-        client.auth.set_session(access_token, refresh_token)
-        user_response = client.auth.get_user()
-        if user_response and user_response.user:
-            return True
+        # set_session refreshes expired tokens; get_authenticated_client saves
+        # the returned pair for this same owner and synchronizes browser storage.
+        client = get_authenticated_client()
+        user_response = client.auth.get_user() if client is not None else None
+        user = getattr(user_response, "user", None)
+        return bool(user and str(user.id) == str(st.session_state.get("user_id") or ""))
     except Exception:
-        pass
-
-    if not refresh_token:
-        return True
-
-    try:
-        client = create_supabase_client()
-        refreshed = client.auth.refresh_session(refresh_token)
-        session = refreshed.session if refreshed else None
-        user = refreshed.user if refreshed else None
-        if session and user:
-            _set_user_session(user, session.access_token, session.refresh_token or refresh_token)
-            return True
-    except Exception:
-        pass
-
-    return True
+        # Keep private page state during outages. Paid actions still require a
+        # verified cloud client, and the UI can offer sign-in/retry without
+        # silently accepting an invalid or different account session.
+        return False
 
 
 def get_oauth_redirect_url(provider: str = "github", *, for_popup: bool = False) -> Optional[str]:

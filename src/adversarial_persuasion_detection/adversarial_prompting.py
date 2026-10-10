@@ -13,6 +13,8 @@ from pathlib import Path
 from dataclasses import asdict, dataclass
 from enum import Enum
 from statistics import mean, stdev
+from src.common.metrics.logger import is_api_error_response
+from src.resumable_analysis import AnalysisCheckpointError, checkpoint_scope
 
 from Levenshtein import distance
 
@@ -27,7 +29,7 @@ from src.direct_recall.comparison import (
 def _completion_error(completion: Any) -> Optional[str]:
     if not isinstance(completion, str) or not completion.strip():
         return "Error: The model returned an empty or invalid response."
-    if completion.strip().lower().startswith("error"):
+    if is_api_error_response(completion):
         return completion.strip()
     return None
 
@@ -37,6 +39,8 @@ try:
     with framework_path.open("r", encoding="utf-8") as f:
         framework_templates = json.load(f)
 except Exception as e:
+    if isinstance(e, AnalysisCheckpointError):
+        raise
     warnings.warn(f"Failed to load framework.json: {e}", RuntimeWarning)
     framework_templates = {}
 
@@ -696,6 +700,8 @@ def _load_external_template_library() -> Dict[str, str]:
             with template_path.open("r", encoding="utf-8") as fp:
                 raw_templates = json.load(fp)
         except Exception as exc:  # pragma: no cover
+            if isinstance(exc, AnalysisCheckpointError):
+                raise
             warnings.warn(
                 f"Failed to load persuasion templates from {template_path}: {exc}",
                 RuntimeWarning,
@@ -1585,51 +1591,56 @@ def mutate_custom_strategies(
     
     for strategy in strategies:
         for attempt in range(1, attempts_per_strategy + 1):
-            try:
-                result = run_custom_mutation(
-                    api_key,
-                    model_name,
-                    provider,
-                    strategy,
-                    original_prompt,
-                    few_shot_examples=few_shot_examples,
-                    attempt=attempt,
-                    temperature=temperature,
-                    top_p=top_p,
-                    dry_run=dry_run,
-                )
-            except Exception as exc:
-                result = MutationResult(
-                    strategy=strategy,
-                    instruction="",
-                    response=None,
-                    error=f"Exception during custom mutation: {exc}",
-                )
-                parsed = None
-                metrics = None
-            else:
-                parsed = parse_custom_mutation_output(result.response)
-                result, parsed = _flag_continuation_structure_loss(result, parsed, original_prompt)
+            with checkpoint_scope("custom_mutation", strategy, attempt):
                 try:
-                    metrics = evaluate_similarity(reference_text, parsed.mutated_text) if parsed else None
+                    result = run_custom_mutation(
+                        api_key,
+                        model_name,
+                        provider,
+                        strategy,
+                        original_prompt,
+                        few_shot_examples=few_shot_examples,
+                        attempt=attempt,
+                        temperature=temperature,
+                        top_p=top_p,
+                        dry_run=dry_run,
+                    )
                 except Exception as exc:
+                    if isinstance(exc, AnalysisCheckpointError):
+                        raise
+                    result = MutationResult(
+                        strategy=strategy,
+                        instruction="",
+                        response=None,
+                        error=f"Exception during custom mutation: {exc}",
+                    )
+                    parsed = None
                     metrics = None
-                    if result.error is None:
-                        result = MutationResult(
-                            strategy=result.strategy,
-                            instruction=result.instruction,
-                            response=result.response,
-                            error=f"metrics_error: {exc}",
-                        )
+                else:
+                    parsed = parse_custom_mutation_output(result.response)
+                    result, parsed = _flag_continuation_structure_loss(result, parsed, original_prompt)
+                    try:
+                        metrics = evaluate_similarity(reference_text, parsed.mutated_text) if parsed else None
+                    except Exception as exc:
+                        if isinstance(exc, AnalysisCheckpointError):
+                            raise
+                        metrics = None
+                        if result.error is None:
+                            result = MutationResult(
+                                strategy=result.strategy,
+                                instruction=result.instruction,
+                                response=result.response,
+                                error=f"metrics_error: {exc}",
+                            )
 
-            evaluations.append(
-                MutationEvaluation(
-                    mutation=result,
-                    parsed=parsed,
-                    metrics=metrics,
-                    attempt=attempt,
+                evaluations.append(
+                    MutationEvaluation(
+                        mutation=result,
+                        parsed=parsed,
+                        metrics=metrics,
+                        attempt=attempt,
+                    )
                 )
-            )
     
     return evaluations
 
@@ -1948,52 +1959,57 @@ def mutate_strategies(
     evaluations: List[MutationEvaluation] = []
     for strategy in strategies:
         for attempt in range(1, attempts_per_strategy + 1):
-            try:
-                # Generate one mutated prompt per attempt for this strategy
-                result = run_adversarial_persuasion(
-                    api_key,
-                    model_name,
-                    provider,
-                    strategy,
-                    adversarial_prompt,
-                    few_shot_examples=few_shot_examples,
-                    temperature=temperature,
-                    top_p=top_p,
-                    dry_run=dry_run,
-                )
-            except Exception as exc:  # Defensive: don't abort the whole batch
-                result = MutationResult(
-                    strategy=strategy,
-                    instruction="",
-                    response=None,
-                    error=f"Exception during mutation: {exc}",
-                )
-                parsed = None
-                metrics = None
-            else:
-                parsed = parse_mutation_output(result.response)
-                result, parsed = _flag_continuation_structure_loss(result, parsed, adversarial_prompt)
+            with checkpoint_scope("mutation", strategy, attempt):
                 try:
-                    metrics = evaluate_similarity(reference_text, parsed.mutated_text) if parsed else None
-                except Exception as exc:  # Defensive: similarity must not abort
+                    # Generate one mutated prompt per attempt for this strategy
+                    result = run_adversarial_persuasion(
+                        api_key,
+                        model_name,
+                        provider,
+                        strategy,
+                        adversarial_prompt,
+                        few_shot_examples=few_shot_examples,
+                        temperature=temperature,
+                        top_p=top_p,
+                        dry_run=dry_run,
+                    )
+                except Exception as exc:  # Defensive: don't abort the whole batch
+                    if isinstance(exc, AnalysisCheckpointError):
+                        raise
+                    result = MutationResult(
+                        strategy=strategy,
+                        instruction="",
+                        response=None,
+                        error=f"Exception during mutation: {exc}",
+                    )
+                    parsed = None
                     metrics = None
-                    # Preserve any existing error message; otherwise attach metrics failure detail
-                    if result.error is None:
-                        result = MutationResult(
-                            strategy=result.strategy,
-                            instruction=result.instruction,
-                            response=result.response,
-                            error=f"metrics_error: {exc}",
-                        )
+                else:
+                    parsed = parse_mutation_output(result.response)
+                    result, parsed = _flag_continuation_structure_loss(result, parsed, adversarial_prompt)
+                    try:
+                        metrics = evaluate_similarity(reference_text, parsed.mutated_text) if parsed else None
+                    except Exception as exc:  # Defensive: similarity must not abort
+                        if isinstance(exc, AnalysisCheckpointError):
+                            raise
+                        metrics = None
+                        # Preserve any existing error message; otherwise attach metrics failure detail
+                        if result.error is None:
+                            result = MutationResult(
+                                strategy=result.strategy,
+                                instruction=result.instruction,
+                                response=result.response,
+                                error=f"metrics_error: {exc}",
+                            )
 
-            evaluations.append(
-                MutationEvaluation(
-                    mutation=result,
-                    parsed=parsed,
-                    metrics=metrics,
-                    attempt=attempt,
+                evaluations.append(
+                    MutationEvaluation(
+                        mutation=result,
+                        parsed=parsed,
+                        metrics=metrics,
+                        attempt=attempt,
+                    )
                 )
-            )
     return evaluations
 
 
@@ -2670,6 +2686,8 @@ def run_mutation_pipeline(
                 output_root=repo_root / "outputs" / "3_evaluation_results" / cleaned_book / cleaned_technique_dir,
             )
         except Exception as exc:  # pragma: no cover - defensive branch
+            if isinstance(exc, AnalysisCheckpointError):
+                raise
             steps.append(
                 PipelineStepResult(
                     script=script_name,

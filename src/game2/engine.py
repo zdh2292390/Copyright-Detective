@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from src.resumable_analysis import checkpoint_scope
+from src.common.metrics.logger import is_api_error_response
+
 import json
 from dataclasses import dataclass, field
 from statistics import fmean
@@ -300,7 +303,7 @@ def _completion_text(result: Any) -> str:
     text = value.strip()
     if not text:
         raise GameRunError("The model returned an empty response.")
-    if text.lower().startswith("error"):
+    if is_api_error_response(text):
         raise GameRunError(text)
     return text
 
@@ -415,13 +418,14 @@ def run_stage_one(
     completion = completion_fn or _completion()
     answers: List[KnowledgeAnswer] = []
     for question_index, pair in enumerate(pairs, start=1):
-        response = _answer_standard(
-            pair["question"],
-            api_key,
-            float(temperature),
-            float(top_p),
-            completion,
-        )
+        with checkpoint_scope("game_knowledge_direct", book_key, question_index):
+            response = _answer_standard(
+                pair["question"],
+                api_key,
+                float(temperature),
+                float(top_p),
+                completion,
+            )
         metrics = _metrics(pair["question"], pair["answer"], response)
         answers.append(
             KnowledgeAnswer(
@@ -470,25 +474,26 @@ def run_stage_two(
     total = config.scored_generations
     for question_index, pair in enumerate(pairs, start=1):
         for run_index in range(1, config.repetitions + 1):
-            trace: Dict[str, Any] = {}
-            if config.strategy == SLEEK_MODE:
-                response, trace = _answer_sleek(
-                    pair["question"],
-                    api_key,
-                    float(config.temperature),
-                    float(config.top_p),
-                    completion,
-                )
-                prompt = f"SLEEK two-call probe: {pair['question']}"
-            else:
-                response = _answer_standard(
-                    pair["question"],
-                    api_key,
-                    float(config.temperature),
-                    float(config.top_p),
-                    completion,
-                )
-                prompt = _standard_prompt(pair["question"])
+            with checkpoint_scope("game_knowledge_evaluation", config.book_key, question_index, run_index):
+                trace: Dict[str, Any] = {}
+                if config.strategy == SLEEK_MODE:
+                    response, trace = _answer_sleek(
+                        pair["question"],
+                        api_key,
+                        float(config.temperature),
+                        float(config.top_p),
+                        completion,
+                    )
+                    prompt = f"SLEEK two-call probe: {pair['question']}"
+                else:
+                    response = _answer_standard(
+                        pair["question"],
+                        api_key,
+                        float(config.temperature),
+                        float(config.top_p),
+                        completion,
+                    )
+                    prompt = _standard_prompt(pair["question"])
 
             metrics = _metrics(pair["question"], pair["answer"], response)
             trace = {"ground_truth": pair["answer"], **trace}

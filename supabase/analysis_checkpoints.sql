@@ -12,6 +12,7 @@ create table if not exists public.analysis_tasks (
     source jsonb not null,
     metadata jsonb not null default '{}'::jsonb check (jsonb_typeof(metadata) = 'object'),
     dynamic_items boolean not null default false,
+    server_managed boolean not null default false,
     total_items integer not null check (total_items between 0 and 500000),
     status text not null default 'creating'
         check (status in ('creating', 'queued', 'running', 'incomplete', 'complete')),
@@ -28,6 +29,10 @@ create table if not exists public.analysis_tasks (
     check (completed_items + failed_items <= total_items),
     check ((lease_token is null) = (lease_expires_at is null))
 );
+
+-- Existing rows have no authenticated/server provenance. Never infer trusted
+-- Game input from ownership, a client-supplied field or an old saved response.
+alter table public.analysis_tasks add column if not exists server_managed boolean not null default false;
 
 alter table public.analysis_tasks drop constraint if exists analysis_tasks_page_key_check;
 alter table public.analysis_tasks add constraint analysis_tasks_page_key_check
@@ -129,6 +134,31 @@ begin
 end;
 $$;
 
+-- Official score inputs must originate in the trusted server. Authenticated
+-- owners may checkpoint ordinary analyses but cannot forge/rewrite Game API
+-- responses that a service-role runner would later submit to the leaderboard.
+-- Include legacy application aliases as long as they execute official games.
+create or replace function public.analysis_is_official_game_page(p_page_key text)
+returns boolean language sql immutable set search_path = '' as $$
+    select p_page_key = any(array[
+        'Game 1: The Hidden Passage Hunt',
+        'Game 2: The Hidden Passage Hunt',
+        'Copyright Challenge',
+        'Copyright Challenge 1'
+    ]);
+$$;
+
+create or replace function public.analysis_check_page_write(p_page_key text)
+returns void language plpgsql security invoker set search_path = '' as $$
+begin
+    if public.analysis_is_official_game_page(p_page_key)
+        and coalesce(auth.role(), '') <> 'service_role' then
+        raise exception 'analysis_official_game: official task writes require the trusted server.'
+            using errcode = '42501';
+    end if;
+end;
+$$;
+
 -- Internal lock/fencing helper, never callable by anon/authenticated/service_role.
 create or replace function public.analysis_locked_task(
     p_owner_id uuid, p_task_id uuid, p_lease_token uuid default null,
@@ -143,6 +173,11 @@ begin
         where id = p_task_id and owner_id = p_owner_id for update;
     if not found then
         raise exception 'Analysis task not found.' using errcode = 'P0002';
+    end if;
+    perform public.analysis_check_page_write(task.page_key);
+    if public.analysis_is_official_game_page(task.page_key) and not task.server_managed then
+        raise exception 'analysis_untrusted_game: this legacy official task has no verified server origin.'
+            using errcode = '42501';
     end if;
     if p_require_lease and (
         p_lease_token is null or task.lease_token is distinct from p_lease_token
@@ -163,6 +198,7 @@ declare
     task public.analysis_tasks%rowtype;
 begin
     perform public.analysis_check_owner(p_owner_id);
+    perform public.analysis_check_page_write(p_page_key);
     perform public.analysis_check_json(p_settings);
     perform public.analysis_check_json(p_source);
     perform public.analysis_check_json(p_metadata);
@@ -174,9 +210,9 @@ begin
     end if;
     -- ON CONFLICT followed by a row lock also makes racing creation idempotent.
     insert into public.analysis_tasks(id, owner_id, page_key, fingerprint, settings, source,
-        metadata, dynamic_items, total_items)
+        metadata, dynamic_items, server_managed, total_items)
     values(p_task_id, p_owner_id, p_page_key, p_fingerprint, p_settings, p_source,
-        p_metadata, p_dynamic_items, p_total_items)
+        p_metadata, p_dynamic_items, coalesce(auth.role(), '') = 'service_role', p_total_items)
     on conflict(id) do nothing;
     task := public.analysis_locked_task(p_owner_id, p_task_id, null, false);
     if task.page_key is distinct from p_page_key or task.fingerprint is distinct from p_fingerprint
@@ -461,6 +497,7 @@ begin
     if not found then
         return jsonb_build_object('deleted', true);
     end if;
+    perform public.analysis_check_page_write(task.page_key);
     if task.lease_token is not null and task.lease_expires_at > clock_timestamp() then
         raise exception 'analysis_lease: stop the active worker before deleting this task.' using errcode = 'P0001';
     end if;
@@ -477,13 +514,13 @@ begin
     for f in select p.oid::regprocedure as signature, p.proname
         from pg_proc p join pg_namespace n on n.oid = p.pronamespace
         where n.nspname = 'public' and p.proname in (
-            'analysis_check_owner','analysis_check_json','analysis_locked_task',
+            'analysis_check_owner','analysis_check_json','analysis_is_official_game_page','analysis_check_page_write','analysis_locked_task',
             'analysis_create_task','analysis_put_items','analysis_finalize_task',
             'analysis_claim','analysis_heartbeat','analysis_append_item',
             'analysis_save_items','analysis_release','analysis_request_stop','analysis_delete'
         ) loop
         execute format('revoke all on function %s from public, anon, authenticated, service_role', f.signature);
-        if f.proname not in ('analysis_check_owner','analysis_check_json','analysis_locked_task') then
+        if f.proname not in ('analysis_check_owner','analysis_check_json','analysis_is_official_game_page','analysis_check_page_write','analysis_locked_task') then
             execute format('grant execute on function %s to authenticated, service_role', f.signature);
         end if;
     end loop;

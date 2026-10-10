@@ -11,6 +11,7 @@ from copy import deepcopy
 from hashlib import sha256
 import json
 import math
+import re
 import base64
 import gzip
 import io
@@ -19,6 +20,7 @@ from typing import Any, Callable
 
 _CURRENT: ContextVar[Any] = ContextVar("analysis_journal", default=None)
 _SUPPRESSED: ContextVar[bool] = ContextVar("analysis_journal_suppressed", default=False)
+_CALL_SCOPE: ContextVar[tuple] = ContextVar("analysis_work_item_scope", default=())
 PAGE_KEY = "_analysis_page_key"
 PENDING_RESTORE = "_analysis_pending_restore"
 RESUME_TASK = "_analysis_resume_task"
@@ -196,27 +198,36 @@ def snapshot_session(state: Any, page_key: str | None = None, *, max_bytes: int 
 
 
 def get_cloud_store_for_current_user():
-    """Verify the server identity before constructing a service-role store.
+    """Verify account identity before constructing an owner-bound cloud store.
 
-    Guests/unconfigured installs retain existing local behavior. Once cloud
-    recovery is configured, authentication/database failures never fall back
-    silently to temporary files.
+    Guests retain existing behavior. Signed-in accounts always use cloud
+    recovery: an authenticated client is sufficient for ordinary analyses,
+    while a configured service client supports privileged competition jobs.
+    Authentication/configuration failures never fall back to temporary files.
     """
     import streamlit as st
     from src.supabase_client import get_authenticated_client, get_secret
+    if not st.session_state.get("access_token"):
+        return None
     url = str(get_secret("SUPABASE_URL", "") or "").strip()
     service_key = str(get_secret("SUPABASE_SERVICE_ROLE_KEY", "") or "").strip()
-    if not url or not service_key or not st.session_state.get("access_token"):
-        return None
+    if not url:
+        raise AnalysisCheckpointError(
+            "Cloud recovery requires SUPABASE_URL. Configure Supabase before starting a signed-in analysis."
+        )
     try:
         authenticated = get_authenticated_client()
         user = authenticated.auth.get_user().user if authenticated else None
         owner_id = str(getattr(user, "id", "") or "")
         if not owner_id or owner_id != str(st.session_state.get("user_id") or ""):
             raise AnalysisCheckpointError("Sign in again before recovering an analysis task.")
-        from supabase import create_client
         from src.analysis_checkpoints import SupabaseAnalysisCheckpointStore
-        return SupabaseAnalysisCheckpointStore(create_client(url, service_key), owner_id)
+        if service_key:
+            from supabase import create_client
+            client = create_client(url, service_key)
+        else:
+            client = authenticated
+        return SupabaseAnalysisCheckpointStore(client, owner_id)
     except AnalysisCheckpointError:
         raise
     except Exception as exc:
@@ -229,7 +240,9 @@ def _valid_response(result: Any) -> bool:
     if result is None:
         return False
     if isinstance(result, str):
-        return bool(result.strip()) and not result.lstrip().lower().startswith("error")
+        return bool(result.strip()) and not re.match(
+            r"^error(?:\s*:|\s+calling\s+api\b|\s*$)", result.lstrip(), re.IGNORECASE,
+        )
     if isinstance(result, tuple):
         return bool(result) and _valid_response(result[0])
     if isinstance(result, dict):
@@ -245,6 +258,17 @@ class CallJournal:
         self.task = task
         self.task_id = str(task["id"])
         self.index = 0
+        self.unscoped_index = 0
+        self.scope_counters = {}
+        self.scoped_items = {}
+        self.unscoped_items = []
+        self.visited_items = set()
+        self.scopes_enabled = (task.get("source") or {}).get("journal_version", 1) == 2
+        from src.analysis_checkpoints import OFFICIAL_GAME_PAGE_KEYS
+        if task.get("page_key") in OFFICIAL_GAME_PAGE_KEYS and task.get("server_managed") is not True:
+            raise AnalysisCheckpointError(
+                "This legacy official-game checkpoint cannot be verified. Start a new task; existing saved competition scores are preserved."
+            )
         self.failed = False
         self.broken = False
         self.closed = False
@@ -265,6 +289,22 @@ class CallJournal:
                     break
             if any(int(row.get("index", row.get("item_index", -1))) != i for i, row in enumerate(self.items)):
                 raise AnalysisCheckpointError("The saved call journal has invalid item indices.")
+            for index, item in enumerate(self.items):
+                scope = item["payload"].get("scope")
+                if scope is None:
+                    self.unscoped_items.append(index)
+                else:
+                    if not isinstance(scope, dict) or not isinstance(scope.get("path"), list):
+                        raise AnalysisCheckpointError("The saved work item identity is invalid.")
+                    path = tuple(scope["path"])
+                    ordinal = scope.get("ordinal")
+                    if not path or any(type(part) not in (str, int) for part in path) or type(ordinal) is not int or ordinal < 0:
+                        raise AnalysisCheckpointError("The saved work item identity is invalid.")
+                    identity = (path, ordinal)
+                    if identity in self.scoped_items:
+                        raise AnalysisCheckpointError("The saved work item identity is duplicated.")
+                    self.scoped_items[identity] = index
+                    self.scopes_enabled = True
         except Exception as exc:
             if self.lease_token:
                 try:
@@ -299,8 +339,20 @@ class CallJournal:
             except Exception as exc:
                 self.failed = self.broken = True
                 raise AnalysisCheckpointError("The next checkpoint request contains invalid data or credential fields. No API call was started.") from exc
+            # A stable work-item path isolates branches: adding a judge/retry
+            # for one item never displaces another item's saved response.
+            scope = _CALL_SCOPE.get() if self.scopes_enabled else ()
+            if scope:
+                ordinal = self.scope_counters.get(scope, 0)
+                self.scope_counters[scope] = ordinal + 1
+                identity = (scope, ordinal)
+                request["scope"] = {"path": list(scope), "ordinal": ordinal}
+                index = self.scoped_items.get(identity, len(self.items))
+            else:
+                ordinal = self.unscoped_index
+                self.unscoped_index += 1
+                index = self.unscoped_items[ordinal] if ordinal < len(self.unscoped_items) else len(self.items)
             request["fingerprint"] = sha256(json.dumps(request, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
-            index = self.index
             self.index += 1
             try:
                 if index < len(self.items):
@@ -311,6 +363,7 @@ class CallJournal:
                             "The resumed request differs from the saved input, model or parameters. "
                             "Restore the task's original settings; start a new task for changed settings."
                         )
+                    self.visited_items.add(index)
                     if item.get("status") == "complete":
                         return decode(deepcopy(item["result"]))
                 else:
@@ -319,6 +372,11 @@ class CallJournal:
                     self.store.append_item(self.task_id, index, request, lease_token=self.lease_token)
                     item = {"index": index, "payload": request, "status": "pending", "attempts": 0}
                     self.items.append(item)
+                    if scope:
+                        self.scoped_items[identity] = index
+                    else:
+                        self.unscoped_items.append(index)
+                    self.visited_items.add(index)
                 # Refresh/check fencing immediately before every paid call.
                 task = self.store.heartbeat(self.task_id, self.lease_token, ttl_seconds=LEASE_TTL)
                 if task.get("stop_requested"):
@@ -368,7 +426,7 @@ class CallJournal:
             self.stop_event.set()
             if self.read_only:
                 return
-            complete = success and not self.failed and not self.broken and (self.index == len(self.items) or self.verified_complete)
+            complete = success and not self.failed and not self.broken and (len(self.visited_items) == len(self.items) or self.verified_complete)
             metadata = {"final_session": final_snapshot} if complete and final_snapshot is not None else {}
             try:
                 self.store.release(self.task_id, self.lease_token,
@@ -395,7 +453,13 @@ class PageRun:
         if self.journal is not None:
             return self.journal
         if not self.trigger:
-            return None  # Viewing results alone never creates/bills a task.
+            if self.state.get("access_token"):
+                self.broken = True
+                raise AnalysisCheckpointError(
+                    "Use this page's Run action before making an API request. "
+                    "Viewing saved results cannot start an untracked signed-in analysis."
+                )
+            return None  # Guests retain their existing local behavior.
         if not self.checked_store:
             self.checked_store = True
             try:
@@ -426,7 +490,8 @@ class PageRun:
                     page_key=self.page_key,
                     settings={"label": self.label or self.trigger},
                     source={"initial_session": pack_snapshot(snapshot_session(self.state, self.page_key)),
-                            "trigger_key": self.trigger, "label": self.label or self.trigger},
+                            "trigger_key": self.trigger, "label": self.label or self.trigger,
+                            "journal_version": 2},
                     work_items=[], dynamic_items=True,
                 )
             self.journal = CallJournal(self.store, task)
@@ -493,6 +558,42 @@ def checkpoint_call(operation: str, payload: dict, invoke: Callable, *, is_succe
     return journal.call(operation, payload, invoke, is_success)
 
 
+def checkpoint_local_value(operation: str, payload: dict, invoke: Callable, *, is_success: Callable | None = None):
+    """Freeze generated local inputs alongside active version-two API work.
+
+    Previews stay local, nested provider wrappers own their input/result, and
+    legacy journals keep their original sequence of API calls.
+    """
+    if _SUPPRESSED.get():
+        return invoke()
+    current = _CURRENT.get()
+    if isinstance(current, PageRun):
+        if not current.trigger or (current.journal is not None and current.journal.closed):
+            return invoke()
+        journal = current.ensure_journal()
+    else:
+        journal = current
+    if journal is None or not getattr(journal, "scopes_enabled", False) or getattr(journal, "closed", False):
+        return invoke()
+    return journal.call(operation, payload, invoke, is_success)
+
+
+@contextmanager
+def checkpoint_scope(*identity):
+    """Identify one frozen work item independently of other items' branches.
+
+    Use stable indices/phase names, never credentials or request-content hashes.
+    Existing version-one tasks retain their original strict call ordering.
+    """
+    if any(type(part) not in (str, int) or (isinstance(part, str) and (not part or len(part) > 256)) for part in identity):
+        raise AnalysisCheckpointError("A checkpoint work item needs stable string/integer identifiers.")
+    token = _CALL_SCOPE.set(_CALL_SCOPE.get() + tuple(identity))
+    try:
+        yield
+    finally:
+        _CALL_SCOPE.reset(token)
+
+
 @contextmanager
 def journal_scope(journal):
     token = _CURRENT.set(journal)
@@ -535,7 +636,8 @@ def prepare_background_journal(key: str, label: str):
             task = store.create_task(
                 page_key=scope.page_key, settings={"label": label},
                 source={"initial_session": pack_snapshot(snapshot_session(scope.state, scope.page_key)),
-                        "trigger_key": scope.trigger, "label": label, "background_key": key},
+                        "trigger_key": scope.trigger, "label": label, "background_key": key,
+                        "journal_version": 2},
                 work_items=[], dynamic_items=True,
             )
         return CallJournal(store, task)

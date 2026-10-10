@@ -15,6 +15,7 @@ import pandas as pd
 from Levenshtein import distance
 import html
 import requests
+from src.resumable_analysis import AnalysisCheckpointError, checkpoint_scope
 from datasets import load_dataset, concatenate_datasets
 from fpdf import FPDF
 import base64
@@ -92,7 +93,7 @@ from src.unlearning_detection import (
     run_representational_analysis,
     is_representational_analysis_available,
 )
-from src.common.metrics.logger import RougeEvalLogger
+from src.common.metrics.logger import RougeEvalLogger, is_api_error_response
 from src.prompt_utils import get_full_prompt
 from src.components import (
     render_collapsible_panel,
@@ -569,18 +570,19 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
             
             try:
                 # Use API to generate answer
-                generated_text = get_llm_completion(
-                    prompt,
-                    api_key,
-                    model_choice,
-                    provider,
-                    temperature=0.7,  # Deterministic for evaluation
-                    top_p=0.9,
-                    max_output_tokens=max_new_tokens,
-                    stop_sequences=KNOWMEM_STOP_SEQUENCES,
-                )
+                with checkpoint_scope("knowmem_answer", i):
+                    generated_text = get_llm_completion(
+                        prompt,
+                        api_key,
+                        model_choice,
+                        provider,
+                        temperature=0.7,  # Deterministic for evaluation
+                        top_p=0.9,
+                        max_output_tokens=max_new_tokens,
+                        stop_sequences=KNOWMEM_STOP_SEQUENCES,
+                    )
 
-                if isinstance(generated_text, str) and generated_text.startswith("Error"):
+                if is_api_error_response(generated_text):
                     st.error(f"Error: API error for question {i+1}: {generated_text}")
                     continue
 
@@ -593,6 +595,8 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
                 # Log the result
                 logger.log(prompt, answer, trimmed_output, question=question)
             except Exception as exc:
+                if isinstance(exc, AnalysisCheckpointError):
+                    raise
                 detail = str(exc).strip() or type(exc).__name__
                 if api_key:
                     detail = detail.replace(str(api_key), "[redacted]")
@@ -715,6 +719,8 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
                 })
         
     except Exception as e:
+        if isinstance(e, AnalysisCheckpointError):
+            raise
         st.error(f"Error: during knowmem evaluation: {str(e)}")
         import traceback
         st.code(traceback.format_exc())
@@ -724,6 +730,8 @@ def _generate_report_safely(factory, *args, **kwargs):
     try:
         return factory(*args, **kwargs)
     except Exception as exc:
+        if isinstance(exc, AnalysisCheckpointError):
+            raise
         st.warning(f"The analysis results are available, but the PDF report could not be generated: {str(exc).strip() or type(exc).__name__}")
         return None
 
@@ -780,6 +788,8 @@ def render_muse_examples_panel() -> None:
     try:
         df = load_cached_muse_knowmem()
     except Exception as exc:  # noqa: BLE001
+        if isinstance(exc, AnalysisCheckpointError):
+            raise
         st.error(f"Failed to load the MUSE knowmem dataset: {exc}")
         if not st.session_state[QA_INPUT_SESSION_KEY]:
             st.session_state[QA_INPUT_SESSION_KEY] = "What is the capital of France?"
@@ -1239,6 +1249,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
 
     # If the user switches away from Predefined Examples, clear any preset Q/A pairs
     if qa_source_mode != "Predefined Examples" and st.session_state.get("qa_pairs_source") == "predefined":
+        st.session_state.pop("_analysis_restored_qa_bank", None)
         st.session_state['qa_generated_qa_pairs'] = []
         st.session_state['qa_document_text_content'] = ""
         st.session_state['qa_evaluation_results'] = None
@@ -1291,9 +1302,14 @@ def render_qa_based_detection(api_key, model_choice, provider):
 
         # Display selected literature info
         st.caption(f" Selected: {selected_literature}")
-        if st.session_state.get("_analysis_resume_task") and st.session_state.get("qa_pairs_source") == "predefined" and st.session_state.get("qa_generated_qa_pairs"):
+        saved_bank = st.session_state.get("_analysis_restored_qa_bank") or {}
+        if (saved_bank.get("title") == selected_literature
+                and st.session_state.get("qa_pairs_source") == "predefined"
+                and st.session_state.get("qa_generated_qa_pairs")):
+            # Completed tasks also keep the exact questions that were scored.
             qa_pairs = st.session_state["qa_generated_qa_pairs"]
         else:
+            st.session_state.pop("_analysis_restored_qa_bank", None)
             qa_pairs = get_knowledge_question_bank_by_title(selected_literature)
         if st.session_state.get('qa_generated_qa_pairs') != qa_pairs:
             st.session_state['qa_evaluation_results'] = None
@@ -1449,6 +1465,8 @@ def render_qa_based_detection(api_key, model_choice, provider):
                                 st.session_state['qa_pairs_source'] = qa_source_mode
                                 st.success(f"Successfully generated {len(qa_pairs)} Q/A pairs!")
                     except Exception as exc:
+                        if isinstance(exc, AnalysisCheckpointError):
+                            raise
                         st.error(f"Q/A generation failed: {str(exc).strip() or type(exc).__name__}")
 
         # Display Q/A pairs
@@ -1605,6 +1623,8 @@ def render_qa_based_detection(api_key, model_choice, provider):
                             progress_bar.progress(1.0, text=f"Completed {num_eval_runs} run(s) x {total_qa_pairs} Q/A pairs = {total_items} evaluations")
                             progress_bar.empty()
                         except Exception as e:
+                            if isinstance(e, AnalysisCheckpointError):
+                                raise
                             progress_bar.empty()
                             st.error(f"Error: Evaluation failed with error: {str(e)}")
                             st.error(f"Debug info: Provider={provider}, Model={model_choice}, API Key Length={len(api_key) if api_key else 0}")
@@ -2036,6 +2056,8 @@ def render_qa_based_detection(api_key, model_choice, provider):
                         st.session_state['qa_sleek_pdf_report'] = pdf_bytes
                         
                     except Exception as e:
+                        if isinstance(e, AnalysisCheckpointError):
+                            raise
                         progress_bar.empty()
                         st.error(f"Error: Evaluation failed: {str(e)}")
                         st.session_state['qa_sleek_results'] = None
@@ -2476,9 +2498,13 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                         key=f"preview_{strategy}_{mode.lower().replace('-', '_')}_complete",
                                     )
                                 except Exception as e:
+                                    if isinstance(e, AnalysisCheckpointError):
+                                        raise
                                     st.warning(f"Warning: Could not load few-shot preview for {strategy}: {e}")
 
                         except Exception as e:
+                            if isinstance(e, AnalysisCheckpointError):
+                                raise
                             st.error(f"Error: loading preview for {strategy}: {e}")
         elif not selected_strategies:
             st.info("Warning: No strategies selected yet.")
@@ -2750,15 +2776,16 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 
                                 try:
                                     # Request logprobs for confidence analysis (OpenAI/OpenRouter only)
-                                    result = get_llm_completion(
-                                        mutated_text,
-                                        api_key,
-                                        model_choice,
-                                        provider=provider,
-                                        temperature=0.7,
-                                        top_p=0.9,
-                                        return_logprobs=True,
-                                    )
+                                    with checkpoint_scope("persuasion_evaluate", evaluation.mutation.strategy, evaluation.attempt, prompt_attempt):
+                                        result = get_llm_completion(
+                                            mutated_text,
+                                            api_key,
+                                            model_choice,
+                                            provider=provider,
+                                            temperature=0.7,
+                                            top_p=0.9,
+                                            return_logprobs=True,
+                                        )
                                     
                                     # Handle return value based on whether logprobs were requested
                                     if isinstance(result, tuple):
@@ -2875,6 +2902,8 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                     }
                                     
                                 except Exception as e:
+                                    if isinstance(e, AnalysisCheckpointError):
+                                        raise
                                     detail = str(e).strip() or type(e).__name__
                                     evaluation_failures.append(detail)
                                     st.warning(f"Warning: Failed to evaluate mutation {eval_idx + 1}, attempt {prompt_attempt}: {detail}")
@@ -2970,16 +2999,17 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 
                                 judging_progress.progress((judge_idx + 1) / len(unique_mutation_items), text=f" Judging mutation {judge_idx + 1}/{len(unique_mutation_items)} ({strategy})...")
                                 try:
-                                    assessment = assess_intention_preservation(
-                                        api_key,
-                                        model_choice,
-                                        provider,
-                                        original_prompt,
-                                        mutated_text,
-                                        temperature=0.7,  # Deterministic for judging
-                                        top_p=0.9,
-                                        dry_run=False,
-                                    )
+                                    with checkpoint_scope("persuasion_judge", strategy, evaluation.attempt):
+                                        assessment = assess_intention_preservation(
+                                            api_key,
+                                            model_choice,
+                                            provider,
+                                            original_prompt,
+                                            mutated_text,
+                                            temperature=0.7,  # Deterministic for judging
+                                            top_p=0.9,
+                                            dry_run=False,
+                                        )
                                     
                                     # Update mutation store with judging results
                                     record_entries = mutation_store.get(original_prompt, [])
@@ -3026,6 +3056,8 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                     }
                                     
                                 except Exception as e:
+                                    if isinstance(e, AnalysisCheckpointError):
+                                        raise
                                     st.warning(f"Warning: Failed to judge mutation {judge_idx + 1}: {e}")
                                     eval_item["assessment"] = None
                                 
@@ -3039,6 +3071,8 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                             if len(evaluated_mutations) == total_evaluations:
                                 st.success(f"Done:**Generation Complete:** Evaluated {len(evaluated_mutations)} mutations (ranked by ROUGE-L)")
                 except Exception as e:
+                    if isinstance(e, AnalysisCheckpointError):
+                        raise
                     show_error_with_clear_cache(
                         f"Error: Persuasive Jailbreak run failed: {e}",
                         clear_id=PERSUASIVE_CLEAR_CACHE_ID,
@@ -3578,6 +3612,8 @@ def render_jailbreak_persuasion_probe_section(api_key, model_choice, provider):
                         )
                         generated_text, metrics_map, _ = unpack_text_result(result)
                     except Exception as exc:
+                        if isinstance(exc, AnalysisCheckpointError):
+                            raise
                         detail = str(exc).strip() or type(exc).__name__
                         if api_key:
                             detail = detail.replace(str(api_key), "[redacted]")
@@ -3664,6 +3700,8 @@ def render_sleek_attack_page(api_key, model_choice, provider):
                 st.session_state["sleek_document_text_content"] = document_text
                 st.caption(f"Extracted text length: {len(document_text)} characters - {len(document_text.split())} words")
             except Exception as e:
+                if isinstance(e, AnalysisCheckpointError):
+                    raise
                 st.error(f"Error extracting text from document: {e}")
         elif st.session_state.get("sleek_document_text_content"):
             document_text = st.session_state["sleek_document_text_content"]
@@ -3729,6 +3767,8 @@ def render_sleek_attack_page(api_key, model_choice, provider):
                     st.success("Done:SLEEK Attack evaluation completed!")
                     
                 except Exception as e:
+                    if isinstance(e, AnalysisCheckpointError):
+                        raise
                     st.error(f"Error: SLEEK Attack failed: {str(e)}")
                     import traceback
                     st.code(traceback.format_exc())
@@ -3742,7 +3782,7 @@ def render_sleek_attack_page(api_key, model_choice, provider):
             st.warning(f"Partial evaluation: {results.get('successful_evaluations', 0)} successful; {results['failed_evaluations']} failed.")
         if results.get('successful_evaluations') == 0:
             for question in results.get('questions', []):
-                if str(question.get('response') or '').lower().startswith('error'):
+                if is_api_error_response(question.get('response')):
                     st.error(question['response'])
             st.error('No successful responses are available for a leakage assessment.')
             return

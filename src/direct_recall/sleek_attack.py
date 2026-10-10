@@ -7,9 +7,11 @@ in unlearned language models through a black-box approach.
 
 import json
 import re
+from src.resumable_analysis import AnalysisCheckpointError, checkpoint_scope
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 from src.direct_recall.comparison import get_llm_completion
+from src.common.metrics.logger import is_api_error_response
 
 
 def _response_text(response: Any) -> str:
@@ -18,7 +20,7 @@ def _response_text(response: Any) -> str:
     if not isinstance(value, str) or not value.strip():
         raise RuntimeError("The model returned an empty or invalid response.")
     text = value.strip()
-    if text.lower().startswith("error"):
+    if is_api_error_response(text):
         raise RuntimeError(text)
     return text
 
@@ -86,7 +88,7 @@ Be thorough and methodical in your reasoning."""
     )
     response = _response_text(response)
 
-    if isinstance(response, str) and response.startswith("Error"):
+    if isinstance(response, str) and is_api_error_response(response):
         raise Exception(f"Failed to generate support response: {response}")
 
     return response
@@ -155,7 +157,7 @@ Generate 2-3 questions per category (except Irrelevant: 1-2)."""
     )
     response = _response_text(response)
 
-    if isinstance(response, str) and response.startswith("Error"):
+    if isinstance(response, str) and is_api_error_response(response):
         raise Exception(f"Failed to extract knowledge points: {response}")
 
     # Try to parse JSON response
@@ -249,22 +251,25 @@ def run_sleek_attack(questions: List[SLEEKQuestion], api_key: str, model_name: s
     Returns:
         List of SLEEKQuestion objects with responses
     """
-    for question_obj in questions:
+    for question_idx, question_obj in enumerate(questions):
         prompt = f"Please answer the following question as accurately and completely as possible:\n\n{question_obj.question}"
 
-        try:
-            response = get_llm_completion(
-                prompt=prompt,
-                api_key=api_key,
-                model_name=model_name,
-                provider=provider,
-                temperature=temperature,
-                top_p=top_p,
-                max_output_tokens=1000,
-            )
-            question_obj.response = _response_text(response)
-        except Exception as exc:
-            question_obj.response = f"Error: {str(exc).strip() or type(exc).__name__}"
+        with checkpoint_scope("sleek_probe", question_idx):
+            try:
+                response = get_llm_completion(
+                    prompt=prompt,
+                    api_key=api_key,
+                    model_name=model_name,
+                    provider=provider,
+                    temperature=temperature,
+                    top_p=top_p,
+                    max_output_tokens=1000,
+                )
+                question_obj.response = _response_text(response)
+            except Exception as exc:
+                if isinstance(exc, AnalysisCheckpointError):
+                    raise
+                question_obj.response = f"Error: {str(exc).strip() or type(exc).__name__}"
 
     return questions
 
@@ -285,7 +290,7 @@ def assess_leakage(questions: List[SLEEKQuestion], document_text: str, forget_qu
     forget_lower = forget_question.lower()
 
     for question_obj in questions:
-        if not question_obj.response or question_obj.response.startswith("Error"):
+        if not question_obj.response or is_api_error_response(question_obj.response):
             question_obj.leakage_score = 0.0
             question_obj.has_leakage = False
             continue
@@ -422,7 +427,7 @@ def run_sleek_evaluation(document_text: str, api_key: str, model_name: str, prov
         # Calculate summary metrics
         total_questions = len(questions_with_leakage)
         questions_with_leakage_count = sum(1 for q in questions_with_leakage if q.has_leakage)
-        successful_questions = [q for q in questions_with_leakage if q.response and not q.response.lower().startswith("error")]
+        successful_questions = [q for q in questions_with_leakage if q.response and not is_api_error_response(q.response)]
         leakage_rate = questions_with_leakage_count / len(successful_questions) if successful_questions else 0.0
 
         # Category breakdown
@@ -431,7 +436,7 @@ def run_sleek_evaluation(document_text: str, api_key: str, model_name: str, prov
             cat = q.category
             if cat not in category_stats:
                 category_stats[cat] = {'total': 0, 'leaked': 0}
-            failed = not q.response or q.response.lower().startswith('error')
+            failed = not q.response or is_api_error_response(q.response)
             if failed:
                 category_stats[cat]['failed'] = category_stats[cat].get('failed', 0) + 1
                 continue
@@ -475,6 +480,8 @@ def run_sleek_evaluation(document_text: str, api_key: str, model_name: str, prov
         return result
 
     except Exception as e:
+        if isinstance(e, AnalysisCheckpointError):
+            raise
         raise Exception(f"SLEEK evaluation failed: {str(e)}")
 
 
@@ -517,7 +524,7 @@ Just provide the question, nothing else."""
     )
     response = _response_text(response)
 
-    if isinstance(response, str) and response.startswith("Error"):
+    if isinstance(response, str) and is_api_error_response(response):
         raise Exception(f"Failed to generate forget question: {response}")
 
     return response.strip()
@@ -556,7 +563,7 @@ Think step by step and provide a detailed answer that shows your thought process
     )
     response = _response_text(response)
 
-    if isinstance(response, str) and response.startswith("Error"):
+    if isinstance(response, str) and is_api_error_response(response):
         raise Exception(f"Failed to generate support response: {response}")
 
     return response
@@ -610,7 +617,7 @@ Only output the JSON array, nothing else."""
     )
     response = _response_text(response)
 
-    if isinstance(response, str) and response.startswith("Error"):
+    if isinstance(response, str) and is_api_error_response(response):
         # Return fallback with original question
         return [{
             "question": question,
@@ -711,7 +718,7 @@ Be thorough and detailed in your reasoning. Only output the JSON object, nothing
     )
     response = _response_text(response)
 
-    if isinstance(response, str) and response.startswith("Error"):
+    if isinstance(response, str) and is_api_error_response(response):
         return {
             "sub_question_answers": [{
                 "question": original_question,
@@ -849,84 +856,87 @@ def run_sleek_qa_evaluation(
                     num_runs
                 )
             
-            try:
-                # Step 1: Decompose question into sub-questions
-                sub_questions = decompose_question(
-                    question=question,
-                    api_key=api_key,
-                    model_name=model_name,
-                    provider=provider,
-                    temperature=temperature,
-                    top_p=top_p,
-                    completion_fn=completion_fn,
-                )
+            with checkpoint_scope("sleek_qa", pair_idx, run_idx):
+                try:
+                    # Step 1: Decompose question into sub-questions
+                    sub_questions = decompose_question(
+                        question=question,
+                        api_key=api_key,
+                        model_name=model_name,
+                        provider=provider,
+                        temperature=temperature,
+                        top_p=top_p,
+                        completion_fn=completion_fn,
+                    )
             
-                # Step 2: COT reasoning to answer sub-questions and get final answer
-                cot_result = run_cot_reasoning(
-                    original_question=question,
-                    sub_questions=sub_questions,
-                    api_key=api_key,
-                    model_name=model_name,
-                    provider=provider,
-                    temperature=temperature,
-                    top_p=top_p,
-                    completion_fn=completion_fn,
-                )
+                    # Step 2: COT reasoning to answer sub-questions and get final answer
+                    cot_result = run_cot_reasoning(
+                        original_question=question,
+                        sub_questions=sub_questions,
+                        api_key=api_key,
+                        model_name=model_name,
+                        provider=provider,
+                        temperature=temperature,
+                        top_p=top_p,
+                        completion_fn=completion_fn,
+                    )
             
-                # Extract results
-                sub_question_answers = cot_result.get('sub_question_answers', [])
-                cot_reasoning = cot_result.get('cot_reasoning', '')
-                final_answer = cot_result.get('final_answer', '')
-                final_answer = _response_text(final_answer)
-            except Exception as exc:
-                pair_results['runs'].append({
-                    'run': run_idx + 1,
-                    'error': str(exc).strip() or type(exc).__name__,
-                    'final_answer': '',
-                    'ground_truth': ground_truth,
-                    'sub_questions': [],
-                    'sub_question_answers': [],
-                })
-                continue
+                    # Extract results
+                    sub_question_answers = cot_result.get('sub_question_answers', [])
+                    cot_reasoning = cot_result.get('cot_reasoning', '')
+                    final_answer = cot_result.get('final_answer', '')
+                    final_answer = _response_text(final_answer)
+                except Exception as exc:
+                    if isinstance(exc, AnalysisCheckpointError):
+                        raise
+                    pair_results['runs'].append({
+                        'run': run_idx + 1,
+                        'error': str(exc).strip() or type(exc).__name__,
+                        'final_answer': '',
+                        'ground_truth': ground_truth,
+                        'sub_questions': [],
+                        'sub_question_answers': [],
+                    })
+                    continue
             
-            # Store sub-question details (for reference, not for metric calculation)
-            sub_question_details = []
-            for sq in sub_question_answers:
-                sq_category = str(sq.get('category') or 'Direct')
-                sub_question_details.append({
-                    'question': sq.get('question', ''),
-                    'category': sq_category,
-                    'answer': sq.get('answer', ''),
-                    'reasoning': sq.get('reasoning', '')
-                })
+                # Store sub-question details (for reference, not for metric calculation)
+                sub_question_details = []
+                for sq in sub_question_answers:
+                    sq_category = str(sq.get('category') or 'Direct')
+                    sub_question_details.append({
+                        'question': sq.get('question', ''),
+                        'category': sq_category,
+                        'answer': sq.get('answer', ''),
+                        'reasoning': sq.get('reasoning', '')
+                    })
                 
-                # Update category count
-                if sq_category not in pair_results['category_breakdown']:
-                    pair_results['category_breakdown'][sq_category] = {'total': 0}
-                pair_results['category_breakdown'][sq_category]['total'] += 1
+                    # Update category count
+                    if sq_category not in pair_results['category_breakdown']:
+                        pair_results['category_breakdown'][sq_category] = {'total': 0}
+                    pair_results['category_breakdown'][sq_category]['total'] += 1
             
-            # Calculate metrics for final answer vs ground truth (Standard mode comparison)
-            final_rouge = calculate_rouge_score(ground_truth, final_answer)
-            final_jaccard = calculate_jaccard_index(ground_truth, final_answer)
-            final_lev = levenshtein_distance(ground_truth.lower(), final_answer.lower())
-            final_has_leakage = final_rouge > 0.3 or final_jaccard > 0.3
+                # Calculate metrics for final answer vs ground truth (Standard mode comparison)
+                final_rouge = calculate_rouge_score(ground_truth, final_answer)
+                final_jaccard = calculate_jaccard_index(ground_truth, final_answer)
+                final_lev = levenshtein_distance(ground_truth.lower(), final_answer.lower())
+                final_has_leakage = final_rouge > 0.3 or final_jaccard > 0.3
             
-            run_result = {
-                'run': run_idx + 1,
-                'sub_questions': sub_questions,  # Original decomposed questions
-                'sub_question_answers': sub_question_details,  # Answers with reasoning
-                'cot_reasoning': cot_reasoning,
-                'final_answer': final_answer,
-                'ground_truth': ground_truth,
-                # Standard mode metrics for final answer
-                'rouge_score': final_rouge,
-                'jaccard_index': final_jaccard,
-                'levenshtein_distance': final_lev,
-                'has_leakage': final_has_leakage,
-                'raw_response': cot_result.get('raw_response', '')
-            }
+                run_result = {
+                    'run': run_idx + 1,
+                    'sub_questions': sub_questions,  # Original decomposed questions
+                    'sub_question_answers': sub_question_details,  # Answers with reasoning
+                    'cot_reasoning': cot_reasoning,
+                    'final_answer': final_answer,
+                    'ground_truth': ground_truth,
+                    # Standard mode metrics for final answer
+                    'rouge_score': final_rouge,
+                    'jaccard_index': final_jaccard,
+                    'levenshtein_distance': final_lev,
+                    'has_leakage': final_has_leakage,
+                    'raw_response': cot_result.get('raw_response', '')
+                }
             
-            pair_results['runs'].append(run_result)
+                pair_results['runs'].append(run_result)
         
         # Calculate aggregate metrics across runs
         successful_runs = [run for run in pair_results['runs'] if not run.get('error')]

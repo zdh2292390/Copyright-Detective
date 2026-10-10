@@ -68,8 +68,34 @@ def authenticated_client(access_token: str, refresh_token: str = "") -> Client:
 
 
 def get_authenticated_client() -> Optional[Client]:
+    """Restore this UI account and retain tokens rotated by Supabase.
+
+    Keep worker clients explicit via ``authenticated_client``. A UI client is
+    never cached/shared across users, and an in-flight refresh cannot replace a
+    different account or a newer session in Streamlit state.
+    """
     access_token = st.session_state.get("access_token")
     if not access_token:
         return None
     refresh_token = st.session_state.get("refresh_token") or ""
-    return authenticated_client(access_token, refresh_token)
+    owner_id = str(st.session_state.get("user_id") or "")
+    client = create_supabase_client()
+    response = client.auth.set_session(access_token, refresh_token)
+    session = getattr(response, "session", None)
+    user = getattr(response, "user", None) or getattr(session, "user", None)
+    verified_owner = str(getattr(user, "id", "") or "")
+    if not owner_id or verified_owner != owner_id:
+        raise RuntimeError("Your Supabase account could not be verified. Sign in again.")
+    if (str(st.session_state.get("user_id") or "") != owner_id
+            or st.session_state.get("access_token") != access_token
+            or (st.session_state.get("refresh_token") or "") != refresh_token):
+        raise RuntimeError("Your Supabase session changed while being verified. Retry the action.")
+    next_access = getattr(session, "access_token", None)
+    next_refresh = getattr(session, "refresh_token", None)
+    if not next_access or next_refresh is None:
+        raise RuntimeError("Supabase returned an incomplete session. Sign in again.")
+    if next_access != access_token or next_refresh != refresh_token:
+        from src.auth import _set_user_session, sync_auth_browser_storage
+        _set_user_session(user, next_access, next_refresh)
+        sync_auth_browser_storage()
+    return client

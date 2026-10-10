@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from src.resumable_analysis import checkpoint_scope
+from src.common.metrics.logger import is_api_error_response
+
 import hashlib
 from dataclasses import dataclass
 from statistics import fmean
@@ -330,7 +333,7 @@ def _completion_text(result: Any) -> str:
     text = value.strip()
     if not text:
         raise GameRunError("The model returned an empty response.")
-    if text.lower().startswith("error"):
+    if is_api_error_response(text):
         raise GameRunError(text)
     return text
 
@@ -384,15 +387,16 @@ def run_stage_one(
     calculate_metrics = metrics_fn or _default_metrics()
     completed_attempts: List[DirectProbeAttempt] = []
     for attempt_index in range(1, attempts + 1):
-        raw = completion(
-            prompt,
-            api_key,
-            GAME_MODEL,
-            provider=GAME_PROVIDER,
-            temperature=float(temperature),
-            top_p=float(top_p),
-            max_output_tokens=GAME_MAX_OUTPUT_TOKENS,
-        )
+        with checkpoint_scope("game_direct", book_key, attempt_index):
+            raw = completion(
+                prompt,
+                api_key,
+                GAME_MODEL,
+                provider=GAME_PROVIDER,
+                temperature=float(temperature),
+                top_p=float(top_p),
+                max_output_tokens=GAME_MAX_OUTPUT_TOKENS,
+            )
         response = _completion_text(raw)
         completed_attempts.append(
             DirectProbeAttempt(
@@ -459,19 +463,20 @@ def run_stage_two(
                         )
                 continue
 
-            mutation_evaluations = mutate(
-                api_key,
-                GAME_MODEL,
-                GAME_PROVIDER,
-                [strategy],
-                prompt,
-                reference_text=None,
-                attempts_per_strategy=config.attempts_per_strategy,
-                attempts_per_prompt=1,
-                temperature=float(config.temperature),
-                top_p=float(config.top_p),
-                dry_run=False,
-            )
+            with checkpoint_scope("game_mutations", book_key, strategy):
+                mutation_evaluations = mutate(
+                    api_key,
+                    GAME_MODEL,
+                    GAME_PROVIDER,
+                    [strategy],
+                    prompt,
+                    reference_text=None,
+                    attempts_per_strategy=config.attempts_per_strategy,
+                    attempts_per_prompt=1,
+                    temperature=float(config.temperature),
+                    top_p=float(config.top_p),
+                    dry_run=False,
+                )
             if len(mutation_evaluations) != config.attempts_per_strategy:
                 raise GameRunError(
                     f"Mutation generation for {get_book_title(book_key)} with "
@@ -512,15 +517,16 @@ def run_stage_two(
         mutated_prompt,
     ) in planned_mutations:
         for prompt_attempt in range(1, config.attempts_per_prompt + 1):
-            raw = completion(
-                mutated_prompt,
-                api_key,
-                GAME_MODEL,
-                provider=GAME_PROVIDER,
-                temperature=float(config.temperature),
-                top_p=float(config.top_p),
-                max_output_tokens=GAME_MAX_OUTPUT_TOKENS,
-            )
+            with checkpoint_scope("game_evaluation", book_key, strategy, global_mutation_attempt, prompt_attempt):
+                raw = completion(
+                    mutated_prompt,
+                    api_key,
+                    GAME_MODEL,
+                    provider=GAME_PROVIDER,
+                    temperature=float(config.temperature),
+                    top_p=float(config.top_p),
+                    max_output_tokens=GAME_MAX_OUTPUT_TOKENS,
+                )
             response = _completion_text(raw)
             generations.append(
                 ScoredGeneration(

@@ -6,6 +6,8 @@ import json
 import math
 from numbers import Real
 
+from src.common.metrics.logger import is_api_error_response
+
 
 class TextAnalysisError(ValueError):
     """A text inference did not produce a usable comparison."""
@@ -43,7 +45,7 @@ def unpack_text_result(result):
     if not isinstance(result, (tuple, list)) or len(result) not in (2, 3):
         raise TextAnalysisError("The model returned an unexpected analysis result format.")
     generated, metrics = result[:2]
-    if isinstance(generated, str) and generated.startswith("Error") and not metrics:
+    if is_api_error_response(generated) and not metrics:
         raise TextAnalysisError(generated)
     if not isinstance(generated, str) or not generated.strip():
         raise TextAnalysisError("The model returned empty content.")

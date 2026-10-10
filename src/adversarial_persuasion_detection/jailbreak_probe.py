@@ -11,6 +11,7 @@ from src.direct_recall.comparison import (
 )
 from Levenshtein import distance
 from src.prompt_utils import get_full_prompt
+from src.common.metrics.logger import is_api_error_response
 
 
 @dataclass
@@ -109,7 +110,7 @@ def run_probe_once(
         generated_text = get_llm_completion(prompt, api_key, model_name, provider)
         error = (
             generated_text
-            if isinstance(generated_text, str) and generated_text.startswith("Error")
+            if is_api_error_response(generated_text)
             else None
         )
 
@@ -285,7 +286,7 @@ def run_persuasion_probe(
         base_url=base_url,
     )
 
-    if isinstance(generated_text, str) and generated_text.startswith("Error"):
+    if is_api_error_response(generated_text):
         return generated_text
 
     generated_text = enforce_exact_char_count(generated_text, char_count)

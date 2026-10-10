@@ -20,6 +20,9 @@ from collections import defaultdict
 from io import BytesIO
 
 import requests
+from types import SimpleNamespace
+from src.common.metrics.logger import is_api_error_response
+from src.resumable_analysis import AnalysisCheckpointError, checkpoint_call, checkpoint_scope
 import streamlit as st
 from src.widget_defaults import widget_defaults
 import pandas as pd
@@ -143,6 +146,8 @@ def load_wikimia_dataset(length: int) -> Optional[List[Dict[str, Any]]]:
         
         return batch_data
     except Exception as e:
+        if isinstance(e, AnalysisCheckpointError):
+            raise
         raise RuntimeError(f"Error reading parquet file {parquet_path}: {str(e)}")
 
 
@@ -181,6 +186,8 @@ def load_bookmia_dataset() -> Optional[List[Dict[str, Any]]]:
         
         return batch_data
     except Exception as e:
+        if isinstance(e, AnalysisCheckpointError):
+            raise
         raise RuntimeError(f"Error reading JSONL file {jsonl_path}: {str(e)}")
 
 
@@ -431,6 +438,8 @@ def render_min_k_prob_page(api_key, model_choice, provider):
                                             text_parts.append(page.extract_text() or "")
                                         text = "\n".join(text_parts)
                             except Exception as e:
+                                if isinstance(e, AnalysisCheckpointError):
+                                    raise
                                 st.error(f"❌ Failed to parse PDF: {str(e)}")
                                 batch_data = None
                     else:
@@ -478,6 +487,8 @@ def render_min_k_prob_page(api_key, model_choice, provider):
                 else:
                     batch_data = None
             except Exception as e:
+                if isinstance(e, AnalysisCheckpointError):
+                    raise
                 st.error(f"❌ Failed to process uploaded file: {str(e)}")
                 batch_data = None
         elif st.session_state.get(_get_mode_key(input_mode, 'uploaded_text')):
@@ -588,6 +599,8 @@ def render_min_k_prob_page(api_key, model_choice, provider):
                         else:
                             st.error("❌ Failed to load WikiMIA dataset")
                     except Exception as e:
+                        if isinstance(e, AnalysisCheckpointError):
+                            raise
                         st.error(f"❌ Error loading WikiMIA dataset: {str(e)}")
             else:
                 full_batch_data = st.session_state[cache_key]
@@ -602,6 +615,8 @@ def render_min_k_prob_page(api_key, model_choice, provider):
                         else:
                             st.error("❌ Failed to load BookMIA dataset")
                     except Exception as e:
+                        if isinstance(e, AnalysisCheckpointError):
+                            raise
                         st.error(f"❌ Error loading BookMIA dataset: {str(e)}")
             else:
                 full_batch_data = st.session_state[cache_key]
@@ -952,6 +967,62 @@ def render_min_k_prob_page(api_key, model_choice, provider):
             _display_evaluation_results(evaluation_results, model_choice, provider, dataset_name, k_percentage, input_mode=input_mode, model_path=effective_model_path)
 
 
+def _deploy_agent_model(agent_url, model_path, headers, *, purpose):
+    """Persist an accepted deployment before continuing with remote inference."""
+    endpoint = str(agent_url).strip().rstrip('/')
+
+    def invoke():
+        response = requests.post(
+            f"{endpoint}/deploy", json={"model_path": model_path},
+            headers=headers, timeout=10,
+        )
+        try:
+            body = response.json() if response.status_code == 200 else {}
+            if not isinstance(body, dict):
+                raise ValueError("Deployment agent returned an invalid response object.")
+            return {"status_code": response.status_code, "body": body}
+        finally:
+            response.close()
+
+    with checkpoint_scope("agent_deploy", purpose):
+        result = checkpoint_call(
+            "agent.deploy", {"agent_url": endpoint, "model_path": model_path}, invoke,
+            is_success=lambda value: isinstance(value, dict)
+                and value.get("status_code") == 200
+                and isinstance(value.get("body"), dict)
+                and value["body"].get("status") == "success",
+        )
+    return SimpleNamespace(status_code=result["status_code"], json=lambda: result["body"])
+
+
+def _completion_probe_unsupported(error):
+    """Only endpoint/feature incompatibility should switch to the chat probe."""
+    if not isinstance(error, str):
+        return False
+    lowered = error.lower()
+    if any(marker in lowered for marker in (
+        "timeout", "timed out", "connection", "429", "503", "502", "504",
+        "rate limit", "401", "403", "authentication", "unauthorized", "api key",
+    )):
+        return False
+    return any(marker in lowered for marker in (
+        "unsupported", "not supported", "does not support", "not found", "404",
+        "returned no token log probabilities", "returned no usable token log probabilities",
+    ))
+
+
+def _completion_probe_saved_result(value):
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return False
+    values, error = value
+    if not isinstance(values, (list, tuple)) or not all(
+        isinstance(logprob, Real) and not isinstance(logprob, bool)
+        and math.isfinite(logprob) and logprob <= 0 for logprob in values
+    ):
+        return False
+    return (bool(values) and error is None) or (not values and _completion_probe_unsupported(error))
+
+
 def _run_single_analysis(
     prompt, model_path, api_key, model_choice, provider,
     k_percentage, temperature, top_p, max_tokens, input_mode: str = "User Input",
@@ -975,11 +1046,8 @@ def _run_single_analysis(
         if model_path_stripped:
             with st.spinner("Sending deployment request for model..."):
                 try:
-                    response = requests.post(
-                        f"{agent_url}/deploy",
-                        json={"model_path": model_path_stripped},
-                        headers=deploy_headers,
-                        timeout=10
+                    response = _deploy_agent_model(
+                        agent_url, model_path_stripped, deploy_headers, purpose="min_k",
                     )
                     if response.status_code == 200:
                         res_json = response.json()
@@ -1007,6 +1075,8 @@ def _run_single_analysis(
                 except requests.exceptions.ConnectionError as e:
                     st.warning(f"🔌 Unable to connect to deployment agent: {str(e)}. Continuing with analysis...")
                 except Exception as e:
+                    if isinstance(e, AnalysisCheckpointError):
+                        raise
                     st.warning(f"⚠️ Model deployment error: {str(e)}. Continuing with analysis...")
     
     # Validate model path
@@ -1051,6 +1121,8 @@ def _run_single_analysis(
                         "model_choice": effective_model_name, "provider": provider, "k_percentage": k_percentage,
                     }
                 except Exception as e:
+                    if isinstance(e, AnalysisCheckpointError):
+                        raise
                     st.error(f"❌ Error running analysis: {str(e)}")
                     st.session_state[_get_mode_key(input_mode, 'last_result')] = None
 
@@ -1108,61 +1180,64 @@ def _run_batch_evaluation(
             status_text.text(f"Processing example {idx+1}/{len(batch_data)}...")
             progress_bar.progress((idx + 1) / len(batch_data))
 
-            try:
-                agent_url = st.session_state.get('min_k_deploy_agent_url', '').strip()
-                agent_key = st.session_state.get('min_k_deploy_agent_key', '').strip()
-                effective_model_name = model_path_stripped if agent_url else model_choice
+            with checkpoint_scope("min_k_example", idx):
+                try:
+                    agent_url = st.session_state.get('min_k_deploy_agent_url', '').strip()
+                    agent_key = st.session_state.get('min_k_deploy_agent_key', '').strip()
+                    effective_model_name = model_path_stripped if agent_url else model_choice
 
-                result = run_min_k_prob_analysis(
-                    prompt=text,
-                    api_key=api_key,
-                    model_name=effective_model_name,
-                    provider=provider,
-                    k_percentage=k_percentage,
-                    temperature=temperature,
-                    top_p=top_p,
-                    max_tokens=max_tokens,
-                    agent_url=agent_url if agent_url else None,
-                    agent_key=agent_key if agent_key else None,
-                )
+                    result = run_min_k_prob_analysis(
+                        prompt=text,
+                        api_key=api_key,
+                        model_name=effective_model_name,
+                        provider=provider,
+                        k_percentage=k_percentage,
+                        temperature=temperature,
+                        top_p=top_p,
+                        max_tokens=max_tokens,
+                        agent_url=agent_url if agent_url else None,
+                        agent_key=agent_key if agent_key else None,
+                    )
 
-                if not isinstance(result, dict) or not isinstance(result.get('min_k_prob'), Real) or not math.isfinite(result['min_k_prob']):
-                    raise ValueError("Analysis returned an invalid MIN-K% PROB score.")
+                    if not isinstance(result, dict) or not isinstance(result.get('min_k_prob'), Real) or not math.isfinite(result['min_k_prob']):
+                        raise ValueError("Analysis returned an invalid MIN-K% PROB score.")
 
-                pred_dict = {
-                    "ppl": result.get('perplexity', 0.0),
-                    "Min_k%_Prob": result['min_k_prob'],
-                }
+                    pred_dict = {
+                        "ppl": result.get('perplexity', 0.0),
+                        "Min_k%_Prob": result['min_k_prob'],
+                    }
 
-                if 'min_k_probs' in result:
-                    for key, value in result['min_k_probs'].items():
-                        pred_dict[key] = value
+                    if 'min_k_probs' in result:
+                        for key, value in result['min_k_probs'].items():
+                            pred_dict[key] = value
 
-                if result.get('ppl_lowercase') is not None:
-                    pred_dict["ppl/lowercase_ppl"] = result['ppl_lowercase']
-                if result.get('ppl_zlib') is not None:
-                    pred_dict["ppl/zlib"] = result['ppl_zlib']
+                    if result.get('ppl_lowercase') is not None:
+                        pred_dict["ppl/lowercase_ppl"] = result['ppl_lowercase']
+                    if result.get('ppl_zlib') is not None:
+                        pred_dict["ppl/zlib"] = result['ppl_zlib']
 
-                all_output.append({
-                    "text": text,
-                    "label": label,
-                    "pred": pred_dict,
-                    "result": result,
-                })
-                st.session_state[_get_mode_key(input_mode, 'batch_results')] = list(all_output)
-                batch_progress["completed"] = len(all_output)
-                st.session_state[_get_mode_key(input_mode, 'analysis_context')] = {
-                    "model_choice": effective_model_name, "provider": provider, "k_percentage": k_percentage,
-                    "dataset_name": st.session_state.get(_get_mode_key(input_mode, 'dataset_name'), input_mode),
-                }
-            except Exception as e:
-                error = str(e)
-                for secret in (api_key, st.session_state.get('min_k_deploy_agent_key')):
-                    if secret:
-                        error = error.replace(secret, "[redacted]")
-                batch_progress["failures"][idx] = error
-                st.warning(f"⚠️ Error processing example {idx+1}: {error}")
-                continue
+                    all_output.append({
+                        "text": text,
+                        "label": label,
+                        "pred": pred_dict,
+                        "result": result,
+                    })
+                    st.session_state[_get_mode_key(input_mode, 'batch_results')] = list(all_output)
+                    batch_progress["completed"] = len(all_output)
+                    st.session_state[_get_mode_key(input_mode, 'analysis_context')] = {
+                        "model_choice": effective_model_name, "provider": provider, "k_percentage": k_percentage,
+                        "dataset_name": st.session_state.get(_get_mode_key(input_mode, 'dataset_name'), input_mode),
+                    }
+                except Exception as e:
+                    if isinstance(e, AnalysisCheckpointError):
+                        raise
+                    error = str(e)
+                    for secret in (api_key, st.session_state.get('min_k_deploy_agent_key')):
+                        if secret:
+                            error = error.replace(secret, "[redacted]")
+                    batch_progress["failures"][idx] = error
+                    st.warning(f"⚠️ Error processing example {idx+1}: {error}")
+                    continue
 
         progress_bar.empty()
         status_text.empty()
@@ -1454,6 +1529,8 @@ def _display_evaluation_results(evaluation_results, model_choice: str, provider:
                                 "Text (preview)": st.column_config.TextColumn("Text (preview)", width="large")
                             })
                     except Exception as e:
+                        if isinstance(e, AnalysisCheckpointError):
+                            raise
                         st.error(f"Error displaying per-example metrics: {str(e)}")
             return
         else:
@@ -1487,6 +1564,8 @@ def _display_evaluation_results(evaluation_results, model_choice: str, provider:
                                 "Text (preview)": st.column_config.TextColumn("Text (preview)", width="large")
                             })
                     except Exception as e:
+                        if isinstance(e, AnalysisCheckpointError):
+                            raise
                         st.error(f"Error displaying per-example metrics: {str(e)}")
             return
     
@@ -1619,6 +1698,8 @@ def _display_evaluation_results(evaluation_results, model_choice: str, provider:
                 st.pyplot(fig)
                 plt.close(fig)
             except Exception as e:
+                if isinstance(e, AnalysisCheckpointError):
+                    raise
                 st.warning(f"⚠️ Error plotting ROC curve: {str(e)}")
 
     # Generate PDF Report
@@ -1691,6 +1772,8 @@ def _display_evaluation_results(evaluation_results, model_choice: str, provider:
                 download_filename=f"min_k_prob_analysis_{dataset_name.lower()}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.pdf"
             )
         except Exception as e:
+            if isinstance(e, AnalysisCheckpointError):
+                raise
             st.warning(f"⚠️ Could not generate PDF report: {str(e)}")
 
 
@@ -1716,11 +1799,7 @@ def _get_completion_logprobs(prompt: str, api_key: str, model_name: str, base_ur
             "endpoint": base_url or "https://api.openai.com/v1",
             "max_tokens": 0, "temperature": 1.0, "logprobs": 5, "echo": True,
         }, invoke,
-        is_success=lambda value: isinstance(value, (list, tuple)) and len(value) == 2
-            and (value[1] is None or isinstance(value[1], str))
-            and isinstance(value[0], (list, tuple))
-            and all(isinstance(logprob, Real) and not isinstance(logprob, bool)
-                    and math.isfinite(logprob) and logprob <= 0 for logprob in value[0]),
+        is_success=_completion_probe_saved_result,
     )
     return list(result[0]), result[1]
 
@@ -1759,11 +1838,13 @@ def _get_completion_logprobs_uncached(prompt: str, api_key: str, model_name: str
             complete_llm_progress(label_placeholder, bar_placeholder, progress_bar, final_message=f"Completed ({progress_message})", success=True)
         return logprobs, None
     except Exception as exc:
+        if isinstance(exc, AnalysisCheckpointError):
+            raise
         if label_placeholder is not None:
             from src.direct_recall.comparison import complete_llm_progress
             complete_llm_progress(label_placeholder, bar_placeholder, progress_bar, final_message="Completion API error", success=False)
         message = str(exc).replace(api_key, "[redacted]") if api_key else str(exc)
-        return [], f"Completion API error: {message}"
+        return [], f"Completion API error: {type(exc).__name__}: {message}"
     finally:
         if client is not None:
             client.close()
@@ -1845,40 +1926,46 @@ def run_min_k_prob_analysis(
         effective_model_name = model_name
     
     # Try to use Completion API first (for getting prompt logprobs with echo=True)
-    log_probs, error_msg = _get_completion_logprobs(
-        prompt=prompt,
-        api_key=effective_api_key,
-        model_name=effective_model_name,
-        base_url=base_url,
-        progress_message=custom_progress_message,  # Use custom message for server deployment
-    )
-    
-    # If Completion API failed, fall back to ChatCompletion API
-    if error_msg or not log_probs:
-        # Get completion with logprobs using ChatCompletion API
-        result = get_llm_completion(
+    with checkpoint_scope("min_k_stage", "completion"):
+        log_probs, error_msg = _get_completion_logprobs(
             prompt=prompt,
             api_key=effective_api_key,
             model_name=effective_model_name,
-            provider=effective_provider,
-            temperature=temperature,
-            top_p=top_p,
-            max_output_tokens=max_tokens,
-            return_logprobs=True,
             base_url=base_url,
             progress_message=custom_progress_message,  # Use custom message for server deployment
         )
+
+    # Transport/authentication failures remain retryable; only unsupported
+    # endpoints should permanently choose a different request path.
+    if error_msg and not _completion_probe_unsupported(error_msg):
+        raise RuntimeError(error_msg)
+    # If Completion API is unsupported, fall back to ChatCompletion API.
+    if error_msg or not log_probs:
+        # Get completion with logprobs using ChatCompletion API
+        with checkpoint_scope("min_k_stage", "chat_fallback"):
+            result = get_llm_completion(
+                prompt=prompt,
+                api_key=effective_api_key,
+                model_name=effective_model_name,
+                provider=effective_provider,
+                temperature=temperature,
+                top_p=top_p,
+                max_output_tokens=max_tokens,
+                return_logprobs=True,
+                base_url=base_url,
+                progress_message=custom_progress_message,  # Use custom message for server deployment
+            )
         
         if isinstance(result, tuple) and len(result) == 2:
             generated_text, logprobs_data = result
         else:
             # Error case
-            if isinstance(result, str) and result.startswith("Error"):
+            if isinstance(result, str) and is_api_error_response(result):
                 raise ValueError(result)
             generated_text = result
             logprobs_data = None
         
-        if isinstance(generated_text, str) and generated_text.startswith("Error"):
+        if isinstance(generated_text, str) and is_api_error_response(generated_text):
             raise ValueError(generated_text)
         if not isinstance(logprobs_data, (list, tuple)) or not logprobs_data:
             raise ValueError("The API did not return logprobs. This feature requires logprobs support (OpenAI/OpenRouter).")
@@ -1935,12 +2022,13 @@ def run_min_k_prob_analysis(
     # Calculate perplexity for lowercase version (if using Completion API)
     ppl_lowercase = None
     if not error_msg:  # If Completion API worked, try lowercase
-        log_probs_lower, _ = _get_completion_logprobs(
-            prompt=prompt.lower(),
-            api_key=effective_api_key,
-            model_name=effective_model_name,
-            base_url=base_url,
-        )
+        with checkpoint_scope("min_k_stage", "lowercase"):
+            log_probs_lower, _ = _get_completion_logprobs(
+                prompt=prompt.lower(),
+                api_key=effective_api_key,
+                model_name=effective_model_name,
+                base_url=base_url,
+            )
         if log_probs_lower:
             avg_logprob_lower = sum(log_probs_lower) / len(log_probs_lower) if log_probs_lower else 0.0
             try:
@@ -2257,11 +2345,8 @@ def render_representational_analysis_page(api_key, model_choice, provider):
                     if ref_path:
                         with st.spinner("Sending deployment request for reference model..."):
                             try:
-                                response = requests.post(
-                                    f"{agent_url}/deploy",
-                                    json={"model_path": ref_path},
-                                    headers=deploy_headers,
-                                    timeout=10
+                                response = _deploy_agent_model(
+                                    agent_url, ref_path, deploy_headers, purpose="reference",
                                 )
                                 if response.status_code == 200:
                                     res_json = response.json()
@@ -2289,17 +2374,16 @@ def render_representational_analysis_page(api_key, model_choice, provider):
                             except requests.exceptions.ConnectionError as e:
                                 st.warning(f"🔌 Unable to connect to deployment agent for reference model: {str(e)}. Continuing with analysis...")
                             except Exception as e:
+                                if isinstance(e, AnalysisCheckpointError):
+                                    raise
                                 st.warning(f"⚠️ Reference model deployment error: {str(e)}. Continuing with analysis...")
                     
                     # Deploy updated model
                     if upd_path:
                         with st.spinner("Sending deployment request for updated model..."):
                             try:
-                                response = requests.post(
-                                    f"{agent_url}/deploy",
-                                    json={"model_path": upd_path},
-                                    headers=deploy_headers,
-                                    timeout=10
+                                response = _deploy_agent_model(
+                                    agent_url, upd_path, deploy_headers, purpose="updated",
                                 )
                                 if response.status_code == 200:
                                     res_json = response.json()
@@ -2327,6 +2411,8 @@ def render_representational_analysis_page(api_key, model_choice, provider):
                             except requests.exceptions.ConnectionError as e:
                                 st.warning(f"🔌 Unable to connect to deployment agent for updated model: {str(e)}. Continuing with analysis...")
                             except Exception as e:
+                                if isinstance(e, AnalysisCheckpointError):
+                                    raise
                                 st.warning(f"⚠️ Updated model deployment error: {str(e)}. Continuing with analysis...")
                 
                 # Validate model paths
@@ -2383,6 +2469,8 @@ def render_representational_analysis_page(api_key, model_choice, provider):
                                 st.session_state['unlearn_last_result'] = None
                                 st.session_state['unlearn_last_request'] = None
                             except Exception as exc:
+                                if isinstance(exc, AnalysisCheckpointError):
+                                    raise
                                 err_text = str(exc)
                                 if agent_key:
                                     err_text = err_text.replace(agent_key, "[redacted]")
@@ -2512,6 +2600,8 @@ def render_representational_analysis_page(api_key, model_choice, provider):
                                     key="representational_zip_download",
                                 )
                         except Exception as exc:  # pragma: no cover - file IO errors
+                            if isinstance(exc, AnalysisCheckpointError):
+                                raise
                             st.warning(f"Unable to bundle artifacts for download: {exc}")
 
                     for artifact_path in rep_result.generated_artifacts[:5]:
@@ -2527,6 +2617,8 @@ def render_representational_analysis_page(api_key, model_choice, provider):
                                         key=f"representational_pdf_{artifact_obj.name}",
                                     )
                             except Exception as exc:  # pragma: no cover - file IO errors
+                                if isinstance(exc, AnalysisCheckpointError):
+                                    raise
                                 st.warning(f"Could not open {artifact_obj.name} for download: {exc}")
                     if len(rep_result.generated_artifacts) > 5:
                         st.caption(

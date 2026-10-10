@@ -8,6 +8,7 @@ from typing import Callable, Dict, Optional
 import streamlit as st
 import streamlit.components.v1 as components
 
+from src.common.metrics.logger import is_api_error_response
 from src.job_guard import reset_detection_job
 
 ACTIVE_CLEAR_ID_KEY = "_active_clear_cache_id"
@@ -275,18 +276,7 @@ def show_error_with_clear_cache(message: str, *, clear_id: Optional[str] = None,
 
 
 def is_api_failure_message(message: str) -> bool:
-    if not message:
-        return False
-    lowered = message.lower()
-    return (
-        message.startswith("Error")
-        or "error calling api" in lowered
-        or "api key" in lowered
-        or "authentication" in lowered
-        or "invalid_request_error" in lowered
-        or "401" in message
-        or "403" in message
-    )
+    return is_api_error_response(message)
 
 
 def show_api_failure_if_needed(message: str, *, clear_id: Optional[str] = None) -> bool:

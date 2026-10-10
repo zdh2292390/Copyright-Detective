@@ -24,10 +24,13 @@ from src.direct_recall import compare_texts, enforce_exact_char_count
 from src.direct_recall.confidence_anomaly import analyze_logprobs_for_confidence
 from src.pdf_preview import (
     generate_text_memorization_pdf_report,
+    generate_llm_analysis,
     render_pdf_preview_with_blob,
     build_text_memorization_plots,
 )
 from src.prompt_utils import get_full_prompt
+from src.resumable_analysis import AnalysisCheckpointError, checkpoint_scope
+from src.common.metrics.logger import is_api_error_response
 from src.job_guard import detection_job, finish_detection_job, render_run_button, reset_detection_job, wd
 from src.floating_clear_cache import (
     build_reset_and_rerun_handler,
@@ -176,6 +179,26 @@ def _show_text_report_failure(message: str) -> None:
     if st.button('Retry PDF report', key='text_retry_pdf_report'):
         st.session_state.pop('text_pdf_report_error', None)
         _trigger_rerun()
+
+
+def _save_text_report_narrative(results_data, api_key, prompt_type, model_choice, provider):
+    """Generate narrative only inside the registered run that owns its calls."""
+    captured = results_data.get('user_inputs') or {}
+    with checkpoint_scope("text_report_narrative"):
+        narrative = generate_llm_analysis(
+            results_data, captured.get('prompt_type', prompt_type),
+            captured.get('model', model_choice), api_key,
+            captured.get('provider', provider),
+        )
+    if (not isinstance(narrative, str) or not narrative.strip()
+            or is_api_error_response(narrative)
+            or narrative.startswith("Error generating LLM analysis:")
+            or narrative == "LLM analysis could not be generated."):
+        raise TextAnalysisError(str(narrative or "The model returned no report narrative."))
+    results_data['report_narrative'] = narrative
+    st.session_state.pop('text_pdf_report', None)
+    st.session_state.pop('text_pdf_report_fingerprint', None)
+    st.session_state.pop('text_pdf_report_error', None)
 
 
 def render_text_analysis_page(api_key, model_choice, provider, *, show_page_header: bool = True):
@@ -975,6 +998,19 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                         generated_text=generated_texts[0], provider=provider,
                         logprobs_data=first_run_logprobs,
                     )
+                if len(generated_texts) == inference_runs and api_key and provider:
+                    try:
+                        _save_text_report_narrative(
+                            st.session_state['text_analysis_results'], api_key,
+                            prompt_type, model_choice, provider,
+                        )
+                    except AnalysisCheckpointError:
+                        raise
+                    except Exception as exc:
+                        message = str(exc) or type(exc).__name__
+                        if api_key:
+                            message = message.replace(str(api_key), '[redacted]')
+                        st.warning(f"The analysis results are saved, but AI report analysis failed: {message}")
                 if progress_bar is not None:
                     progress_bar.progress(1.0, text="✅ All runs completed!")
         else:
@@ -1152,6 +1188,26 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         # PDF Report Generation
         st.markdown("---")
         
+        if not results_data.get('report_narrative'):
+            st.caption("AI report analysis was not saved with these results. Generate it explicitly to add it to the report.")
+            if render_run_button(
+                "Text Report Analysis", "text_generate_report_narrative", "Generate AI report analysis",
+            ):
+                if provider != "Local vLLM" and not str(api_key or '').strip():
+                    st.warning("Enter your API key before generating AI report analysis.")
+                    finish_detection_job()
+                else:
+                    with detection_job("Text Report Analysis"):
+                        try:
+                            _save_text_report_narrative(results_data, api_key, prompt_type, model_choice, provider)
+                        except AnalysisCheckpointError:
+                            raise
+                        except Exception as exc:
+                            message = str(exc) or type(exc).__name__
+                            if api_key:
+                                message = message.replace(str(api_key), '[redacted]')
+                            st.warning(f"AI report analysis failed: {message}")
+
         report_fingerprint = text_report_fingerprint(results_data)
         if st.session_state.get('text_pdf_report_fingerprint') != report_fingerprint:
             st.session_state.pop('text_pdf_report', None)
@@ -1170,11 +1226,14 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                     results_data, captured.get('prompt_type', prompt_type),
                     captured.get('model', model_choice), api_key,
                     captured.get('provider', provider), plots=plots,
+                    llm_analysis=results_data.get('report_narrative'),
                 )
                 st.session_state['text_pdf_report'] = pdf_bytes
                 st.session_state['text_pdf_report_fingerprint'] = report_fingerprint
                 st.session_state.pop('text_pdf_report_error', None)
             except Exception as exc:
+                if isinstance(exc, AnalysisCheckpointError):
+                    raise
                 message = str(exc) or type(exc).__name__
                 if api_key:
                     message = message.replace(str(api_key), '[redacted]')

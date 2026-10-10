@@ -16,6 +16,7 @@ from openai import OpenAI
 from anthropic import Anthropic
 
 from src.direct_recall.comparison import get_llm_completion
+from src.common.metrics.logger import is_api_error_response
 from src.api_concurrency import limit_api_concurrency
 from src.kimi_utils import normalize_kimi_sampling_params, kimi_request_extra_body
 from src.anthropic_utils import (
@@ -182,7 +183,7 @@ Source text:
         max_output_tokens=2500,
     )
 
-    if isinstance(response, str) and response.startswith("Error"):
+    if is_api_error_response(response):
         return []
 
     if not isinstance(response, str):
@@ -255,7 +256,7 @@ Return ONLY a JSON array of strings, like: ["distractor 1", "distractor 2", "dis
         max_output_tokens=1000,
     )
 
-    if isinstance(response, str) and response.startswith("Error"):
+    if is_api_error_response(response):
         return []
 
     if not isinstance(response, str):
@@ -748,7 +749,7 @@ def _try_anthropic_style_completion(
         # cannot add a missing capability or restore a retired model.
         return _sc_error_result(f"Error calling API: {type(exc).__name__}: {exc}")
     token_text = extract_anthropic_response_text(response)
-    if token_text.startswith("Error"):
+    if is_api_error_response(token_text):
         return _sc_error_result(token_text)
     selected = _extract_option_from_text(token_text)
     if not selected:
@@ -783,7 +784,7 @@ def _evaluate_with_basic_completion(
     )
 
     text = response.strip() if isinstance(response, str) else ""
-    if not text or text.startswith("Error"):
+    if not text or is_api_error_response(text):
         return _sc_error_result(text or "Error: Model returned empty content.")
     selected = _extract_option_from_text(text)
     if not selected:

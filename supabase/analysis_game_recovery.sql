@@ -1,4 +1,5 @@
--- Apply after copyright_game.sql. Only new durable analysis tasks use these RPCs.
+-- Apply after copyright_game.sql and analysis_checkpoints.sql.
+-- Only verified server-created analysis tasks may feed official game scores.
 -- The task link and existing lifecycle RPC commit in one transaction. A lost
 -- response can therefore replay the same record without creating a new score.
 begin;
@@ -19,6 +20,34 @@ alter table public.analysis_game_task_links enable row level security;
 revoke all on table public.analysis_game_task_links from public, anon, authenticated;
 grant select, insert, update, delete on table public.analysis_game_task_links to service_role;
 
+-- A normal user-writable analysis journal cannot be adopted by the official
+-- scorer. Its task ID, verified owner and protected game page must all match.
+create or replace function public.analysis_game_check_trusted_task(
+    p_task_id uuid, p_user_id uuid, p_competition_slug text
+) returns void language plpgsql security invoker set search_path = '' as $$
+declare
+    task public.analysis_tasks%rowtype;
+    allowed_pages text[];
+begin
+    if p_competition_slug = 'hp-first-100-gpt-4o-mini-v1' then
+        allowed_pages := array[
+            'Game 1: The Hidden Passage Hunt', 'Game 2: The Hidden Passage Hunt',
+            'Copyright Challenge', 'Copyright Challenge 1'
+        ];
+    else
+        raise exception 'This competition has no supported trusted checkpoint page.' using errcode = '42501';
+    end if;
+    select * into task from public.analysis_tasks
+     where id = p_task_id and owner_id = p_user_id;
+    if not found or not task.server_managed or not (task.page_key = any(allowed_pages)) then
+        raise exception 'analysis_untrusted_game: official input must come from this owner''s server-created game task.'
+            using errcode = '42501';
+    end if;
+end;
+$$;
+revoke all on function public.analysis_game_check_trusted_task(uuid, uuid, text) from public, anon, authenticated;
+grant execute on function public.analysis_game_check_trusted_task(uuid, uuid, text) to service_role;
+
 create or replace function public.save_copyright_game_stage_one_checkpoint(
     p_task_id uuid, p_competition_slug text, p_user_id uuid, p_book_key text,
     p_prompt_text text, p_reference_text text, p_temperature double precision,
@@ -33,6 +62,7 @@ begin
     if p_task_id is null or p_user_id is null then
         raise exception 'Checkpoint task and owner are required.' using errcode = '22023';
     end if;
+    perform public.analysis_game_check_trusted_task(p_task_id, p_user_id, p_competition_slug);
     wanted_hash := encode(sha256(convert_to(jsonb_build_array(
         p_competition_slug, p_user_id, p_book_key, p_prompt_text,
         p_reference_text, p_temperature, p_top_p, p_attempts
@@ -84,6 +114,7 @@ begin
     if p_task_id is null or p_user_id is null then
         raise exception 'Checkpoint task and owner are required.' using errcode = '22023';
     end if;
+    perform public.analysis_game_check_trusted_task(p_task_id, p_user_id, p_competition_slug);
     wanted_hash := encode(sha256(convert_to(jsonb_build_array(
         p_competition_slug, p_user_id, p_shot_mode, btrim(p_strategy),
         p_attempts_per_strategy, p_attempts_per_prompt, p_temperature,
@@ -156,6 +187,7 @@ begin
     if p_task_id is null or p_user_id is null then
         raise exception 'Checkpoint task and owner are required.' using errcode = '22023';
     end if;
+    perform public.analysis_game_check_trusted_task(p_task_id, p_user_id, p_competition_slug);
     perform pg_advisory_xact_lock(hashtextextended('analysis-game:' || p_task_id::text || ':stage_two', 0));
     select * into linked from public.analysis_game_task_links
      where task_id = p_task_id and stage = 'stage_two' for update;
