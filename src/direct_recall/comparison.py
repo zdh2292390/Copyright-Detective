@@ -19,6 +19,8 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from src.api_concurrency import ApiConcurrencyTimeout, limit_api_concurrency
+from src.provider_cancellation import provider_call
+from src.run_cancellation import check_cancellation
 from src.common.metrics.logger import is_api_error_response
 from src.prompt_utils import get_full_prompt
 from src.kimi_utils import normalize_kimi_sampling_params, kimi_request_extra_body
@@ -164,9 +166,11 @@ def create_openai_chat_completion(
     kwargs = compat(dict(request_kwargs))
     last_exc: Optional[Exception] = None
     for _ in range(5):
+        check_cancellation()
         try:
-            return client.chat.completions.create(**kwargs)
+            return provider_call(client.chat.completions.create, **kwargs)
         except Exception as exc:
+            check_cancellation()
             last_exc = exc
             changed = False
             if "max_tokens" in kwargs and _is_unsupported_max_tokens_error(exc):
@@ -732,7 +736,8 @@ def _execute_llm_completion(
                 if stop_sequences:
                     config["stop_sequences"] = stop_sequences
                 with genai.Client(**client_options) as client:
-                    response = client.models.generate_content(
+                    response = provider_call(
+                        client.models.generate_content,
                         model=normalized_model,
                         contents=prompt,
                         config=config or None

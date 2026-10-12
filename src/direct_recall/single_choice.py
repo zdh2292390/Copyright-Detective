@@ -18,6 +18,7 @@ from anthropic import Anthropic
 from src.direct_recall.comparison import get_llm_completion
 from src.common.metrics.logger import is_api_error_response
 from src.api_concurrency import limit_api_concurrency
+from src.provider_cancellation import provider_call
 from src.kimi_utils import normalize_kimi_sampling_params, kimi_request_extra_body
 from src.anthropic_utils import (
     anthropic_short_answer_error, create_anthropic_message,
@@ -699,7 +700,7 @@ def _try_openai_style_completion(
         with limit_api_concurrency(timeout=120), OpenAI(**client_kwargs) as client:
             # A rate limit must not switch the evaluator behind its saved
             # model/settings. Surface the error without another API call.
-            response = client.completions.create(**request_kwargs)
+            response = provider_call(client.completions.create, **request_kwargs)
     except Exception as exc:
         if _compatibility_failure(exc):
             return None

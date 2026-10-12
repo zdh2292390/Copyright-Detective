@@ -25,8 +25,10 @@ os.chdir(project_root_str)
 from src.auth import init_auth
 from src.analysis_recovery_ui import apply_pending_analysis_restore, render_analysis_recovery
 from src.resumable_analysis import AnalysisCheckpointError, page_analysis_scope
+from src.run_cancellation import AnalysisCancelled
 from src.job_guard import (
     finish_detection_job,
+    get_detection_job_run_id,
     handle_interrupted_job,
     install_widget_guards,
     is_detection_job_running,
@@ -99,6 +101,7 @@ api_key, model_choice, provider, page = render_sidebar()
 
 # Render main content behind a final safety boundary. Streamlit rerun/stop signals
 # inherit from BaseException, so this catches real page failures without blocking navigation.
+_script_job_run_id = get_detection_job_run_id()
 try:
     with page_analysis_scope(page, st.session_state):
         render_analysis_recovery(page)
@@ -139,9 +142,11 @@ try:
             from src.pages.copyright_game3 import render_copyright_game3_page
 
             render_copyright_game3_page(model_choice)
+except AnalysisCancelled:
+    st.info("Stopped. Saved progress is preserved. Choose Resume to continue.")
 except AnalysisCheckpointError as exc:
     st.error(str(exc))
-    st.caption("Saved successful calls are preserved. Use Saved analysis tasks on this page to continue.")
+    st.caption("Saved successful calls are preserved. Choose Resume under Saved analyses to continue.")
 except Exception:
     logger.exception("Unhandled page error on %s", page)
     st.error(
@@ -153,8 +158,8 @@ except Exception:
         st.rerun()
 finally:
     # Always release the run lock when this script finishes (success or error).
-    if is_detection_job_running():
-        finish_detection_job(show_clear_cache=False)
+    if _script_job_run_id is not None and is_detection_job_running() and _script_job_run_id == get_detection_job_run_id():
+        finish_detection_job(show_clear_cache=False, run_id=_script_job_run_id)
 
 # Footer (commented out as it's not defined)
 # render_footer()

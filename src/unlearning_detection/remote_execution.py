@@ -13,6 +13,9 @@ from typing import Any, Dict, List, Optional
 import requests
 from PIL import Image
 
+from src.provider_cancellation import provider_call
+from src.run_cancellation import cancellation_sleep, check_cancellation
+
 from .representational_toolkit.types import FeatureAnalysisResult, VisualizationItem
 
 
@@ -150,7 +153,8 @@ def execute_analysis_remotely(
 
     def submit_once():
         try:
-            response = requests.post(
+            response = provider_call(
+                requests.post,
                 f"{agent_url}/run_analysis",
                 json={key: value for key, value in submission.items() if key != "agent_url"},
                 headers=headers, timeout=submit_timeout,
@@ -180,12 +184,14 @@ def execute_analysis_remotely(
         deadline = time.monotonic() + max_poll_time
         last_error = ""
         while True:
+            check_cancellation()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 detail = f" Last status error: {last_error}" if last_error else ""
                 raise RuntimeError(f"Polling timeout after {max_poll_time} seconds. Task {task_id} may still be running on the server.{detail}")
             try:
-                status_response = requests.get(
+                status_response = provider_call(
+                    requests.get,
                     f"{agent_url}/task_status/{quote(task_id, safe='')}",
                     headers=headers, timeout=min(timeout, 30, remaining),
                 )
@@ -219,7 +225,7 @@ def execute_analysis_remotely(
                     status_response.close()
             remaining = deadline - time.monotonic()
             if remaining > 0:
-                time.sleep(min(poll_interval, remaining))
+                cancellation_sleep(min(poll_interval, remaining))
 
     result = checkpoint_call(
         "representational.result", {"agent_url": agent_url, "task_id": task_id},

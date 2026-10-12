@@ -247,7 +247,7 @@ def _render_clear_dialog() -> None:
     confirm_col, cancel_col = st.columns(2)
     with confirm_col:
         confirmed = st.button(
-            "Confirm",
+            "Clear session",
             type="primary",
             width="stretch",
             key="_copyright_game2_clear_confirm",
@@ -346,6 +346,7 @@ def _record_round_provider(
     result: Optional[ScalingBatch] = None,
     error: Optional[str] = None,
     skipped: bool = False,
+    stopped: bool = False,
 ) -> None:
     history = _round_history()
     for payload in history:
@@ -360,6 +361,7 @@ def _record_round_provider(
             "result": result,
             "error": str(error or "").strip(),
             "skipped": bool(skipped),
+            "stopped": bool(stopped),
         }
         st.session_state[_key("round_history")] = history
         return
@@ -368,7 +370,7 @@ def _record_round_provider(
 def _harvest_completed_job(provider: str) -> None:
     job_key = _job_key(provider)
     state = get_background_job(job_key)
-    if not isinstance(state, dict) or state.get("status") not in {"completed", "failed"}:
+    if not isinstance(state, dict) or state.get("status") not in {"completed", "failed", "stopped"}:
         return
     token = str(state.get("finished_at") or state.get("status") or "completed")
     delivered_key = _key(f"delivered:{job_key}")
@@ -389,6 +391,7 @@ def _harvest_completed_job(provider: str) -> None:
                 if state.get("status") == "failed"
                 else None
             ),
+            stopped=state.get("status") == "stopped",
         )
     elif isinstance(result, ScalingBatch):
         # Preserve results produced by the earlier, one-provider-at-a-time UI.
@@ -491,6 +494,8 @@ def _render_round_score_overview(providers: Dict[str, Any]) -> None:
             payload = providers.get(provider)
             if isinstance(payload, dict) and payload.get("skipped"):
                 st.info(f"{provider} was skipped for this batch.")
+            elif isinstance(payload, dict) and payload.get("stopped"):
+                st.info(f"{provider} stopped. Select Resume in Saved analyses to continue.")
             elif isinstance(payload, dict) and payload.get("error"):
                 st.info(f"No {provider} distribution is available because the run failed.")
             else:
@@ -606,6 +611,8 @@ def _render_history() -> None:
                 )
                 if skipped:
                     st.info(f"{provider} was skipped for this batch (0 runs).")
+                elif provider_payload.get("stopped"):
+                    st.info(f"{provider} was stopped. Saved progress is available for recovery.")
                 elif error:
                     st.error(f"{provider} scaling failed: {error}")
                 elif isinstance(result, ScalingBatch):
@@ -746,7 +753,7 @@ def _start_scaling(
 
     def execute(report) -> ScalingBatch:
         def update(current: int, total: int) -> None:
-            report(current, total, f"Generated responses: {current}/{total}")
+            report(current, total, "Generating responses")
 
         return run_provider_scaling(
             api_key,
@@ -821,7 +828,7 @@ def _render_provider_workspace(
     clicked = render_run_button(
         "Copyright Challenge 2 - Inference Scaling",
         _key("run_both_providers"),
-        "Run: Inference Scaling",
+        "Run comparison",
         type="primary",
         disabled=(
             any_running
@@ -829,7 +836,7 @@ def _render_provider_workspace(
             or not active_providers
             or not all_keys_ready
         ),
-        help="Start both locked models together with the settings configured above.",
+        help="Run the selected models using the settings above.",
     )
 
     status_columns = st.columns(2, gap="large")
@@ -837,8 +844,9 @@ def _render_provider_workspace(
         with column:
             render_background_job_status(
                 _job_key(provider),
+                display_label=provider,
                 completed_message=(
-                    f"{provider} scaling finished. Results and any request failures are available below."
+                    f"{provider} complete. Results are below."
                 ),
             )
 

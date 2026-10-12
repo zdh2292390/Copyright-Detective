@@ -15,8 +15,13 @@ import re
 import base64
 import gzip
 import io
+import logging
 from threading import Event, RLock, Thread
 from typing import Any, Callable
+
+from src.run_cancellation import (
+    AnalysisCancelled, current_cancellation_token, check_cancellation, bind_task_cancellation,
+)
 
 from src.analysis_checkpoints import (
     AnalysisCheckpointError, OFFICIAL_GAME_PAGE_KEYS, classify_checkpoint_error,
@@ -32,6 +37,7 @@ RUN_TRIGGER = "_analysis_run_trigger"
 RUN_LABEL = "_analysis_run_label"
 LEASE_TTL = 180
 HEARTBEAT_SECONDS = 20
+_LOGGER = logging.getLogger(__name__)
 
 
 class AnalysisResumeMismatch(AnalysisCheckpointError):
@@ -292,6 +298,10 @@ class CallJournal:
         self.stop_event = Event()
         self.lease_token = None
         self.read_only = task.get("status") == "complete"
+        self.cancellation_token = current_cancellation_token()
+        # A failed/racing claim must never replace the active worker's binding.
+        self._unbind_cancellation = lambda: None
+        self.cleanup_thread = None
         try:
             if not self.read_only:
                 self.task = store.claim(self.task_id, ttl_seconds=LEASE_TTL)
@@ -326,9 +336,13 @@ class CallJournal:
                     store.release(self.task_id, self.lease_token, status="incomplete")
                 except Exception:
                     pass
+            self._unbind_cancellation()
             if isinstance(exc, AnalysisCheckpointError):
                 raise
             raise classify_checkpoint_error(exc) from exc
+        self._unbind_cancellation = bind_task_cancellation(
+            getattr(store, "owner_id", ""), self.task_id, self.cancellation_token,
+        )
         self.thread = None
         if heartbeat and not self.read_only:
             self.thread = Thread(target=self._heartbeat, daemon=True, name="analysis-checkpoint-heartbeat")
@@ -339,8 +353,12 @@ class CallJournal:
             try:
                 task = self.store.heartbeat(self.task_id, self.lease_token, ttl_seconds=LEASE_TTL)
                 if task.get("stop_requested"):
+                    if self.cancellation_token is not None:
+                        self.cancellation_token.cancel()
                     self.broken = True
-                    return
+                    # Keep renewing until finish() releases the lease. A stopped
+                    # background runner may still be draining an accepted request;
+                    # another process must not resume it during that cleanup.
             except Exception:
                 self.broken = True
                 return
@@ -349,6 +367,16 @@ class CallJournal:
         # Current page runners are sequential. The lock also protects accidental
         # concurrent use, so request order and repeated identical calls stay stable.
         with self.lock:
+            token = current_cancellation_token()
+            if token is not None and token is not self.cancellation_token:
+                self._unbind_cancellation()
+                self.cancellation_token = token
+                self._unbind_cancellation = bind_task_cancellation(
+                    getattr(self.store, "owner_id", ""), self.task_id, token,
+                )
+            check_cancellation()
+            if self.cancellation_token is not None:
+                self.cancellation_token.check()
             if self.broken or self.closed:
                 raise AnalysisCheckpointError("Checkpoint saving was interrupted. Resume this task before making more API calls.")
             try:
@@ -397,7 +425,9 @@ class CallJournal:
                 # Refresh/check fencing immediately before every paid call.
                 task = self.store.heartbeat(self.task_id, self.lease_token, ttl_seconds=LEASE_TTL)
                 if task.get("stop_requested"):
-                    raise AnalysisCheckpointError("This saved task was stopped.")
+                    if self.cancellation_token is not None:
+                        self.cancellation_token.cancel()
+                    raise AnalysisCancelled("Analysis stopped. Saved progress is preserved.")
             except AnalysisCheckpointError:
                 self.failed = self.broken = True
                 raise
@@ -407,6 +437,7 @@ class CallJournal:
 
             token = _SUPPRESSED.set(True)
             try:
+                check_cancellation()
                 result = invoke()
             except BaseException:
                 self.failed = True
@@ -433,6 +464,7 @@ class CallJournal:
                     exc, "The API returned, but its result could not be saved to Supabase. "
                     "Further calls have stopped; this unsaved call may need to run again."
                 ) from exc
+            check_cancellation()
             return result
 
     def finish(self, success: bool, final_snapshot: dict | None = None):
@@ -440,17 +472,53 @@ class CallJournal:
             if self.closed:
                 return
             self.closed = True
-            self.stop_event.set()
             if self.read_only:
+                self.stop_event.set()
+                self._unbind_cancellation()
                 return
+            success = success and not (self.cancellation_token is not None and self.cancellation_token.cancelled)
             complete = success and not self.failed and not self.broken and (len(self.visited_items) == len(self.items) or self.verified_complete)
             metadata = {"final_session": final_snapshot} if complete and final_snapshot is not None else {}
-            try:
-                self.store.release(self.task_id, self.lease_token,
-                                   status="complete" if complete else "incomplete", metadata=metadata)
-            except Exception as exc:
-                self.broken = True
-                raise _checkpoint_error_with_context(exc, "The final checkpoint could not be saved. Saved calls remain available for recovery.") from exc
+
+            def release_checkpoint():
+                self.stop_event.set()
+                self._unbind_cancellation()
+                try:
+                    self.store.release(self.task_id, self.lease_token,
+                                       status="complete" if complete else "incomplete", metadata=metadata)
+                except Exception as exc:
+                    self.broken = True
+                    raise _checkpoint_error_with_context(
+                        exc, "The final checkpoint could not be saved. Saved calls remain available for recovery."
+                    ) from exc
+
+            if self.cancellation_token is not None and self.cancellation_token.pending_count:
+                # The UI can stop immediately. Retain and renew the lease until
+                # accepted requests drain, so another browser cannot repeat the
+                # same pending paid call while its old request is still running.
+                token = self.cancellation_token
+                def cleanup():
+                    token.wait_for_idle()
+                    try:
+                        release_checkpoint()
+                    except AnalysisCheckpointError as exc:
+                        # No Streamlit objects cross into this cleanup thread.
+                        # A failed release leaves the saved task recoverable
+                        # after the fenced lease expires.
+                        _LOGGER.warning("Stopped analysis checkpoint cleanup failed: %s", exc)
+                try:
+                    self.cleanup_thread = Thread(
+                        target=cleanup, daemon=True, name="analysis-checkpoint-stop-cleanup",
+                    )
+                    self.cleanup_thread.start()
+                except Exception:
+                    # Resource exhaustion must not reopen a still-running paid
+                    # request. The already-stopped coordinator can drain it;
+                    # the browser's force-stop callback does not wait here.
+                    token.wait_for_idle()
+                    release_checkpoint()
+            else:
+                release_checkpoint()
 
 
 class PageRun:
@@ -563,6 +631,7 @@ def finish_ui_run(success: bool):
 
 
 def checkpoint_call(operation: str, payload: dict, invoke: Callable, *, is_success: Callable | None = None):
+    check_cancellation()
     if _SUPPRESSED.get():
         return invoke()
     current = _CURRENT.get()

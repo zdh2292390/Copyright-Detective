@@ -20,6 +20,7 @@ from openai import OpenAI
 from anthropic import Anthropic
 from tqdm import tqdm
 from src.api_concurrency import limit_api_concurrency
+from src.provider_cancellation import provider_call
 from src.anthropic_utils import create_anthropic_message, extract_anthropic_response_text
 
 # Add the data directory to the path
@@ -105,7 +106,8 @@ def _query_llm_chatgpt_uncached(
     )
     
     with limit_api_concurrency(timeout=120):
-        response = client.chat.completions.create(
+        response = provider_call(
+            client.chat.completions.create,
             model=DECOP_OPENAI_MODEL,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=1,

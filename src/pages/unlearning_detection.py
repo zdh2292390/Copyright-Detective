@@ -23,6 +23,7 @@ import requests
 from types import SimpleNamespace
 from src.common.metrics.logger import is_api_error_response
 from src.resumable_analysis import AnalysisCheckpointError, checkpoint_call, checkpoint_scope
+from src.provider_cancellation import provider_call
 import streamlit as st
 from src.widget_defaults import widget_defaults
 import pandas as pd
@@ -972,8 +973,8 @@ def _deploy_agent_model(agent_url, model_path, headers, *, purpose):
     endpoint = str(agent_url).strip().rstrip('/')
 
     def invoke():
-        response = requests.post(
-            f"{endpoint}/deploy", json={"model_path": model_path},
+        response = provider_call(
+            requests.post, f"{endpoint}/deploy", json={"model_path": model_path},
             headers=headers, timeout=10,
         )
         try:
@@ -1819,7 +1820,8 @@ def _get_completion_logprobs_uncached(prompt: str, api_key: str, model_name: str
         if base_url:
             client_kwargs["base_url"] = base_url
         client = openai.OpenAI(**client_kwargs)
-        response = client.completions.create(
+        response = provider_call(
+            client.completions.create,
             model=model_name, prompt=prompt.replace('\x00', ''), max_tokens=0,
             temperature=1.0, logprobs=5, echo=True,
         )

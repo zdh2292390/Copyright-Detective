@@ -13,6 +13,9 @@ from urllib.parse import urlsplit
 from src.document_analysis import run_chunk_analysis, validate_analysis_state
 from src.document_checkpoints import CheckpointError, DocumentCheckpointStore
 from src.model_catalog import model_unavailability_error
+from src.run_cancellation import (
+    AnalysisCancelled, CancellationToken, cancellation_scope, check_cancellation,
+)
 
 
 DEFAULT_CHUNK_CONCURRENCY = 3
@@ -306,9 +309,13 @@ class DocumentAnalysisJobs:
                 state["updated_at"] = state["started_at"]
                 store.save(token, state)
                 stop = Event()
-                self._jobs[token] = {"state": _snapshot(state), "stop": stop, "store": store}
+                cancellation = CancellationToken()
+                self._jobs[token] = {
+                    "state": _snapshot(state), "stop": stop, "store": store,
+                    "cancellation": cancellation,
+                }
                 try:
-                    self._executor.submit(self._run, token, state, pairs, str(api_key or "").strip(), stop, store)
+                    self._executor.submit(self._run, token, state, pairs, str(api_key or "").strip(), stop, store, cancellation)
                 except Exception:
                     self._jobs.pop(token, None)
                     state["status"] = "incomplete"
@@ -321,7 +328,7 @@ class DocumentAnalysisJobs:
                     store.release(token)
                 raise
 
-    def _run(self, token, state, pairs, api_key, stop, store):
+    def _run(self, token, state, pairs, api_key, stop, store, cancellation):
         heartbeat_done = Event()
         lease_errors = []
 
@@ -330,9 +337,11 @@ class DocumentAnalysisJobs:
                 try:
                     if store.heartbeat(token).get("stop_requested"):
                         stop.set()
+                        cancellation.cancel()
                 except Exception as exc:
                     lease_errors.append(exc)
                     stop.set()
+                    cancellation.cancel()
                     return
 
         heartbeat_thread = None
@@ -358,22 +367,36 @@ class DocumentAnalysisJobs:
                 saved = store.save_progress(token, updated, current - 1 if current else None)
                 if isinstance(saved, dict) and saved.get("stop_requested"):
                     stop.set()
+                    cancellation.cancel()
                     updated["stop_requested"] = True
             finally:
                 with self._lock:
                     if token in self._jobs:
                         self._jobs[token]["state"] = _snapshot(updated)
 
+        def analyze_chunk(upper, lower):
+            # A chunk can issue several provider calls. Carry the token into
+            # every worker so the shared provider cancellation boundary stops
+            # waiting for HTTP and prevents the chunk's next request/retry.
+            with cancellation_scope(cancellation):
+                check_cancellation()
+                result = self._analyze_chunk(state["settings"], api_key, upper, lower)
+                check_cancellation()
+                return result
+
         try:
             run_chunk_analysis(
-                pairs,
-                lambda upper, lower: self._analyze_chunk(state["settings"], api_key, upper, lower),
+                pairs, analyze_chunk,
                 state, on_update=checkpoint, should_stop=stop.is_set, sleep=stop.wait,
                 max_concurrency=state["concurrency_limit"], executor=self._chunk_executor,
             )
         except BaseException as exc:
             state["status"] = "incomplete"
-            state["error"] = _redact_error(f"Analysis paused: {type(exc).__name__}: {exc}", api_key)
+            state["error"] = (
+                "Analysis stopped by request. Completed chunks are saved. Already-sent requests must finish before this task can resume."
+                if isinstance(exc, AnalysisCancelled)
+                else _redact_error(f"Analysis paused: {type(exc).__name__}: {exc}", api_key)
+            )
             state["retry_in_seconds"] = 0
             state["retry_attempt"] = None
             state["active_chunks"] = []
@@ -398,28 +421,60 @@ class DocumentAnalysisJobs:
                     if token in self._jobs:
                         self._jobs[token]["state"] = _snapshot(state)
         finally:
-            heartbeat_done.set()
-            if heartbeat_thread is not None:
-                heartbeat_thread.join(timeout=1)
-                try:
-                    store.release(token)
-                except Exception:
-                    # Expiry provides recovery if the server cannot release a
-                    # lease. Never overwrite another worker's fenced progress.
-                    pass
+            def finalize():
+                heartbeat_done.set()
+                if heartbeat_thread is not None:
+                    heartbeat_thread.join(timeout=1)
+                    try:
+                        store.release(token)
+                    except Exception:
+                        # Expiry provides recovery if the server cannot release
+                        # its own lease. Never overwrite a replacement worker.
+                        pass
+                with self._lock:
+                    job = self._jobs.get(token)
+                    if job is not None and not job.get("storage_failed"):
+                        self._jobs.pop(token, None)
+                    elif job is not None:
+                        job["finished"] = True
+                        job.pop("cleanup_pending", None)
+
             with self._lock:
                 job = self._jobs.get(token)
-                if job is not None and not job.get("storage_failed"):
-                    self._jobs.pop(token, None)
-                elif job is not None:
-                    job["finished"] = True
+                if job is not None:
+                    job["coordinator_finished"] = True
+            if cancellation.cancelled and cancellation.pending_count:
+                # Force stop releases the coordinator immediately, while the
+                # provider can still be processing an already sent request.
+                # Keep this task protected and its cloud heartbeat alive until
+                # those requests exit, preventing duplicate resume calls.
+                with self._lock:
+                    job = self._jobs.get(token)
+                    if job is not None:
+                        job["cleanup_pending"] = True
+                def finish_after_requests():
+                    cancellation.wait_for_idle()
+                    finalize()
+                try:
+                    Thread(
+                        target=finish_after_requests, name="document-stop-cleanup", daemon=True,
+                    ).start()
+                except Exception:
+                    # If the helper cannot start, this background coordinator
+                    # safely drains the request. The UI stop callback has already
+                    # returned, and task/lease protection must remain intact.
+                    finish_after_requests()
+            else:
+                finalize()
 
-    def stop(self, token, *, owner_id=None):
+    def stop(self, token, *, owner_id=None, force=False):
         with self._lock:
             job = self._jobs.get(token)
             if job is not None and not job.get("finished"):
                 self._check_owner(job["state"], owner_id)
                 job["stop"].set()
+                if force:
+                    job["cancellation"].cancel()
                 job["state"]["stop_requested"] = True
                 store = job["store"]
                 if getattr(store, "remote", False):
@@ -429,6 +484,14 @@ class DocumentAnalysisJobs:
             if getattr(store, "remote", False):
                 return store.request_stop(token)
             return False
+
+    def force_stop(self, token, *, owner_id=None):
+        """Stop waiting for pending calls without deleting saved progress.
+
+        HTTP requests already accepted by a provider can still finish there;
+        their cancelled worker cannot start another request or publish results.
+        """
+        return self.stop(token, owner_id=owner_id, force=True)
 
     def delete(self, token, *, owner_id=None):
         with self._lock:
@@ -442,6 +505,7 @@ class DocumentAnalysisJobs:
         with self._lock:
             for job in self._jobs.values():
                 job["stop"].set()
+                job["cancellation"].cancel()
         self._executor.shutdown(wait=True, cancel_futures=False)
         self._chunk_executor.shutdown(wait=True, cancel_futures=True)
 

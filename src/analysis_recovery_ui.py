@@ -154,27 +154,60 @@ def render_analysis_recovery(page_key: str):
     tasks = [task for task in tasks if task.get("dynamic_items")]
     if not tasks:
         return
-    with st.expander("Saved analysis tasks · resume after restarting", expanded=any(t.get("status") != "complete" for t in tasks)):
-        st.caption("Restores the original input, model and sampling settings. Saved successful API calls are reused. API keys are not stored with tasks.")
+    with st.expander("Saved analyses", expanded=any(t.get("status") != "complete" for t in tasks)):
+        st.caption("Resume with the original inputs and settings. Saved calls are reused.")
         for task in tasks:
             label = (task.get("settings") or {}).get("label", "Analysis")
             completed = int(task.get("completed_items") or 0)
             total = int(task.get("total_items") or 0)
             status = str(task.get("status") or "incomplete")
             active = _lease_active(task)
-            st.write(f"{label} — {completed}/{total} saved steps · {status}")
-            st.caption(f"Task {str(task['id'])[:8]} · {task.get('updated_at') or ''}")
-            if active:
-                st.caption("A worker still holds this task. After an unexpected server shutdown, recovery becomes available when its lease expires (up to 3 minutes).")
-            if st.button(
-                "Restore saved results" if status == "complete" else "Restore and continue",
-                key=f"_analysis_resume:{task['id']}", disabled=active,
-            ):
-                st.session_state[PENDING_RESTORE] = {"task_id": str(task["id"])}
-                st.rerun()
-            if active and st.button("Stop after the current call", key=f"_analysis_stop:{task['id']}"):
-                store.request_stop(str(task["id"]))
-                st.rerun()
-        if has_more and limit < 1000 and st.button("Show older tasks", key="_analysis_show_older"):
+            stopping = bool(task.get("stop_requested")) and active
+            display_status = "Stopping" if stopping else {
+                "creating": "Preparing", "queued": "Queued", "running": "Running",
+                "incomplete": "Paused", "complete": "Complete",
+            }.get(status, status.capitalize())
+            progress = f"{completed} saved calls"
+            if total > completed:
+                progress += f" · {total - completed} unfinished"
+            updated = task.get("updated_at")
+            if updated:
+                try:
+                    stamp = datetime.fromisoformat(str(updated).replace("Z", "+00:00"))
+                    progress += f" · {stamp.astimezone(timezone.utc):%d %b, %H:%M} UTC"
+                except (TypeError, ValueError):
+                    pass
+            with st.container(border=True):
+                columns = st.columns([4, 1, 1] if active else [5, 1],
+                                     gap="small", vertical_alignment="center")
+                with columns[0]:
+                    st.markdown(f"**{label}**")
+                    st.caption(f"{display_status} · {progress}")
+                with columns[1]:
+                    if st.button(
+                        "View results" if status == "complete" else "Resume",
+                        key=f"_analysis_resume:{task['id']}", disabled=active, width="stretch",
+                        help="Restore the original inputs and reuse saved results.",
+                    ):
+                        st.session_state[PENDING_RESTORE] = {"task_id": str(task["id"])}
+                        st.rerun()
+                if active:
+                    with columns[2]:
+                        from src.job_guard import render_force_stop_button
+                        if render_force_stop_button(
+                            label="Stopping…" if stopping else "Stop", key=f"_analysis_stop:{task['id']}",
+                            disabled=stopping, width="stretch",
+                            help="Stop now and keep saved progress. Other workers receive the request on their next progress check.",
+                        ):
+                            from src.run_cancellation import cancel_task
+                            cancel_task(store.owner_id, str(task["id"]))
+                            store.request_stop(str(task["id"]))
+                            st.rerun()
+                    st.caption(
+                        "Resume is available after current requests finish."
+                        if stopping else
+                        "This task is active. After a server restart, resume becomes available within 3 minutes."
+                    )
+        if has_more and limit < 1000 and st.button("Show more", key="_analysis_show_older"):
             st.session_state[limit_key] = min(1000, limit + 50)
             st.rerun()

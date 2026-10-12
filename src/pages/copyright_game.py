@@ -1334,7 +1334,7 @@ def _render_stage_one_view(
         st.warning("Enter both a direct-probe prompt and ground truth before running.")
     if background_job_running(stage_one_job_key):
         render_background_job_lock("Copyright Challenge 1 - Stage 1 baseline")
-    render_background_job_status(stage_one_job_key)
+    render_background_job_status(stage_one_job_key, display_label="Stage 1")
     stage_one_job_state = get_background_job(stage_one_job_key)
     if (
         isinstance(stage_one_job_state, dict)
@@ -1344,7 +1344,7 @@ def _render_stage_one_view(
     run_stage_one_clicked = render_run_button(
         "Copyright Challenge 1 - Stage 1 baseline",
         _player_key(participant.user_id, "run_stage_one"),
-        "Run: Direct Probing (Stage 1)",
+        "Run stage 1",
         type="primary",
         disabled=(
             background_job_running(stage_one_job_key)
@@ -1360,7 +1360,7 @@ def _render_stage_one_view(
 
         def execute_stage_one(report) -> Dict[str, Any]:
             def update(current: int, total: int) -> None:
-                report(current, total, f"Direct probes: {current}/{total}")
+                report(current, total, "Generating responses")
 
             report(
                 0,
@@ -1725,7 +1725,10 @@ def _render_play_tab(
         if linked_task:
             from src.resumable_analysis import RESUME_TASK
             if str(st.session_state.get(RESUME_TASK) or "") != linked_task:
-                st.info("This official run has a saved checkpoint. Use Restore and continue to resume the same run.")
+                stopped_job_key = _player_key(participant.user_id, "stage_two_background_job")
+                if (get_background_job(stopped_job_key) or {}).get("status") == "stopped":
+                    render_background_job_status(stopped_job_key, display_label="Stage 2")
+                st.info("This run is saved. Select Resume in Saved analyses to continue.")
                 return participant.user_id
         else:
             _mark_run_failed_safely(
@@ -1957,12 +1960,13 @@ def _render_play_tab(
 
     render_background_job_status(
         job_key,
+        display_label="Stage 2",
         completed_message_ttl_seconds=5.0,
     )
     run_clicked = render_run_button(
         "Copyright Challenge 1 - Stage 2 official run",
         _player_key(participant.user_id, "run_stage_two"),
-        "Run: Persuasive Jailbreak (Stage 2)",
+        "Run stage 2",
         type="primary",
         disabled=bool(config_error)
         or not confirmed
@@ -1980,10 +1984,10 @@ def _render_play_tab(
             def update_progress(phase: str, current: int, total: int) -> None:
                 if phase == "mutations":
                     completed = current
-                    message = f"Generating mutations: {current}/{total}"
+                    message = "Generating prompts"
                 else:
                     completed = mutation_total + current
-                    message = f"Scoring responses: {current}/{total}"
+                    message = "Scoring responses"
                 report(completed, planned_api_calls, message)
 
             report(0, planned_api_calls, "Reserving official run")

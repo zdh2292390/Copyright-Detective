@@ -7,6 +7,9 @@ import re
 from collections.abc import Mapping
 from typing import Any, Dict
 
+from src.provider_cancellation import provider_call
+from src.run_cancellation import check_cancellation
+
 # Official capability references:
 # https://platform.claude.com/docs/en/about-claude/model-deprecations
 # https://platform.claude.com/docs/en/models/sonnet-5-5/migration-guide
@@ -91,8 +94,9 @@ def create_anthropic_message(client: Any, kwargs: Dict[str, Any]) -> Any:
         if extra_body:
             request["extra_body"] = extra_body
     try:
-        return client.messages.create(**request)
+        return provider_call(client.messages.create, **request)
     except Exception as exc:
+        check_cancellation()
         # Preserve effective controls on older models unless the server
         # specifically rejects this combination. Never retry another 400,
         # an authentication error, a rate limit, or an unavailable service.
@@ -111,7 +115,7 @@ def create_anthropic_message(client: Any, kwargs: Dict[str, Any]) -> Any:
             request["extra_body"] = extra_body
         else:
             request.pop("extra_body", None)
-        return client.messages.create(**request)
+        return provider_call(client.messages.create, **request)
 
 
 def _is_sampling_combination_error(exc: Exception) -> bool:

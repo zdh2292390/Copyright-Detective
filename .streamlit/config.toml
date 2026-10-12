@@ -2,3 +2,6 @@
 # Streamlit Cloud restarts the app after a Git update. Disabling the in-process
 # watcher prevents reruns while the repository is only partially synchronized.
 fileWatcherType = "none"
+[runner]
+# A force-stop callback must run even while an API request is waiting.
+fastReruns = true
