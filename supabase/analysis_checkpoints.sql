@@ -10,6 +10,8 @@ create table if not exists public.analysis_tasks (
     fingerprint text not null check (fingerprint ~ '^[a-f0-9]{64}$'),
     settings jsonb not null check (jsonb_typeof(settings) = 'object'),
     source jsonb not null,
+    -- Dynamic API journals store credential-free apis/current_step under metadata.display.
+    -- Document jobs keep their chunk progress in the same existing JSONB column.
     metadata jsonb not null default '{}'::jsonb check (jsonb_typeof(metadata) = 'object'),
     dynamic_items boolean not null default false,
     server_managed boolean not null default false,
@@ -62,6 +64,10 @@ create index if not exists analysis_tasks_owner_page_updated_idx
     on public.analysis_tasks(owner_id, page_key, updated_at desc, id);
 create index if not exists analysis_tasks_owner_updated_idx
     on public.analysis_tasks(owner_id, updated_at desc, id);
+-- Saved analyses embeds the five most recently updated checkpoints per task.
+-- Match both owner-scoped FK columns before the deterministic recent-item order.
+create index if not exists analysis_items_task_updated_idx
+    on public.analysis_items(task_id, owner_id, updated_at desc, item_index desc);
 
 alter table public.analysis_tasks enable row level security;
 alter table public.analysis_items enable row level security;

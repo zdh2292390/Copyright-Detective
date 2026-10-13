@@ -8,7 +8,9 @@ PDF/TXT documents for potential copyright infringement.
 import hashlib
 import textwrap
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import streamlit as st
 from src.widget_defaults import widget_defaults
@@ -303,6 +305,97 @@ def _prepare_document_cloud():
     return cloud is not None
 
 
+def _document_task_stage(state, *, active=False) -> str:
+    total = state["total_chunks"]
+    current = state.get("current_chunk")
+    if state.get("status") == "complete":
+        return "Complete"
+    if active and state.get("stop_requested"):
+        return "Killing: waiting for already-sent requests to finish"
+    if active and state.get("retry_in_seconds"):
+        attempt = state.get("retry_attempt") or state.get("current_attempt")
+        retry = f" (attempt {attempt})" if attempt else ""
+        return f"Retrying API call{retry} in {state['retry_in_seconds']:.1f} seconds"
+    chunks = state.get("active_chunks", [])
+    if active and chunks:
+        chunk_list = ", ".join(str(chunk) for chunk in chunks[:8])
+        if len(chunks) > 8:
+            chunk_list += ", ..."
+        return f"Analyzing chunk{'s' if len(chunks) > 1 else ''} {chunk_list} / {total}"
+    if active:
+        return f"Analyzing chunk {current} / {total}" if current else "Starting chunk analysis"
+    if current:
+        return f"Paused / last attempted chunk {current} / {total}"
+    return "Paused / ready to start chunk analysis"
+
+
+def _document_task_time(value) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        return timestamp.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    except ValueError:
+        return None
+
+
+def _document_api_endpoint(value) -> str | None:
+    if not isinstance(value, str) or len(value) > 4096:
+        return None
+    try:
+        parsed = urlsplit(value.strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return None
+        host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+        if parsed.port is not None:
+            host += f":{parsed.port}"
+        return urlunsplit((parsed.scheme, host, parsed.path.rstrip("/"), "", ""))
+    except ValueError:
+        return None
+
+
+def _render_document_task_details(state, token, *, active=False) -> None:
+    settings = state["settings"]
+    st.caption(f"API: {settings['provider']} / Model: {settings['model']}")
+    completed = len(state["results"])
+    failures = len(state["failures"])
+    total = state["total_chunks"]
+    st.caption(
+        f"Stage: {_document_task_stage(state, active=active)} / "
+        f"{completed:,}/{total:,} chunks saved / {failures:,} failed / {max(total - completed, 0):,} remaining"
+    )
+    with st.expander("Task details"):
+        st.caption(f"Task ID: {token}")
+        endpoint = _document_api_endpoint(settings.get("base_url"))
+        if endpoint:
+            st.caption(f"API endpoint: {endpoint}")
+        st.caption(
+            f"Method: {settings['continuation_method']} / Chunk size: {settings['chunk_size']:,} words / "
+            f"Temperature: {settings['temperature']} / Top-p: {settings['top_p']}"
+        )
+        if state.get("concurrency_limit"):
+            st.caption(
+                f"Concurrency: {state.get('effective_concurrency', state['concurrency_limit'])} / "
+                f"{len(state.get('active_chunks', []))} active chunks"
+            )
+        for label, key in (("Started", "started_at"), ("Updated", "updated_at"), ("Completed", "completed_at")):
+            timestamp = _document_task_time(state.get(key))
+            if timestamp:
+                st.caption(f"{label}: {timestamp}")
+
+
+def _kill_document_job(token, owner_id) -> None:
+    try:
+        if DOCUMENT_JOBS.force_stop(token, owner_id=owner_id):
+            _trigger_pdf_rerun()
+        else:
+            st.info("No active requests to kill. Saved progress is kept.")
+    except (CheckpointError, ValueError) as exc:
+        st.error(f"Could not kill analysis: {exc}")
+
+
 def _render_document_recovery_list(active_token=None, *, disabled=False):
     owner_id = st.session_state.get("user_id")
     if not owner_id or st.session_state.get("_pdf_verified_cloud_owner") != owner_id or not DOCUMENT_JOBS.cloud_enabled_for(owner_id):
@@ -327,7 +420,7 @@ def _render_document_recovery_list(active_token=None, *, disabled=False):
     selection_key = "pdf_cloud_recovery_selection"
     if st.session_state.get(selection_key) not in options:
         st.session_state.pop(selection_key, None)
-    select_col, open_col = st.columns([5, 1], vertical_alignment="center")
+    select_col, open_col, kill_col = st.columns([5, 1, 1], vertical_alignment="center")
     with select_col:
         selected = st.selectbox(
             "Saved document analysis", options, format_func=label,
@@ -338,8 +431,26 @@ def _render_document_recovery_list(active_token=None, *, disabled=False):
             "Open", key="open_saved_pdf_analysis", width="stretch",
             disabled=disabled or not selected or selected == active_token,
         )
+    selected_state = None
     if selected:
-        st.caption(entries[selected]["settings"]["model"])
+        try:
+            selected_state = DOCUMENT_JOBS.get(selected, owner_id=owner_id)
+            if selected_state is None:
+                raise CheckpointError("The saved document analysis is no longer available.")
+            if selected != active_token:
+                _render_document_task_details(selected_state, selected, active=bool(entries[selected].get("active")))
+        except (CheckpointError, ValueError) as exc:
+            st.error(f"Could not read the saved analysis: {exc}")
+    with kill_col:
+        kill_clicked = render_force_stop_button(
+            label="Kill", key="kill_selected_saved_pdf_analysis", width="stretch",
+            disabled=not selected_state or selected_state.get("status") == "complete" or (
+                bool(entries[selected].get("active")) and bool(selected_state.get("stop_requested"))
+            ),
+            help="Stop this task's pending chunks and retries, keeping saved progress. Already-sent requests may still finish.",
+        )
+    if kill_clicked:
+        _kill_document_job(selected, owner_id)
     if open_saved:
         try:
             state = DOCUMENT_JOBS.get(selected, owner_id=owner_id)
@@ -412,39 +523,20 @@ def _poll_document_job(token, owner_id) -> None:
     if not _document_job_is_active(token, owner_id):
         # Remove timed polling after the task ends and render its final report.
         st.rerun()
+    _render_document_task_details(state, token, active=True)
     completed = len(state["results"])
     total = state["total_chunks"]
-    limit = state.get("concurrency_limit", 1)
-    effective = state.get("effective_concurrency", limit)
-    if limit > 1:
-        progress_text = (
-            f"{completed}/{total} chunks succeeded · {len(state['failures'])} failed "
-            f"· {len(state.get('active_chunks', []))} active chunks · concurrency limit {effective}"
-        )
-    else:
-        progress_text = f"Analyzing chunk {state.get('current_chunk') or 1}/{total} · {completed} succeeded · {len(state['failures'])} failed"
-    st.progress(completed / max(total, 1), text=progress_text)
+    st.progress(completed / max(total, 1), text=f"{completed:,} / {total:,} chunks complete")
     st.caption("Analysis continues in the background if you refresh or switch pages. Progress is saved after each chunk.")
-    if state.get("retry_in_seconds"):
-        if limit > 1:
-            st.caption(
-                f"Temporary API error; new chunk requests are paused for up to "
-                f"{state['retry_in_seconds']:.1f} seconds before retrying."
-            )
-        else:
-            st.caption(f"Temporary API error; retry {state.get('retry_attempt')} after {state['retry_in_seconds']:.1f} seconds.")
     if state.get("stop_requested"):
-        st.caption("Stopping… Saved progress is kept. Resume becomes available after active requests finish.")
+        st.caption("Killing... Saved progress is kept. Resume becomes available after active requests finish.")
     if render_force_stop_button(
         key="stop_pdf_analysis",
-        label="Stopping…" if state.get("stop_requested") else "Stop",
+        label="Killing..." if state.get("stop_requested") else "Kill",
         disabled=bool(state.get("stop_requested")),
         help="Stops pending chunks and retries while keeping saved progress. A request already sent may still finish at the provider.",
     ):
-        try:
-            DOCUMENT_JOBS.force_stop(token, owner_id=owner_id)
-        except (CheckpointError, ValueError) as exc:
-            st.error(f"Could not stop analysis: {exc}")
+        _kill_document_job(token, owner_id)
 
 
 def _render_document_job(token, api_key, provider, *, show_resume_button=True) -> None:
@@ -455,7 +547,7 @@ def _render_document_job(token, api_key, provider, *, show_resume_button=True) -
     _sync_document_job(state)
     settings = state["settings"]
     st.markdown("---")
-    st.markdown(f"**Saved analysis: {settings['filename']} · {settings['model']}**")
+    st.markdown(f"**Saved analysis: {settings['filename']}**")
     st.caption("Bookmark this page to restore this analysis after reconnecting. The recovery link provides access to this document; keep it private.")
     if _document_job_is_active(token, owner_id):
         _poll_document_job(token, owner_id)
@@ -469,25 +561,36 @@ def _render_document_job(token, api_key, provider, *, show_resume_button=True) -
     if state["status"] != "complete":
         if provider != settings["provider"]:
             st.info(f"Select {settings['provider']} in the sidebar to resume this saved analysis.")
-        if show_resume_button:
-            with st.container(border=True):
-                completed = len(state["results"])
-                total = state["total_chunks"]
-                progress_col, resume_col = st.columns([5, 1], vertical_alignment="center")
-                with progress_col:
-                    st.progress(completed / max(total, 1), text=f"{completed:,} / {total:,} chunks complete")
-                with resume_col:
+        with st.container(border=True):
+            _render_document_task_details(state, token)
+            completed = len(state["results"])
+            total = state["total_chunks"]
+            columns = st.columns([5, 1, 1] if show_resume_button else [5, 1], vertical_alignment="center")
+            with columns[0]:
+                st.progress(completed / max(total, 1), text=f"{completed:,} / {total:,} chunks complete")
+            resume_clicked = False
+            if show_resume_button:
+                with columns[1]:
                     resume_clicked = st.button(
                         "Resume", key="resume_saved_pdf_analysis", width="stretch",
                         disabled=(not api_key and settings["provider"] != "Local vLLM") or provider != settings["provider"],
                         help="Continue with this document's saved settings.",
                     )
-                if resume_clicked:
-                    try:
-                        DOCUMENT_JOBS.submit(token, api_key, owner_id=owner_id)
-                        _trigger_pdf_rerun()
-                    except (CheckpointError, ValueError) as exc:
-                        st.error(f"Could not resume analysis: {exc}")
+            with columns[-1]:
+                kill_clicked = render_force_stop_button(
+                    label="Kill", key="kill_saved_pdf_analysis", width="stretch",
+                    help="Stop pending chunks and retries, keeping saved progress. Already-sent requests may still finish.",
+                )
+            if kill_clicked:
+                _kill_document_job(token, owner_id)
+            if resume_clicked:
+                try:
+                    DOCUMENT_JOBS.submit(token, api_key, owner_id=owner_id)
+                    _trigger_pdf_rerun()
+                except (CheckpointError, ValueError) as exc:
+                    st.error(f"Could not resume analysis: {exc}")
+    else:
+        _render_document_task_details(state, token)
     _render_saved_pdf_results(state)
 
 

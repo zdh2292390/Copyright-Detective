@@ -127,6 +127,110 @@ def _lease_active(task):
         return True
 
 
+def _task_display(task):
+    """Prefer live metadata; read recent compact checkpoints for older tasks."""
+    from src.analysis_task_details import summarize_saved_items
+    display = task.get("display") or (task.get("metadata") or {}).get("display")
+    if isinstance(display, dict) and display.get("current_step"):
+        return display
+    items = []
+    for row in task.get("latest_items") or []:
+        request = {key: row.get(key) for key in (
+            "provider", "model", "model_name", "endpoint", "base_url", "agent_url", "model_path",
+        ) if row.get(key)}
+        item = {**row, "input": {"operation": row.get("operation"), "request": request}}
+        if row.get("scope"):
+            item["input"]["scope"] = row["scope"]
+        items.append(item)
+    return summarize_saved_items(items) if items else {}
+
+
+_OPERATION_LABELS = {
+    "llm.completion": "Generate model response",
+    "single_choice.evaluate": "Evaluate multiple-choice answer",
+    "decop.openai": "Evaluate DE-COP options",
+    "decop.anthropic": "Evaluate DE-COP options",
+    "min_k.completion_probe": "Measure token probabilities",
+    "prompt.full": "Prepare sampled prompt",
+    "agent.deploy": "Deploy model for analysis",
+    "representational.submit": "Submit representational analysis",
+    "representational.result": "Wait for representational results",
+    "game.stage_two.reserve": "Prepare game stage 2",
+}
+_SCOPE_LABELS = {
+    "knowledge_qa": "Evaluate knowledge Q&A",
+    "knowmem_answer": "Evaluate knowledge memory",
+    "sleek_qa": "Evaluate SLEEK Q&A",
+    "sleek_probe": "Run SLEEK probe",
+    "text_report_narrative": "Generate report explanation",
+    "persuasion_evaluate": "Evaluate persuasion response",
+    "persuasion_judge": "Judge persuasion response",
+    "custom_mutation": "Generate custom prompt mutation",
+    "mutation": "Generate prompt mutation",
+    "min_k_example": "Analyze Min-K example",
+    "min_k_stage": "Min-K probability analysis",
+    "agent_deploy": "Deploy analysis model",
+    "game_direct": "Game direct recall",
+    "game_mutations": "Game prompt mutations",
+    "game_evaluation": "Game response evaluation",
+    "game_knowledge_direct": "Game knowledge recall",
+    "game_knowledge_evaluation": "Game knowledge evaluation",
+}
+
+
+def _step_description(task, display):
+    step = display.get("current_step") or {}
+    if not isinstance(step, dict) or not step.get("operation"):
+        return "Preparing the first checkpoint" if _lease_active(task) else "No checkpoint recorded yet"
+    operation = str(step["operation"])
+    scope = step.get("scope") or []
+    name = _OPERATION_LABELS.get(operation, operation.replace(".", " / ").replace("_", " "))
+    if scope:
+        phase = str(scope[0])
+        name = _SCOPE_LABELS.get(phase, phase.replace("_", " ").capitalize())
+        parts = scope[1:]
+        if phase == "knowledge_qa" and len(parts) >= 2 and all(type(part) is int for part in parts[:2]):
+            name += f" / run {parts[0] + 1}, question {parts[1] + 1}"
+        elif phase == "sleek_qa" and len(parts) >= 2 and all(type(part) is int for part in parts[:2]):
+            name += f" / question {parts[0] + 1}, run {parts[1] + 1}"
+        else:
+            details = [f"item {part + 1}" if type(part) is int else str(part).replace("_", " ") for part in parts]
+            if details:
+                name += " / " + ", ".join(details)
+    index = step.get("index")
+    if type(index) is int:
+        name = f"Checkpoint {index + 1}: {name}"
+    if task.get("status") == "complete":
+        return "Finished / " + name
+    if not _lease_active(task):
+        return "Stopped at / " + name if task.get("stop_requested") else "Paused at / " + name
+    if task.get("stop_requested"):
+        return "Stopping at / " + name
+    if step.get("phase") == "complete":
+        return "Last completed / " + name
+    if step.get("phase") == "failed":
+        return "Failed / " + name
+    return "Current / " + name
+
+
+def _kill_saved_task(store, task_id):
+    """Signal only this owner's task, retaining its fenced recovery checkpoints."""
+    from src.run_cancellation import cancel_task
+    cancel_task(store.owner_id, str(task_id))
+    error_key = f"_analysis_kill_error:{task_id}"
+    try:
+        store.request_stop(str(task_id))
+    except Exception as exc:
+        diagnostic = classify_checkpoint_error(exc)
+        st.session_state[error_key] = (
+            "The cloud stop request failed. Retry Kill to stop this task across sessions. "
+            f"Saved progress is preserved. {diagnostic}"
+        )
+        return False
+    st.session_state.pop(error_key, None)
+    return True
+
+
 def render_analysis_recovery(page_key: str):
     if page_key == "Legal Cases Display":
         return
@@ -155,34 +259,39 @@ def render_analysis_recovery(page_key: str):
     if not tasks:
         return
     with st.expander("Saved analyses", expanded=any(t.get("status") != "complete" for t in tasks)):
-        st.caption("Resume with the original inputs and settings. Saved calls are reused.")
+        st.caption("Resume restores the original settings and saved calls. Kill stops a task and keeps its saved progress.")
+        if st.button("Refresh status", key=f"_analysis_refresh:{page_key}"):
+            st.rerun()
         for task in tasks:
             label = (task.get("settings") or {}).get("label", "Analysis")
             completed = int(task.get("completed_items") or 0)
             total = int(task.get("total_items") or 0)
+            failed = int(task.get("failed_items") or 0)
+            pending = max(0, total - completed - failed)
             status = str(task.get("status") or "incomplete")
             active = _lease_active(task)
-            stopping = bool(task.get("stop_requested")) and active
-            display_status = "Stopping" if stopping else {
-                "creating": "Preparing", "queued": "Queued", "running": "Running",
+            stop_requested = bool(task.get("stop_requested"))
+            stopping = stop_requested and active
+            display_status = "Stopping" if stopping else "Stopped" if stop_requested and status != "complete" else {
+                "creating": "Preparing", "queued": "Queued", "running": "Running" if active else "Paused",
                 "incomplete": "Paused", "complete": "Complete",
             }.get(status, status.capitalize())
-            progress = f"{completed} saved calls"
-            if total > completed:
-                progress += f" · {total - completed} unfinished"
-            updated = task.get("updated_at")
-            if updated:
-                try:
-                    stamp = datetime.fromisoformat(str(updated).replace("Z", "+00:00"))
-                    progress += f" · {stamp.astimezone(timezone.utc):%d %b, %H:%M} UTC"
-                except (TypeError, ValueError):
-                    pass
+            progress = f"{completed} saved checkpoints / {pending} pending / {failed} failed"
+            display = _task_display(task)
+            apis = display.get("apis") or []
             with st.container(border=True):
-                columns = st.columns([4, 1, 1] if active else [5, 1],
-                                     gap="small", vertical_alignment="center")
+                columns = st.columns([4, 1, 1], gap="small", vertical_alignment="center")
                 with columns[0]:
                     st.markdown(f"**{label}**")
-                    st.caption(f"{display_status} · {progress}")
+                    st.caption(f"{display_status} / {progress}")
+                    for api in apis:
+                        if isinstance(api, dict):
+                            provider = api.get("provider") or "Custom API"
+                            model = api.get("model") or "Not recorded"
+                            st.caption(f"API: {provider} / Model: {model}")
+                    if not apis:
+                        st.caption("API / Model: not recorded yet")
+                    st.caption(_step_description(task, display))
                 with columns[1]:
                     if st.button(
                         "View results" if status == "complete" else "Resume",
@@ -191,23 +300,47 @@ def render_analysis_recovery(page_key: str):
                     ):
                         st.session_state[PENDING_RESTORE] = {"task_id": str(task["id"])}
                         st.rerun()
+                with columns[2]:
+                    from src.job_guard import render_force_stop_button
+                    if render_force_stop_button(
+                        label="Stopping..." if stopping else "Kill", key=f"_analysis_kill:{task['id']}",
+                        on_click=lambda task_id=str(task["id"]): _kill_saved_task(store, task_id),
+                        disabled=stop_requested or status == "complete", width="stretch",
+                        help="Stop this task and preserve saved progress. Requests already sent may need time to finish.",
+                    ):
+                        st.rerun()
+                error = st.session_state.get(f"_analysis_kill_error:{task['id']}")
+                if error:
+                    st.warning(error)
+                with st.expander("Task details", expanded=False):
+                    st.caption(f"Task ID: {task['id']}")
+                    st.caption(f"Page: {task.get('page_key') or page_key}")
+                    for field, title in (("created_at", "Created"), ("updated_at", "Last updated")):
+                        value = task.get(field)
+                        if value:
+                            try:
+                                stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                                st.caption(f"{title}: {stamp.astimezone(timezone.utc):%Y-%m-%d %H:%M:%S} UTC")
+                            except (TypeError, ValueError):
+                                pass
+                    step = display.get("current_step") or {}
+                    if step.get("operation"):
+                        st.caption(f"Operation: {step['operation']}")
+                        phase = {"running": "Started", "complete": "Saved", "failed": "Failed; Resume can retry"}.get(step.get("phase"))
+                        if phase:
+                            st.caption(f"Checkpoint state: {phase}")
+                    for api in apis:
+                        if isinstance(api, dict) and api.get("endpoint"):
+                            st.text(f"{api.get('provider') or 'Custom API'} endpoint: {api['endpoint']}")
+                    st.caption("Checkpoints are recorded as the task runs; their count is not the total number of planned steps.")
+                    if not task.get("display") and apis:
+                        st.caption("This older task shows APIs from recent checkpoints and the latest saved step.")
                 if active:
-                    with columns[2]:
-                        from src.job_guard import render_force_stop_button
-                        if render_force_stop_button(
-                            label="Stopping…" if stopping else "Stop", key=f"_analysis_stop:{task['id']}",
-                            disabled=stopping, width="stretch",
-                            help="Stop now and keep saved progress. Other workers receive the request on their next progress check.",
-                        ):
-                            from src.run_cancellation import cancel_task
-                            cancel_task(store.owner_id, str(task["id"]))
-                            store.request_stop(str(task["id"]))
-                            st.rerun()
                     st.caption(
-                        "Resume is available after current requests finish."
+                        "Kill requested. Resume is available after current requests finish."
                         if stopping else
-                        "This task is active. After a server restart, resume becomes available within 3 minutes."
+                        "This task is active. After a server restart, Resume becomes available within 3 minutes."
                     )
-        if has_more and limit < 1000 and st.button("Show more", key="_analysis_show_older"):
+        if has_more and limit < 1000 and st.button("Show more", key=f"_analysis_show_older:{page_key}"):
             st.session_state[limit_key] = min(1000, limit + 50)
             st.rerun()

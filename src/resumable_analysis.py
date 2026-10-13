@@ -26,6 +26,7 @@ from src.run_cancellation import (
 from src.analysis_checkpoints import (
     AnalysisCheckpointError, OFFICIAL_GAME_PAGE_KEYS, classify_checkpoint_error,
 )
+from src.analysis_task_details import summarize_saved_items, update_task_display
 
 _CURRENT: ContextVar[Any] = ContextVar("analysis_journal", default=None)
 _SUPPRESSED: ContextVar[bool] = ContextVar("analysis_journal_suppressed", default=False)
@@ -302,10 +303,12 @@ class CallJournal:
         # A failed/racing claim must never replace the active worker's binding.
         self._unbind_cancellation = lambda: None
         self.cleanup_thread = None
+        self.metadata = deepcopy(task.get("metadata") or {})
         try:
             if not self.read_only:
                 self.task = store.claim(self.task_id, ttl_seconds=LEASE_TTL)
                 self.lease_token = self.task["lease_token"]
+                self.metadata.update(deepcopy(self.task.get("metadata") or {}))
             self.items = []
             while True:
                 batch = store.load_items(self.task_id, offset=len(self.items), limit=200)
@@ -330,6 +333,18 @@ class CallJournal:
                         raise AnalysisCheckpointError("The saved work item identity is duplicated.")
                     self.scoped_items[identity] = index
                     self.scopes_enabled = True
+            # Old checkpoints have no card summary. Recover their API history
+            # locally; a cached replay or completed task never writes it back.
+            restored_display = summarize_saved_items(self.items)
+            existing_display = self.metadata.get("display") or {}
+            if isinstance(existing_display, dict):
+                existing_apis = existing_display.get("apis") or []
+                for api in existing_apis if isinstance(existing_apis, list) else []:
+                    if isinstance(api, dict) and api not in restored_display["apis"]:
+                        restored_display["apis"].append(deepcopy(api))
+                if isinstance(existing_display.get("current_step"), dict):
+                    restored_display["current_step"] = deepcopy(existing_display["current_step"])
+            self.metadata["display"] = restored_display
         except Exception as exc:
             if self.lease_token:
                 try:
@@ -347,6 +362,14 @@ class CallJournal:
         if heartbeat and not self.read_only:
             self.thread = Thread(target=self._heartbeat, daemon=True, name="analysis-checkpoint-heartbeat")
             self.thread.start()
+
+    def _display_metadata(self, request: dict, index: int, phase: str) -> dict:
+        # Keep locally recovered API history when an old task's heartbeat
+        # returns metadata that does not yet contain all of its saved calls.
+        previous_display = self.metadata.get("display")
+        self.metadata.update(deepcopy(self.task.get("metadata") or {}))
+        self.metadata["display"] = update_task_display(previous_display, request, index, phase)
+        return deepcopy(self.metadata)
 
     def _heartbeat(self):
         while not self.stop_event.wait(HEARTBEAT_SECONDS):
@@ -423,8 +446,16 @@ class CallJournal:
                         self.unscoped_items.append(index)
                     self.visited_items.add(index)
                 # Refresh/check fencing immediately before every paid call.
-                task = self.store.heartbeat(self.task_id, self.lease_token, ttl_seconds=LEASE_TTL)
-                if task.get("stop_requested"):
+                self.task = self.store.heartbeat(self.task_id, self.lease_token, ttl_seconds=LEASE_TTL)
+                if self.task.get("stop_requested"):
+                    if self.cancellation_token is not None:
+                        self.cancellation_token.cancel()
+                    raise AnalysisCancelled("Analysis stopped. Saved progress is preserved.")
+                self.task = self.store.save_progress(
+                    self.task_id, metadata=self._display_metadata(request, index, "running"),
+                    lease_token=self.lease_token,
+                )
+                if self.task.get("stop_requested"):
                     if self.cancellation_token is not None:
                         self.cancellation_token.cancel()
                     raise AnalysisCancelled("Analysis stopped. Saved progress is preserved.")
@@ -441,6 +472,13 @@ class CallJournal:
                 result = invoke()
             except BaseException:
                 self.failed = True
+                try:
+                    self.task = self.store.save_progress(
+                        self.task_id, metadata=self._display_metadata(request, index, "failed"),
+                        lease_token=self.lease_token,
+                    )
+                except Exception:
+                    self.broken = True
                 raise
             finally:
                 _SUPPRESSED.reset(token)
@@ -454,6 +492,7 @@ class CallJournal:
                     status="complete" if success else "failed",
                     attempts=int(item.get("attempts") or 0) + 1,
                     error=None if success else "The API call did not return a successful result.",
+                    metadata=self._display_metadata(request, index, "complete" if success else "failed"),
                     lease_token=self.lease_token,
                 )
                 item.update(status="complete" if success else "failed", result=encoded,
@@ -478,7 +517,11 @@ class CallJournal:
                 return
             success = success and not (self.cancellation_token is not None and self.cancellation_token.cancelled)
             complete = success and not self.failed and not self.broken and (len(self.visited_items) == len(self.items) or self.verified_complete)
-            metadata = {"final_session": final_snapshot} if complete and final_snapshot is not None else {}
+            metadata = deepcopy(self.metadata)
+            metadata.update({key: deepcopy(value) for key, value in (self.task.get("metadata") or {}).items()
+                             if key != "display"})
+            if complete and final_snapshot is not None:
+                metadata["final_session"] = final_snapshot
 
             def release_checkpoint():
                 self.stop_event.set()

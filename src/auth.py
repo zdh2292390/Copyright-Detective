@@ -8,6 +8,7 @@ import json
 import secrets
 import threading
 import time
+from html import escape
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlencode, urlparse, urlunparse
@@ -117,12 +118,14 @@ OAUTH_POPUP_NAME = "copyright_detective_github_oauth"
 OAUTH_TOKEN_PARAM = "cd_at"
 OAUTH_REFRESH_PARAM = "cd_rt"
 OAUTH_PKCE_PARAM = "cd_cv"
+OAUTH_NAVIGATION_PARAM = "cd_nav"
 OAUTH_POPUP_FLAG = "oauth_window"
 OAUTH_CALLBACK_PARAMS = (
     "code",
     OAUTH_TOKEN_PARAM,
     OAUTH_REFRESH_PARAM,
     OAUTH_PKCE_PARAM,
+    OAUTH_NAVIGATION_PARAM,
     "access_token",
     "refresh_token",
     OAUTH_POPUP_FLAG,
@@ -130,6 +133,63 @@ OAUTH_CALLBACK_PARAMS = (
     "token_type",
     "provider_token",
 )
+
+# Navigation only: never put inputs, credentials or run triggers in a login URL.
+_AUTH_RETURN_PAGES = frozenset({
+    "Content Recall Detection", "Knowledge Memorization Detection",
+    "Persuasive Jailbreak Detection", "Unlearning Detection", "Legal Cases Display",
+})
+_AUTH_RETURN_GAMES = frozenset({
+    "Game 1: The Hidden Passage Hunt", "Game 2: The Cross-Model Scaling Quest",
+    "Game 3: The Memory Vault Hunt",
+})
+_AUTH_RETURN_NAVIGATION = {
+    "main_navigation": _AUTH_RETURN_PAGES | _AUTH_RETURN_GAMES,
+    "detection_navigation": _AUTH_RETURN_PAGES,
+    "game_navigation": _AUTH_RETURN_GAMES,
+    "content_recall_mode": frozenset({"Text Memorization Detection", "Document Memorization Detection"}),
+    "knowledge_detection_mode": frozenset({"Open-ended Question", "Single-choice Question"}),
+    "unlearning_detection_mode": frozenset({"MIN-K% PROB", "Representational Analysis"}),
+}
+
+
+def _oauth_navigation_payload() -> Optional[str]:
+    navigation = {
+        key: value for key, allowed in _AUTH_RETURN_NAVIGATION.items()
+        if isinstance(value := st.session_state.get(key), str) and value in allowed
+    }
+    return json.dumps(navigation, separators=(",", ":")) if navigation else None
+
+
+def _with_oauth_navigation(oauth_url: str) -> str:
+    navigation = _oauth_navigation_payload()
+    if not navigation:
+        return oauth_url
+    parsed = urlparse(oauth_url)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    redirect = urlparse((params.get("redirect_to") or [get_app_url()])[0])
+    redirect_params = parse_qs(redirect.query, keep_blank_values=True)
+    redirect_params[OAUTH_NAVIGATION_PARAM] = [navigation]
+    redirect = redirect._replace(query=urlencode(redirect_params, doseq=True))
+    params["redirect_to"] = [urlunparse(redirect)]
+    return urlunparse(parsed._replace(query=urlencode(params, doseq=True)))
+
+
+def _restore_oauth_navigation() -> None:
+    payload = _oauth_query_param(OAUTH_NAVIGATION_PARAM)
+    if not payload or len(payload) > 2048:
+        return
+    try:
+        navigation = json.loads(payload)
+    except (TypeError, ValueError):
+        return
+    if not isinstance(navigation, dict):
+        return
+    for key, allowed in _AUTH_RETURN_NAVIGATION.items():
+        value = navigation.get(key)
+        if isinstance(value, str) and value in allowed:
+            st.session_state[key] = value
+
 
 # Shared browser-side auth bridge: same-window cache restore, popup OAuth, postMessage back to opener.
 _AUTH_CLIENT_SCRIPT = f"""
@@ -195,6 +255,7 @@ _AUTH_CLIENT_SCRIPT = f"""
             {json.dumps(OAUTH_TOKEN_PARAM)},
             {json.dumps(OAUTH_REFRESH_PARAM)},
             {json.dumps(OAUTH_PKCE_PARAM)},
+            {json.dumps(OAUTH_NAVIGATION_PARAM)},
             "access_token",
             "refresh_token",
             {json.dumps(OAUTH_POPUP_FLAG)},
@@ -206,7 +267,7 @@ _AUTH_CLIENT_SCRIPT = f"""
         return url;
     }}
 
-    function restoreReturnUrlAfterLogin(targetWin) {{
+    function restoreReturnUrlAfterLogin(targetWin, navigation) {{
         const app = appWindow(targetWin);
         if (!app || !app.location) return false;
         const saved = readReturnUrl();
@@ -222,7 +283,11 @@ _AUTH_CLIENT_SCRIPT = f"""
 
         const current = stripOAuthParams(new URL(app.location.href.split("#")[0]));
         clearReturnUrl();
+        if (target.origin !== current.origin) return false;
         if (target.toString() !== current.toString()) {{
+            // Another full navigation recreates Streamlit's session. Carry only
+            // the validated page selection through the cached-session restore.
+            if (navigation) target.searchParams.set({json.dumps(OAUTH_NAVIGATION_PARAM)}, navigation);
             app.location.replace(target.toString());
             return true;
         }}
@@ -236,7 +301,7 @@ _AUTH_CLIENT_SCRIPT = f"""
         return (win && win.parent) ? win.parent : win;
     }}
 
-    function persistAuthCache(accessToken, refreshToken) {{
+    function persistAuthCache(accessToken, refreshToken, userId) {{
         if (!accessToken) return;
         const storage = appStorage();
         if (!storage) return;
@@ -246,7 +311,7 @@ _AUTH_CLIENT_SCRIPT = f"""
                 JSON.stringify({{
                     access_token: accessToken,
                     refresh_token: refreshToken || "",
-                    user_id: "",
+                    user_id: userId || "",
                 }})
             );
         }} catch (e) {{}}
@@ -393,16 +458,9 @@ _AUTH_CLIENT_SCRIPT = f"""
     function signInWithGitHub(targetWin, oauthUrl) {{
         if (!oauthUrl) return;
         const app = appWindow(targetWin);
-        if (restoreSessionInWindow(app)) return;
-
-        const popup = app.open(
-            oauthUrl,
-            POPUP_NAME,
-            "popup=yes,width=520,height=720,menubar=no,toolbar=no,location=yes,status=no,resizable=yes,scrollbars=yes"
-        );
-        if (!popup) {{
-            app.location.href = oauthUrl;
-        }}
+        if (!app || !app.location) return;
+        persistReturnUrl(stripOAuthParams(new URL(app.location.href.split("#")[0])).toString());
+        app.location.href = oauthUrl;
     }}
 
     window.__copyrightDetectiveAuth = {{
@@ -508,7 +566,16 @@ def _run_auth_client(
     if restore_pkce:
         flags.append("bridge.restorePkceVerifierToUrl(app);")
     if restore_return_url:
-        flags.append("bridge.restoreReturnUrlAfterLogin(app);")
+        access_token = st.session_state.get("access_token")
+        if access_token:
+            # One iframe writes the verified session before it navigates. Two
+            # separate iframe loads can otherwise finish in the opposite order.
+            flags.append(
+                f"bridge.persistAuthCache({json.dumps(access_token)}, "
+                f"{json.dumps(st.session_state.get('refresh_token') or '')}, "
+                f"{json.dumps(st.session_state.get('user_id') or '')});"
+            )
+        flags.append(f"bridge.restoreReturnUrlAfterLogin(app, {json.dumps(_oauth_navigation_payload())});")
     if restore_cache:
         flags.append(
             "if (!window.opener && !(app.location.search || '').includes('"
@@ -616,6 +683,7 @@ def _clear_oauth_query_params() -> None:
 def _complete_login(user, access_token: str, refresh_token: str) -> None:
     st.session_state.pop("_pkce_restore_attempted", None)
     _set_user_session(user, access_token, refresh_token)
+    _restore_oauth_navigation()
     _clear_oauth_query_params()
     _clear_pkce_state()
     _clear_pkce_browser_storage()
@@ -826,27 +894,38 @@ def _bind_return_url_on_sign_in_click(login_url: str) -> None:
             const bridge = window.__copyrightDetectiveAuth;
             if (!bridge) return;
             const app = bridge.appWindow(window.top);
-            const loginUrl = {login_url_json};
-            const sidebar = app.document.querySelector('section[data-testid="stSidebar"]');
-            if (!sidebar) return;
-            sidebar.querySelectorAll('[data-testid="stLinkButton"] a').forEach(function (link) {{
-                if (link.dataset.cdAuthBound) return;
-                const href = link.getAttribute("href") || "";
-                if (href !== loginUrl) return;
-                link.classList.add("github-sign-in-btn");
-                link.dataset.cdAuthBound = "1";
-                link.setAttribute("aria-label", "Sign in with GitHub");
-                link.addEventListener("click", function () {{
-                    try {{
-                        bridge.persistReturnUrl(app.location.href.split("#")[0]);
-                    }} catch (e) {{}}
-                }});
-            }});
+            app.__copyrightDetectiveGitHubLoginUrl = {login_url_json};
+            if (app.__copyrightDetectiveReturnUrlListener) return;
+            app.__copyrightDetectiveReturnUrlListener = true;
+            // Delegation also covers links mounted after this iframe runs.
+            // The native _self target works even before this listener exists.
+            app.document.addEventListener("click", function (event) {{
+                const link = event.target.closest && event.target.closest("a.github-sign-in-btn");
+                if (!link || link.getAttribute("href") !== app.__copyrightDetectiveGitHubLoginUrl) return;
+                try {{
+                    app.localStorage.setItem({json.dumps(RETURN_URL_BROWSER_KEY)}, app.location.href.split("#")[0]);
+                }} catch (e) {{}}
+            }}, true);
         }})();
         </script>
         """,
         height=1,
     )
+
+
+def _github_sign_in_link_html(login_url: str, *, disabled: bool = False) -> str:
+    label = "Sign in with GitHub"
+    if disabled:
+        control = (
+            '<button type="button" class="github-sign-in-btn github-sign-in-btn--disabled" '
+            f'disabled aria-disabled="true">{label}</button>'
+        )
+    else:
+        control = (
+            f'<a class="github-sign-in-btn" href="{escape(login_url, quote=True)}" '
+            f'target="_self" rel="noopener" aria-label="{label}">{label}</a>'
+        )
+    return f'<div data-testid="stLinkButton">{control}</div>'
 
 
 def render_github_sign_in_button(*, disabled: bool = False) -> None:
@@ -857,12 +936,10 @@ def render_github_sign_in_button(*, disabled: bool = False) -> None:
     if not login_url:
         return
 
-    st.link_button(
-        "Sign in with GitHub",
-        login_url,
-        width="stretch",
-        disabled=disabled,
-    )
+    login_url = _with_oauth_navigation(login_url)
+    # st.link_button always opens a new tab. Reuse the existing button styles
+    # with a native same-tab anchor; PKCE still survives a fresh app session.
+    st.markdown(_github_sign_in_link_html(login_url, disabled=disabled), unsafe_allow_html=True)
     if not disabled:
         _bind_return_url_on_sign_in_click(login_url)
 

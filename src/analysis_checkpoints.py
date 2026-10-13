@@ -177,7 +177,11 @@ _TASK_COLUMNS = (
 )
 _SUMMARY_COLUMNS = (
     "id,owner_id,page_key,settings,dynamic_items,server_managed,total_items,status,completed_items,"
-    "failed_items,stop_requested,lease_expires_at,revision,created_at,updated_at"
+    "failed_items,stop_requested,lease_expires_at,revision,created_at,updated_at,display:metadata->display,"
+    "latest_items:analysis_items(item_index,status,updated_at,operation:input->>operation,scope:input->scope,"
+    "provider:input->request->>provider,model:input->request->>model,model_name:input->request->>model_name,"
+    "endpoint:input->request->>endpoint,base_url:input->request->>base_url,"
+    "agent_url:input->request->>agent_url,model_path:input->request->>model_path)"
 )
 _ITEM_COLUMNS = "task_id,owner_id,item_index,input,status,result,error,attempts,updated_at"
 
@@ -368,6 +372,12 @@ class SupabaseAnalysisCheckpointStore:
             raise AnalysisCheckpointError("summary_only must be a boolean.")
         columns = _SUMMARY_COLUMNS if summary_only else _TASK_COLUMNS
         query = self.client.table("analysis_tasks").select(columns).eq("owner_id", self.owner_id)
+        if summary_only:
+            # Recent compact legacy checkpoints, without prompts/results or
+            # large session snapshots. The display metadata tracks newer runs.
+            query = (query.order("updated_at", desc=True, foreign_table="latest_items")
+                     .order("item_index", desc=True, foreign_table="latest_items")
+                     .range(0, 4, foreign_table="latest_items"))
         if page_key is not None:
             query = query.eq("page_key", page_key)
         if statuses is not None:

@@ -1,33 +1,162 @@
 -- Read-only diagnostics. Run in the same project used by SUPABASE_URL.
--- Both table rows should show true in all three boolean columns.
-with expected(table_name) as (values ('analysis_tasks'), ('analysis_items'))
+-- Only PostgreSQL catalogs are read; no task content or credentials are selected.
+-- Functional checks below should be true. If a column/RPC/FK is missing or wrong,
+-- rerun analysis_checkpoints.sql before applying analysis_saved_details.sql.
+
+-- Both tables need RLS and SELECT for browser reads and service-role workers.
+-- The policy expression is included for review: it should scope auth.uid() to owner_id.
+with expected(table_name, policy_name) as (values
+    ('analysis_tasks', 'analysis_tasks_owner_read'),
+    ('analysis_items', 'analysis_items_owner_read')
+), roles as (
+    select (select oid from pg_roles where rolname = 'authenticated') as authenticated_oid,
+           (select oid from pg_roles where rolname = 'service_role') as service_role_oid
+)
 select expected.table_name,
-       c.oid is not null as table_exists,
+       coalesce(c.relkind in ('r', 'p'), false) as table_exists,
        coalesce(c.relrowsecurity, false) as rls_enabled,
-       coalesce(has_table_privilege('authenticated', c.oid, 'SELECT'), false) as authenticated_can_read
+       coalesce(has_table_privilege(roles.authenticated_oid, c.oid, 'SELECT'), false) as authenticated_can_read,
+       coalesce(has_table_privilege(roles.service_role_oid, c.oid, 'SELECT'), false) as service_role_can_read,
+       coalesce(p.polcmd = 'r' and p.polpermissive
+           and roles.authenticated_oid = any(p.polroles), false) as owner_read_policy_present,
+       pg_get_expr(p.polqual, p.polrelid) as owner_read_policy_expression
 from expected
+cross join roles
 left join pg_class c on c.oid = to_regclass('public.' || expected.table_name)
+left join pg_policy p on p.polrelid = c.oid and p.polname = expected.policy_name
 order by expected.table_name;
 
--- This must be true, including on installations upgraded from older versions.
-select exists (
-    select 1 from information_schema.columns
-    where table_schema = 'public' and table_name = 'analysis_tasks'
-      and column_name = 'server_managed' and data_type = 'boolean'
-) as server_managed_column_exists;
-
--- All ten RPC rows should show true for exists/grant/security-definer checks.
-with expected(name) as (values
-    ('analysis_create_task'), ('analysis_put_items'), ('analysis_finalize_task'),
-    ('analysis_claim'), ('analysis_heartbeat'), ('analysis_append_item'),
-    ('analysis_save_items'), ('analysis_release'), ('analysis_request_stop'), ('analysis_delete')
+-- Every column selected by _TASK_COLUMNS, _ITEM_COLUMNS and the compact
+-- Saved Analysis summary must exist with the expected type and nullability.
+-- Display details live in metadata->display; latest item API/step details use input.
+with expected(table_name, column_name, expected_type, expected_not_null) as (values
+    ('analysis_tasks', 'id', 'uuid', true),
+    ('analysis_tasks', 'owner_id', 'uuid', true),
+    ('analysis_tasks', 'page_key', 'text', true),
+    ('analysis_tasks', 'fingerprint', 'text', true),
+    ('analysis_tasks', 'settings', 'jsonb', true),
+    ('analysis_tasks', 'source', 'jsonb', true),
+    ('analysis_tasks', 'metadata', 'jsonb', true),
+    ('analysis_tasks', 'dynamic_items', 'boolean', true),
+    ('analysis_tasks', 'server_managed', 'boolean', true),
+    ('analysis_tasks', 'total_items', 'integer', true),
+    ('analysis_tasks', 'status', 'text', true),
+    ('analysis_tasks', 'completed_items', 'integer', true),
+    ('analysis_tasks', 'failed_items', 'integer', true),
+    ('analysis_tasks', 'stop_requested', 'boolean', true),
+    ('analysis_tasks', 'lease_token', 'uuid', false),
+    ('analysis_tasks', 'lease_generation', 'bigint', true),
+    ('analysis_tasks', 'lease_expires_at', 'timestamp with time zone', false),
+    ('analysis_tasks', 'revision', 'bigint', true),
+    ('analysis_tasks', 'created_at', 'timestamp with time zone', true),
+    ('analysis_tasks', 'updated_at', 'timestamp with time zone', true),
+    ('analysis_items', 'task_id', 'uuid', true),
+    ('analysis_items', 'owner_id', 'uuid', true),
+    ('analysis_items', 'item_index', 'integer', true),
+    ('analysis_items', 'input', 'jsonb', true),
+    ('analysis_items', 'status', 'text', true),
+    ('analysis_items', 'result', 'jsonb', false),
+    ('analysis_items', 'error', 'text', false),
+    ('analysis_items', 'attempts', 'integer', true),
+    ('analysis_items', 'updated_at', 'timestamp with time zone', true)
 )
-select expected.name as rpc,
-       count(p.oid) > 0 as rpc_exists,
-       coalesce(bool_or(has_function_privilege('authenticated', p.oid, 'EXECUTE')), false) as authenticated_can_execute,
-       coalesce(bool_or(p.prosecdef), false) as security_definer
+select expected.table_name, expected.column_name, expected.expected_type,
+       a.attnum is not null as column_exists,
+       coalesce(a.atttypid = to_regtype(expected.expected_type), false) as type_matches,
+       coalesce(a.attnotnull = expected.expected_not_null, false) as nullability_matches
 from expected
-left join pg_namespace n on n.nspname = 'public'
-left join pg_proc p on p.pronamespace = n.oid and p.proname = expected.name
- group by expected.name
- order by expected.name;
+left join pg_class c on c.oid = to_regclass('public.' || expected.table_name)
+left join pg_attribute a on a.attrelid = c.oid and a.attname = expected.column_name
+    and a.attnum > 0 and not a.attisdropped
+order by expected.table_name, expected.column_name;
+
+-- PostgREST needs this owner-scoped relationship for latest_items:analysis_items(...).
+-- Match columns rather than a generated constraint name. A validated, cascading
+-- composite FK also prevents cross-owner items and preserves task-delete behavior.
+with matching_fk as (
+    select con.convalidated, con.confdeltype
+    from pg_constraint con
+    where con.contype = 'f'
+      and con.conrelid = to_regclass('public.analysis_items')
+      and con.confrelid = to_regclass('public.analysis_tasks')
+      and array(
+          select a.attname::text
+          from unnest(con.conkey) with ordinality as key_column(attnum, position)
+          join pg_attribute a on a.attrelid = con.conrelid and a.attnum = key_column.attnum
+          order by key_column.position
+      ) = array['task_id', 'owner_id']::text[]
+      and array(
+          select a.attname::text
+          from unnest(con.confkey) with ordinality as key_column(attnum, position)
+          join pg_attribute a on a.attrelid = con.confrelid and a.attnum = key_column.attnum
+          order by key_column.position
+      ) = array['id', 'owner_id']::text[]
+)
+select count(*) > 0 as owner_task_foreign_key_exists,
+       coalesce(bool_or(convalidated and confdeltype = 'c'), false) as validated_cascading_relationship_ready
+from matching_fk;
+
+-- Performance check, not a functional prerequisite: the recent-item index lets
+-- each Saved Analysis summary retrieve five latest items without sorting a task's
+-- whole journal. A missing index does not change results or Kill/Resume behavior.
+-- analysis_saved_details.sql adds this index; the base migration also includes it.
+select i.indexrelid is not null as latest_items_index_exists,
+       coalesce(i.indisvalid and i.indisready and am.amname = 'btree'
+           and i.indrelid = to_regclass('public.analysis_items')
+           and i.indnkeyatts = 4 and i.indnatts = 4 and i.indpred is null
+           and array(
+               select a.attname::text
+               from unnest(i.indkey) with ordinality as key_column(attnum, position)
+               join pg_attribute a on a.attrelid = i.indrelid and a.attnum = key_column.attnum
+               order by key_column.position
+           ) = array['task_id', 'owner_id', 'updated_at', 'item_index']::text[]
+           and (i.indoption[0] & 1) = 0 and (i.indoption[1] & 1) = 0
+           and (i.indoption[2] & 1) = 1 and (i.indoption[3] & 1) = 1,
+           false) as latest_items_index_ready
+from (select to_regclass('public.analysis_items_task_updated_idx') as oid) expected
+left join pg_index i on i.indexrelid = expected.oid
+left join pg_class c on c.oid = i.indexrelid
+left join pg_am am on am.oid = c.relam;
+
+-- All ten lifecycle RPCs must have these exact argument types and names, because
+-- the Python store invokes PostgREST with named p_* JSON arguments. Matching a
+-- function name alone can hide a stale overload, missing argument, or wrong type.
+-- Kill uses analysis_request_stop; metadata saves use analysis_save_items/release.
+with expected(name, signature, parameter_names) as (values
+    ('analysis_create_task',
+     'public.analysis_create_task(uuid,uuid,text,jsonb,jsonb,integer,text,jsonb,boolean)',
+     array['p_owner_id','p_task_id','p_page_key','p_settings','p_source','p_total_items','p_fingerprint','p_metadata','p_dynamic_items']::text[]),
+    ('analysis_put_items', 'public.analysis_put_items(uuid,uuid,jsonb)',
+     array['p_owner_id','p_task_id','p_items']::text[]),
+    ('analysis_finalize_task', 'public.analysis_finalize_task(uuid,uuid)',
+     array['p_owner_id','p_task_id']::text[]),
+    ('analysis_claim', 'public.analysis_claim(uuid,uuid,uuid,integer)',
+     array['p_owner_id','p_task_id','p_lease_token','p_ttl_seconds']::text[]),
+    ('analysis_heartbeat', 'public.analysis_heartbeat(uuid,uuid,uuid,integer)',
+     array['p_owner_id','p_task_id','p_lease_token','p_ttl_seconds']::text[]),
+    ('analysis_append_item', 'public.analysis_append_item(uuid,uuid,integer,jsonb,uuid)',
+     array['p_owner_id','p_task_id','p_index','p_input','p_lease_token']::text[]),
+    ('analysis_save_items', 'public.analysis_save_items(uuid,uuid,jsonb,jsonb,text,uuid)',
+     array['p_owner_id','p_task_id','p_updates','p_metadata','p_status','p_lease_token']::text[]),
+    ('analysis_release', 'public.analysis_release(uuid,uuid,uuid,text,jsonb)',
+     array['p_owner_id','p_task_id','p_lease_token','p_status','p_metadata']::text[]),
+    ('analysis_request_stop', 'public.analysis_request_stop(uuid,uuid)',
+     array['p_owner_id','p_task_id']::text[]),
+    ('analysis_delete', 'public.analysis_delete(uuid,uuid)',
+     array['p_owner_id','p_task_id']::text[])
+), roles as (
+    select (select oid from pg_roles where rolname = 'authenticated') as authenticated_oid,
+           (select oid from pg_roles where rolname = 'service_role') as service_role_oid
+)
+select expected.name as rpc, expected.signature as expected_signature,
+       p.oid is not null as exact_signature_exists,
+       coalesce(p.proargnames = expected.parameter_names and p.proargmodes is null
+           and p.pronargs = cardinality(expected.parameter_names), false) as parameter_names_match,
+       coalesce(p.prokind = 'f' and p.prorettype = to_regtype('jsonb') and not p.proretset, false) as returns_jsonb,
+       coalesce(has_function_privilege(roles.authenticated_oid, p.oid, 'EXECUTE'), false) as authenticated_can_execute,
+       coalesce(has_function_privilege(roles.service_role_oid, p.oid, 'EXECUTE'), false) as service_role_can_execute,
+       coalesce(p.prosecdef, false) as security_definer
+from expected
+cross join roles
+left join pg_proc p on p.oid = to_regprocedure(expected.signature)
+order by expected.name;
