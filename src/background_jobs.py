@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timezone
 from threading import Lock, Thread
+from time import monotonic
 from typing import Any, Callable, Dict, Optional
 from uuid import uuid4
 
@@ -27,6 +28,38 @@ _LOCK = Lock()
 _JOBS: Dict[str, Dict[str, Any]] = {}
 _ACTIVE_STATUSES = frozenset({"queued", "running", "stopping"})
 _SESSION_KEY = "_background_jobs_session_id"
+_TERMINAL_STATUSES = frozenset({"completed", "failed", "stopped"})
+# Keep recent or actively viewed results. Durable cloud tasks remain in Supabase;
+# only abandoned process-local records are eligible for cleanup.
+_TERMINAL_RETENTION_SECONDS = 24 * 60 * 60
+_PRUNE_INTERVAL_SECONDS = 60
+_NEXT_PRUNE_AT = 0.0
+
+
+def _prune_finished_jobs_locked() -> None:
+    """Remove terminal records idle for a day; callers hold _LOCK."""
+    global _NEXT_PRUNE_AT
+    now = monotonic()
+    if now < _NEXT_PRUNE_AT:
+        return
+    _NEXT_PRUNE_AT = now + _PRUNE_INTERVAL_SECONDS
+    for key, record in list(_JOBS.items()):
+        if record.get("status") not in _TERMINAL_STATUSES:
+            continue
+        finished = record.get("_finished_monotonic")
+        # Treat records without our timestamps conservatively as fresh.
+        if finished is None:
+            continue
+        accessed = record.get("_last_accessed_monotonic", finished)
+        if now - max(finished, accessed) >= _TERMINAL_RETENTION_SECONDS:
+            _JOBS.pop(key, None)
+
+
+def _clear_finished_handles_locked(record: Dict[str, Any]) -> None:
+    """Break Future callback references to journals, inputs and cloud clients."""
+    if record.get("status") in _TERMINAL_STATUSES:
+        record["_future"] = None
+        record["_cancel_token"] = None
 
 
 def _now() -> str:
@@ -51,6 +84,7 @@ def _origin() -> tuple[Optional[str], str]:
 def submit_background_job(key: str, label: str, runner: JobRunner) -> bool:
     """Submit once per key; active and stopping jobs cannot be replaced."""
     with _LOCK:
+        _prune_finished_jobs_locked()
         existing = _JOBS.get(key)
         if existing and existing.get("status") in _ACTIVE_STATUSES:
             return False
@@ -63,6 +97,7 @@ def submit_background_job(key: str, label: str, runner: JobRunner) -> bool:
         journal = prepare_background_journal(key, label)
     owner_id, session_id = _origin()
     with _LOCK:
+        _prune_finished_jobs_locked()
         existing = _JOBS.get(key)
         if existing and existing.get("status") in _ACTIVE_STATUSES:
             if journal is not None:
@@ -86,6 +121,7 @@ def submit_background_job(key: str, label: str, runner: JobRunner) -> bool:
             "session_id": session_id,
             "_cancel_token": token,
             "_future": None,
+            "_last_accessed_monotonic": monotonic(),
         }
         _JOBS[key] = record
 
@@ -110,9 +146,13 @@ def submit_background_job(key: str, label: str, runner: JobRunner) -> bool:
                 message="Run failed",
                 finished_at=_now(),
                 result=None,
+                _finished_monotonic=monotonic(),
             )
+            _clear_finished_handles_locked(record)
+            _prune_finished_jobs_locked()
 
     def stopped(checkpoint_released: bool) -> None:
+        nonlocal journal, runner
         with _LOCK:
             if _JOBS.get(key) is not record:
                 return
@@ -124,7 +164,14 @@ def submit_background_job(key: str, label: str, runner: JobRunner) -> bool:
                          "Stopped. Saved steps remain available; the cloud lease will expire shortly."),
                 finished_at=_now(),
                 result=None,
+                _finished_monotonic=monotonic(),
             )
+            _clear_finished_handles_locked(record)
+            # A cancelled executor WorkItem can remain queued behind another
+            # runner. Drop its closure's journal after checkpoint cleanup too.
+            journal = None
+            runner = None
+            _prune_finished_jobs_locked()
 
     def stop_after_cleanup() -> None:
         # Some SDKs cannot abort a request already accepted by the provider.
@@ -197,6 +244,7 @@ def submit_background_job(key: str, label: str, runner: JobRunner) -> bool:
                         current=record["total"],
                         message="Completed",
                         finished_at=_now(),
+                        _finished_monotonic=monotonic(),
                     )
         except AnalysisCancelled:
             stop_after_cleanup()
@@ -211,9 +259,19 @@ def submit_background_job(key: str, label: str, runner: JobRunner) -> bool:
                 fail(exc)
 
     def on_done(future: Any) -> None:
+        nonlocal journal, runner
         if future.cancelled():
             token.cancel()
             stop_after_cleanup()
+        with _LOCK:
+            if record.get("status") in _TERMINAL_STATUSES:
+                journal = None
+                runner = None
+            # Registering the callback after assigning _future also handles a
+            # runner that finishes before executor.submit returns.
+            if _JOBS.get(key) is record:
+                _clear_finished_handles_locked(record)
+                _prune_finished_jobs_locked()
 
     try:
         future = _EXECUTOR.submit(execute)
@@ -263,6 +321,9 @@ def force_stop_background_job(key: str, owner_id: Optional[str] = None) -> bool:
 def get_background_job(key: str) -> Optional[Dict[str, Any]]:
     with _LOCK:
         state = _JOBS.get(key)
+        if state is not None:
+            state["_last_accessed_monotonic"] = monotonic()
+        _prune_finished_jobs_locked()
         snapshot = {name: value for name, value in state.items() if not name.startswith("_")} if state is not None else None
     return deepcopy(snapshot) if snapshot is not None else None
 
@@ -279,6 +340,9 @@ def forget_background_job(key: str) -> bool:
 def background_job_running(key: str) -> bool:
     with _LOCK:
         state = _JOBS.get(key)
+        if state is not None:
+            state["_last_accessed_monotonic"] = monotonic()
+        _prune_finished_jobs_locked()
         return bool(state and state.get("status") in _ACTIVE_STATUSES)
 
 

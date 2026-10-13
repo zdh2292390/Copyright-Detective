@@ -12,6 +12,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
+import tempfile
 from typing import Any, Iterable, Mapping
 from urllib.parse import parse_qsl, urlsplit
 from uuid import UUID, uuid4
@@ -184,6 +186,15 @@ _SUMMARY_COLUMNS = (
     "agent_url:input->request->>agent_url,model_path:input->request->>model_path)"
 )
 _ITEM_COLUMNS = "task_id,owner_id,item_index,input,status,result,error,attempts,updated_at"
+# Only retry operations whose SQL contract is idempotent for these exact
+# owner/task/lease arguments. Append and release can commit before a lost
+# response and require reconciliation; never repeat those blindly.
+_RETRYABLE_RPCS = frozenset({
+    "create_task", "put_items", "finalize_task", "claim", "heartbeat",
+    "save_items", "request_stop", "delete",
+})
+_CHECKPOINT_ATTEMPTS = 2
+_CHECKPOINT_RETRY_DELAY = 0.25
 
 
 def _uuid(value: str, name: str) -> str:
@@ -279,20 +290,33 @@ class SupabaseAnalysisCheckpointStore:
 
     def _rpc(self, method: str, **params: Any) -> dict[str, Any]:
         arguments = {"p_owner_id": self.owner_id, **params}
-        try:
-            return _row(self.client.rpc(f"analysis_{method}", arguments).execute())
-        except AnalysisCheckpointError:
-            raise
-        except Exception as exc:
-            raise classify_checkpoint_error(exc, operation="write") from exc
+        attempts = _CHECKPOINT_ATTEMPTS if method in _RETRYABLE_RPCS else 1
+        for attempt in range(attempts):
+            try:
+                return _row(self.client.rpc(f"analysis_{method}", arguments).execute())
+            except Exception as exc:
+                diagnostic = classify_checkpoint_error(exc, operation="write")
+                if diagnostic.kind != "network" or attempt + 1 == attempts:
+                    if diagnostic is exc:
+                        raise
+                    raise diagnostic from exc
+                # Keep checkpoint writes available after user cancellation so a
+                # returned result and an incomplete-task state can be saved.
+                time.sleep(_CHECKPOINT_RETRY_DELAY)
+        raise AssertionError("Unreachable checkpoint retry state")
 
     def _query(self, query: Any) -> list[dict[str, Any]]:
-        try:
-            return _rows(query.execute())
-        except AnalysisCheckpointError:
-            raise
-        except Exception as exc:
-            raise classify_checkpoint_error(exc, operation="read") from exc
+        for attempt in range(_CHECKPOINT_ATTEMPTS):
+            try:
+                return _rows(query.execute())
+            except Exception as exc:
+                diagnostic = classify_checkpoint_error(exc, operation="read")
+                if diagnostic.kind != "network" or attempt + 1 == _CHECKPOINT_ATTEMPTS:
+                    if diagnostic is exc:
+                        raise
+                    raise diagnostic from exc
+                time.sleep(_CHECKPOINT_RETRY_DELAY)
+        raise AssertionError("Unreachable checkpoint retry state")
 
     def create_task(
         self, page_key: str, settings: Mapping[str, Any], source: Any,
@@ -307,56 +331,71 @@ class SupabaseAnalysisCheckpointStore:
         safe_settings = _json(settings, "settings", object_only=True)
         safe_source = _json(source, "source")
         safe_metadata = _json(metadata or {}, "metadata", object_only=True)
-        items = []
-        digest = hashlib.sha256()
-        for value in (page_key, safe_settings, safe_source, dynamic_items):
-            digest.update(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
-            digest.update(b"\0")
-        for index, payload in enumerate(work_items):
-            _integer(index, "item index", 0, _MAX_ITEMS - 1)
-            safe_payload = _json(payload, "work item")
-            encoded = json.dumps(safe_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            if len(encoded) > _MAX_BATCH_BYTES:
-                raise AnalysisCheckpointError("A work item exceeds the batch size limit.")
-            digest.update(encoded)
-            digest.update(b"\0")
-            items.append({"index": index, "input": safe_payload})
-        if dynamic_items and items:
-            raise AnalysisCheckpointError("Dynamic tasks must start with an empty work item list.")
-        if fingerprint is None:
-            fingerprint = digest.hexdigest()
-        if not isinstance(fingerprint, str) or not re.fullmatch(r"[a-f0-9]{64}", fingerprint):
-            raise AnalysisCheckpointError("fingerprint must be a lowercase SHA-256 digest.")
-        identity = _uuid(task_id or str(uuid4()), "task_id")
-        task = self._rpc("create_task", p_task_id=identity, p_page_key=page_key,
-                         p_settings=safe_settings, p_source=safe_source,
-                         p_total_items=len(items), p_fingerprint=fingerprint,
-                         p_metadata=safe_metadata, p_dynamic_items=dynamic_items)
-        # Creation can be retried with the same UUID after a partial upload.
-        if task.get("status") != "creating":
-            if not dynamic_items:
-                # An explicit caller fingerprint must not conceal changed inputs.
-                for offset in range(0, len(items), self.batch_size):
-                    stored = self.load_items(identity, offset=offset, limit=self.batch_size)
-                    expected = items[offset:offset + self.batch_size]
-                    if len(stored) != len(expected) or any(
-                        row.get("item_index") != item["index"] or row.get("input") != item["input"]
-                        for row, item in zip(stored, expected)
-                    ):
-                        raise AnalysisCheckpointError("Analysis work inputs cannot be changed when resuming a task.")
-            return task
-        batch: list[dict[str, Any]] = []
-        byte_count = 0
-        for item in items:
-            size = len(json.dumps(item, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-            if batch and (len(batch) >= self.batch_size or byte_count + size > _MAX_BATCH_BYTES):
+        # Validate/hash the complete manifest before any database write, while
+        # spilling large inputs to a private temporary file rather than keeping
+        # a second copy of every document chunk in memory.
+        with tempfile.SpooledTemporaryFile(max_size=_MAX_BATCH_BYTES, mode="w+b") as manifest:
+            digest = hashlib.sha256()
+            for value in (page_key, safe_settings, safe_source, dynamic_items):
+                digest.update(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+                digest.update(b"\0")
+            count = 0
+            for index, payload in enumerate(work_items):
+                _integer(index, "item index", 0, _MAX_ITEMS - 1)
+                safe_payload = _json(payload, "work item")
+                encoded = json.dumps(safe_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                row = {"index": index, "input": safe_payload}
+                encoded_row = json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                # Include the enclosing array even for a single-item batch.
+                if len(encoded_row) + 2 > _MAX_BATCH_BYTES:
+                    raise AnalysisCheckpointError("A work item exceeds the batch size limit.")
+                digest.update(encoded)
+                digest.update(b"\0")
+                manifest.write(encoded_row + b"\n")
+                count += 1
+            if dynamic_items and count:
+                raise AnalysisCheckpointError("Dynamic tasks must start with an empty work item list.")
+            if fingerprint is None:
+                fingerprint = digest.hexdigest()
+            if not isinstance(fingerprint, str) or not re.fullmatch(r"[a-f0-9]{64}", fingerprint):
+                raise AnalysisCheckpointError("fingerprint must be a lowercase SHA-256 digest.")
+            identity = _uuid(task_id or str(uuid4()), "task_id")
+            task = self._rpc("create_task", p_task_id=identity, p_page_key=page_key,
+                             p_settings=safe_settings, p_source=safe_source,
+                             p_total_items=count, p_fingerprint=fingerprint,
+                             p_metadata=safe_metadata, p_dynamic_items=dynamic_items)
+
+            def batches():
+                manifest.seek(0)
+                batch = []
+                byte_count = 2  # Opening/closing array brackets.
+                for line in manifest:
+                    size = len(line) - 1
+                    separator_size = 1 if batch else 0
+                    if batch and (len(batch) >= self.batch_size
+                                  or byte_count + separator_size + size > _MAX_BATCH_BYTES):
+                        yield batch
+                        batch, byte_count = [], 2
+                        separator_size = 0
+                    batch.append(json.loads(line))
+                    byte_count += separator_size + size
+                if batch:
+                    yield batch
+
+            # Creation can be retried with the same UUID after partial upload.
+            if task.get("status") != "creating":
+                if not dynamic_items:
+                    for expected in batches():
+                        stored = self.load_items(identity, offset=expected[0]["index"], limit=len(expected))
+                        if len(stored) != len(expected) or any(
+                            row.get("item_index") != item["index"] or row.get("input") != item["input"]
+                            for row, item in zip(stored, expected)
+                        ):
+                            raise AnalysisCheckpointError("Analysis work inputs cannot be changed when resuming a task.")
+                return task
+            for batch in batches():
                 self._rpc("put_items", p_task_id=identity, p_items=batch)
-                batch, byte_count = [], 0
-            batch.append(item)
-            byte_count += size
-        if batch:
-            self._rpc("put_items", p_task_id=identity, p_items=batch)
-        return self._rpc("finalize_task", p_task_id=identity)
+            return self._rpc("finalize_task", p_task_id=identity)
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         task_id = _uuid(task_id, "task_id")

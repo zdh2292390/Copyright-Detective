@@ -104,54 +104,89 @@ def cancellable_call(invoke: Callable, *args, **kwargs):
     if _IN_CALL.get():
         return invoke(*args, **kwargs)
     from src.api_concurrency import retain_api_slot
+    release_slot = None
+    closed_response = False
+    close_lock = Lock()
+
+    def close_discarded_response(value):
+        nonlocal closed_response
+        with close_lock:
+            if closed_response:
+                return
+            closed_response = True
+        close = getattr(value, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+
     token._begin_call()
-    release_slot = retain_api_slot()
-    result = Future()
-    context = copy_context()
-
-    def execute():
-        binding = _IN_CALL.set(True)
-        try:
-            token.check()
-            value = invoke(*args, **kwargs)
-            if token.cancelled:
-                # A late raw HTTP response no longer has a caller to close it.
-                close = getattr(value, "close", None)
-                if callable(close):
-                    try:
-                        close()
-                    except Exception:
-                        pass
-                token.check()
-        except BaseException as exc:
-            result.set_exception(exc)
-        else:
-            result.set_result(value)
-        finally:
-            _IN_CALL.reset(binding)
-            if release_slot is not None:
-                release_slot()
-            token._end_call()
-
     try:
+        # Every allocation after increasing pending_count belongs to rollback.
+        release_slot = retain_api_slot()
+        result = Future()
+        context = copy_context()
+
+        def discard_published_response(future):
+            try:
+                value = future.result()
+            except BaseException:
+                return
+            close_discarded_response(value)
+
+        def execute():
+            binding = None
+            try:
+                binding = _IN_CALL.set(True)
+                token.check()
+                value = invoke(*args, **kwargs)
+                if token.cancelled:
+                    close_discarded_response(value)
+                    token.check()
+            except BaseException as exc:
+                result.set_exception(exc)
+            else:
+                result.set_result(value)
+            finally:
+                try:
+                    if binding is not None:
+                        _IN_CALL.reset(binding)
+                finally:
+                    try:
+                        if release_slot is not None:
+                            release_slot()
+                    finally:
+                        token._end_call()
+
         Thread(target=lambda: context.run(execute), daemon=True, name="analysis-api-request").start()
     except BaseException:
-        if release_slot is not None:
-            release_slot()
-        token._end_call()
-        raise
-    while True:
-        token.check()
         try:
-            value = result.result(timeout=0.05)
-        except FutureTimeout:
-            if result.done():
-                # A provider TimeoutError is different from this polling timeout.
-                token.check()
-                return result.result()
-            continue
-        token.check()
-        return value
+            if release_slot is not None:
+                release_slot()
+        finally:
+            token._end_call()
+        raise
+
+    try:
+        while True:
+            token.check()
+            try:
+                value = result.result(timeout=0.05)
+            except FutureTimeout:
+                if result.done():
+                    # A provider TimeoutError differs from this polling timeout.
+                    token.check()
+                    return result.result()
+                continue
+            token.check()
+            return value
+    except AnalysisCancelled:
+        # Cancellation can land after the worker's close check but before the
+        # caller accepts the published response. A callback covers both already
+        # published and still pending values, with exactly one cleanup owner.
+        result.add_done_callback(discard_published_response)
+        raise
 
 
 _TASK_TOKENS = {}

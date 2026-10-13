@@ -220,21 +220,57 @@ def _normalize_token_for_matching(token: str) -> str:
 
 
 def _lcs_length(seq1: List[str], seq2: List[str]) -> int:
+    """Return exact LCS length using compiled indel distance for text tokens."""
     if not seq1 or not seq2:
         return 0
 
     len1, len2 = len(seq1), len(seq2)
-    previous = [0] * (len2 + 1)
-    current = [0] * (len2 + 1)
 
-    for i in range(1, len1 + 1):
-        for j in range(1, len2 + 1):
-            if seq1[i - 1] == seq2[j - 1]:
+    def compiled_text_lcs():
+        if type(seq1) is str and type(seq2) is str:
+            left, right = seq1, seq2
+        elif type(seq1) in (list, tuple) and type(seq2) in (list, tuple) and all(type(token) is str for token in seq1) and all(type(token) is str for token in seq2):
+            if all(len(token) == 1 for token in seq1) and all(len(token) == 1 for token in seq2):
+                left, right = ''.join(seq1), ''.join(seq2)
+            else:
+                # Levenshtein accepts hashable sequences, but generic hashes
+                # can collide. Dense IDs preserve exact whole-token equality.
+                token_ids = {}
+                def encode_tokens(sequence):
+                    return [token_ids.setdefault(token, len(token_ids)) for token in sequence]
+                left, right = encode_tokens(seq1), encode_tokens(seq2)
+        else:
+            return None
+        # Substitution costs two: delete + insert. Every LCS token saves one
+        # insertion and deletion, so d = len1 + len2 - 2 * LCS.
+        indel_distance = distance(left, right, weights=(1, 1, 2))
+        return (len1 + len2 - indel_distance) // 2
+
+    try:
+        fast_result = compiled_text_lcs()
+    except (AttributeError, ImportError, NameError, TypeError, ValueError):
+        # Retain compatibility with older/missing weighted APIs and generic
+        # tokens that the compiled implementation cannot accept.
+        fast_result = None
+    if fast_result is not None:
+        return fast_result
+
+    # Preserve the original equality semantics for arbitrary/unhashable items.
+    # Transpose only the matrix; keep the seq1 == seq2 operand direction.
+    transposed = len1 < len2
+    outer, inner = (seq2, seq1) if transposed else (seq1, seq2)
+    previous = [0] * (len(inner) + 1)
+    current = [0] * (len(inner) + 1)
+    for i in range(len(outer)):
+        value = outer[i]
+        current[0] = 0
+        for j in range(1, len(inner) + 1):
+            matches = inner[j - 1] == value if transposed else value == inner[j - 1]
+            if matches:
                 current[j] = previous[j - 1] + 1
             else:
                 current[j] = max(previous[j], current[j - 1])
-        previous, current = current, [0] * (len2 + 1)
-
+        previous, current = current, previous
     return previous[-1]
 
 

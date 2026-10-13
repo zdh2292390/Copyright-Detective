@@ -143,18 +143,48 @@ def decode(value: Any) -> Any:
 
 
 def pack_snapshot(snapshot: dict) -> dict:
-    """Compress large JSON snapshots; task rows stay within PostgREST limits."""
+    """Compress large snapshots without allocating their entire JSON twice."""
     from src.analysis_checkpoints import _check_credentials
-    _check_credentials(snapshot)  # Validate URLs/fields before compression.
-    raw = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
-    if len(raw) > 64 * 1024 * 1024:
-        raise AnalysisCheckpointError("The saved input is too large. Divide this analysis into smaller batches.")
-    if len(raw) < 512 * 1024:
-        return snapshot
-    compressed = base64.b64encode(gzip.compress(raw, mtime=0)).decode("ascii")
-    if len(compressed) > 12 * 1024 * 1024:
-        raise AnalysisCheckpointError("The saved input is too large. Divide this analysis into smaller batches.")
-    return {"__analysis_snapshot_gzip__": compressed}
+    _check_credentials(snapshot)
+    encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    buffered = bytearray()
+    compressed = io.BytesIO()
+    zipper = None
+    total = 0
+    # Base64 expands three input bytes to four output bytes.
+    max_compressed = 9 * 1024 * 1024
+    size_error = "The saved input is too large. Divide this analysis into smaller batches."
+    try:
+        for chunk in encoder.iterencode(snapshot):
+            for offset in range(0, len(chunk), 65536):
+                data = chunk[offset:offset + 65536].encode("utf-8")
+                total += len(data)
+                if total > 64 * 1024 * 1024:
+                    raise AnalysisCheckpointError(size_error)
+                if zipper is None and total >= 512 * 1024:
+                    zipper = gzip.GzipFile(fileobj=compressed, mode="wb", mtime=0)
+                    zipper.write(buffered)
+                    buffered.clear()
+                buffered.extend(data)
+                if zipper is not None and len(buffered) >= 65536:
+                    zipper.write(buffered)
+                    buffered.clear()
+                    if compressed.tell() > max_compressed:
+                        raise AnalysisCheckpointError(size_error)
+        if zipper is None:
+            return snapshot
+        zipper.write(buffered)
+        buffered.clear()
+        zipper.close()
+        zipper = None
+        if compressed.tell() > max_compressed:
+            raise AnalysisCheckpointError(size_error)
+        encoded = base64.b64encode(compressed.getvalue()).decode("ascii")
+        return {"__analysis_snapshot_gzip__": encoded}
+    finally:
+        if zipper is not None:
+            zipper.close()
+        compressed.close()
 
 
 def unpack_snapshot(value: Any) -> dict:
@@ -304,14 +334,28 @@ class CallJournal:
         self._unbind_cancellation = lambda: None
         self.cleanup_thread = None
         self.metadata = deepcopy(task.get("metadata") or {})
+        self.thread = None
         try:
             if not self.read_only:
                 self.task = store.claim(self.task_id, ttl_seconds=LEASE_TTL)
                 self.lease_token = self.task["lease_token"]
                 self.metadata.update(deepcopy(self.task.get("metadata") or {}))
+                # A large restored journal can take longer than its lease to
+                # download. Renew it during loading, before any paid API call.
+                if heartbeat:
+                    self.thread = Thread(target=self._heartbeat, daemon=True, name="analysis-checkpoint-heartbeat")
+                    self.thread.start()
             self.items = []
             while True:
+                if self.cancellation_token is not None:
+                    self.cancellation_token.check()
+                if self.broken:
+                    raise AnalysisCheckpointError("Checkpoint saving was interrupted. Resume this task before making more API calls.")
                 batch = store.load_items(self.task_id, offset=len(self.items), limit=200)
+                if self.cancellation_token is not None:
+                    self.cancellation_token.check()
+                if self.broken:
+                    raise AnalysisCheckpointError("Checkpoint saving was interrupted. Resume this task before making more API calls.")
                 self.items.extend({**row, "index": row.get("index", row.get("item_index")), "payload": row.get("payload", row.get("input"))} for row in batch)
                 if len(batch) < 200:
                     break
@@ -345,23 +389,22 @@ class CallJournal:
                 if isinstance(existing_display.get("current_step"), dict):
                     restored_display["current_step"] = deepcopy(existing_display["current_step"])
             self.metadata["display"] = restored_display
-        except Exception as exc:
+        except BaseException as exc:
+            self.stop_event.set()
             if self.lease_token:
                 try:
                     store.release(self.task_id, self.lease_token, status="incomplete")
                 except Exception:
                     pass
             self._unbind_cancellation()
+            if not isinstance(exc, Exception):
+                raise
             if isinstance(exc, AnalysisCheckpointError):
                 raise
             raise classify_checkpoint_error(exc) from exc
         self._unbind_cancellation = bind_task_cancellation(
             getattr(store, "owner_id", ""), self.task_id, self.cancellation_token,
         )
-        self.thread = None
-        if heartbeat and not self.read_only:
-            self.thread = Thread(target=self._heartbeat, daemon=True, name="analysis-checkpoint-heartbeat")
-            self.thread.start()
 
     def _display_metadata(self, request: dict, index: int, phase: str) -> dict:
         # Keep locally recovered API history when an old task's heartbeat
@@ -384,6 +427,10 @@ class CallJournal:
                     # another process must not resume it during that cleanup.
             except Exception:
                 self.broken = True
+                # Nested provider calls must also stop when their checkpoint
+                # lease fails, rather than spending more API calls unsaved.
+                if self.cancellation_token is not None:
+                    self.cancellation_token.cancel()
                 return
 
     def call(self, operation: str, payload: dict, invoke: Callable, is_success: Callable | None = None):
@@ -433,7 +480,7 @@ class CallJournal:
                         )
                     self.visited_items.add(index)
                     if item.get("status") == "complete":
-                        return decode(deepcopy(item["result"]))
+                        return decode(item["result"])
                 else:
                     if self.read_only:
                         raise AnalysisResumeMismatch("This completed task has no saved response for the requested call.")

@@ -201,7 +201,8 @@ _AUTH_CLIENT_SCRIPT = f"""
 
     function appStorage() {{
         try {{
-            if (window.top && window.top.localStorage) return window.top.localStorage;
+            const app = appWindow(window);
+            if (app && app.localStorage) return app.localStorage;
         }} catch (e) {{}}
         try {{
             return window.localStorage;
@@ -295,10 +296,22 @@ _AUTH_CLIENT_SCRIPT = f"""
     }}
 
     function appWindow(win) {{
-        try {{
-            if (win && win.top && win.top.location) return win.top;
-        }} catch (e) {{}}
-        return (win && win.parent) ? win.parent : win;
+        // Components can sit inside an app that is itself embedded. Reading
+        // a cross-origin top window's Location object does not prove that its
+        // document or URL is accessible; keep state in the app's own origin.
+        let app = win || window;
+        while (app) {{
+            try {{
+                const parent = app.parent;
+                if (!parent || parent === app) break;
+                void parent.document;
+                void parent.location.href;
+                app = parent;
+            }} catch (e) {{
+                break;
+            }}
+        }}
+        return app;
     }}
 
     function persistAuthCache(accessToken, refreshToken, userId) {{
@@ -460,7 +473,9 @@ _AUTH_CLIENT_SCRIPT = f"""
         const app = appWindow(targetWin);
         if (!app || !app.location) return;
         persistReturnUrl(stripOAuthParams(new URL(app.location.href.split("#")[0])).toString());
-        app.location.href = oauthUrl;
+        // External OAuth must leave the entire browser tab, even when the
+        // application is displayed inside another site's frame.
+        app.top.location.href = oauthUrl;
     }}
 
     window.__copyrightDetectiveAuth = {{
@@ -893,12 +908,12 @@ def _bind_return_url_on_sign_in_click(login_url: str) -> None:
         (function () {{
             const bridge = window.__copyrightDetectiveAuth;
             if (!bridge) return;
-            const app = bridge.appWindow(window.top);
+            const app = bridge.appWindow(window);
             app.__copyrightDetectiveGitHubLoginUrl = {login_url_json};
             if (app.__copyrightDetectiveReturnUrlListener) return;
             app.__copyrightDetectiveReturnUrlListener = true;
             // Delegation also covers links mounted after this iframe runs.
-            // The native _self target works even before this listener exists.
+            // The native _top target works even before this listener exists.
             app.document.addEventListener("click", function (event) {{
                 const link = event.target.closest && event.target.closest("a.github-sign-in-btn");
                 if (!link || link.getAttribute("href") !== app.__copyrightDetectiveGitHubLoginUrl) return;
@@ -923,7 +938,7 @@ def _github_sign_in_link_html(login_url: str, *, disabled: bool = False) -> str:
     else:
         control = (
             f'<a class="github-sign-in-btn" href="{escape(login_url, quote=True)}" '
-            f'target="_self" rel="noopener" aria-label="{label}">{label}</a>'
+            f'target="_top" rel="noopener" aria-label="{label}">{label}</a>'
         )
     return f'<div data-testid="stLinkButton">{control}</div>'
 
@@ -938,7 +953,8 @@ def render_github_sign_in_button(*, disabled: bool = False) -> None:
 
     login_url = _with_oauth_navigation(login_url)
     # st.link_button always opens a new tab. Reuse the existing button styles
-    # with a native same-tab anchor; PKCE still survives a fresh app session.
+    # with a native top-level same-tab anchor. OAuth providers reject embedded
+    # login pages; PKCE still survives a fresh app session.
     st.markdown(_github_sign_in_link_html(login_url, disabled=disabled), unsafe_allow_html=True)
     if not disabled:
         _bind_return_url_on_sign_in_click(login_url)

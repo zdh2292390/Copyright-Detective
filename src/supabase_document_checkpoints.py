@@ -6,7 +6,9 @@ persisted. Provider credentials and worker lease tokens remain in memory.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Mapping
+import json
 from copy import deepcopy
 from datetime import datetime, timezone
 from threading import RLock
@@ -21,6 +23,11 @@ from src.document_checkpoints import (
 DOCUMENT_PAGE_KEY = "document_memorization"
 LEASE_SECONDS = 180
 _CHANGED_SNAPSHOT = object()
+DEFAULT_CACHED_TASKS = 4
+DEFAULT_CACHE_BYTES = 64 * 1024 * 1024
+WRITE_BATCH_ITEMS = 1000
+WRITE_BATCH_BYTES = 4 * 1024 * 1024
+MAX_UPDATE_BYTES = 16 * 1024 * 1024
 
 
 def is_cloud_document_token(token):
@@ -50,12 +57,22 @@ class SupabaseDocumentCheckpointStore:
 
     remote = True
 
-    def __init__(self, store):
+    def __init__(self, store, *, max_cached_tasks=DEFAULT_CACHED_TASKS, max_cache_bytes=DEFAULT_CACHE_BYTES):
         owner = getattr(store, "owner_id", None)
         if not isinstance(owner, str) or not owner.strip():
             raise CheckpointError("A verified account is required for cloud document recovery.")
+        if type(max_cached_tasks) is not int or max_cached_tasks < 1 or type(max_cache_bytes) is not int or max_cache_bytes < 1:
+            raise ValueError("Document cache limits must be positive integers.")
         self.owner_id = owner
         self.store = store
+        self._max_cached_tasks = max_cached_tasks
+        self._max_cache_bytes = max_cache_bytes
+        self._cache_order = OrderedDict()
+        self._source_bytes = {}
+        self._row_bytes = {}
+        self._state_bytes = {}
+        self._identity_bytes = {}
+        self._known_revisions = {}
         self._lock = RLock()
         self._leases = {}
         self._sources = {}
@@ -63,6 +80,72 @@ class SupabaseDocumentCheckpointStore:
         self._persisted = {}
         self._states = {}
         self._revisions = {}
+
+    def bind_store(self, store):
+        """Refresh this owner's client without replacing worker lease state."""
+        if getattr(store, "owner_id", None) != self.owner_id:
+            raise CheckpointError("The cloud document client has a different owner.")
+        with self._lock:
+            self.store = store
+
+    @staticmethod
+    def _row_size(row):
+        if row is None:
+            return 0
+        result, error, _, _ = row
+        return 128 + 4 * (len(result or "") + len(error or ""))
+
+    @staticmethod
+    def _identity_size(metadata):
+        settings = metadata.get("settings", {})
+        return 1024 + 4 * (
+            sum(len(value) for value in metadata.values() if isinstance(value, str))
+            + sum(len(value) for value in settings.values() if isinstance(value, str))
+        )
+
+    @staticmethod
+    def _state_size(state):
+        # Conservative payload estimates avoid serializing/copying all results
+        # on every progress write. Strings need up to four bytes per character.
+        return (
+            256 * sum(len(state.get(key, {})) for key in ("results", "failures", "attempts"))
+            + 4 * sum(len(result[2]) for result in state.get("results", {}).values())
+        )
+
+    def _touch_locked(self, token):
+        self._cache_order[token] = None
+        self._cache_order.move_to_end(token)
+
+    def _drop_cache_locked(self, token):
+        for cache in (
+            self._sources, self._identities, self._persisted, self._states, self._revisions,
+            self._source_bytes, self._row_bytes, self._state_bytes, self._identity_bytes,
+            self._known_revisions, self._cache_order,
+        ):
+            cache.pop(token, None)
+
+    def _prune_locked(self):
+        # Active leases pin the source and acknowledged result state needed by
+        # their workers. Inactive entries can always be reloaded from Supabase.
+        def retained_bytes():
+            return sum(self._source_bytes.values()) + sum(self._row_bytes.values()) + sum(self._state_bytes.values()) + sum(self._identity_bytes.values())
+        while len(self._cache_order) > self._max_cached_tasks or retained_bytes() > self._max_cache_bytes:
+            oldest = next((token for token in self._cache_order if token not in self._leases), None)
+            if oldest is None:
+                return
+            self._drop_cache_locked(oldest)
+
+    def _stale_revision_locked(self, token, revision):
+        return type(revision) is int and self._known_revisions.get(token, -1) > revision
+
+    def _remember_revision_locked(self, token, revision):
+        if type(revision) is int:
+            self._known_revisions[token] = max(revision, self._known_revisions.get(token, -1))
+
+    def _cache_source_locked(self, token, pairs):
+        self._sources[token] = pairs
+        self._source_bytes[token] = 128 * len(pairs) + 4 * sum(len(upper) + len(lower) for upper, lower in pairs)
+        self._touch_locked(token)
 
     @staticmethod
     def _token(token):
@@ -116,14 +199,18 @@ class SupabaseDocumentCheckpointStore:
         task = self._call(
             self.store.create_task, DOCUMENT_PAGE_KEY, metadata["settings"],
             {"pairs_hash": _pair_hash(pairs)},
-            [{"upper_text": upper, "lower_text": lower} for upper, lower in pairs],
+            ({"upper_text": upper, "lower_text": lower} for upper, lower in pairs),
             fingerprint=metadata["fingerprint"], metadata=metadata,
         )
         token = self._token(task.get("id") if isinstance(task, Mapping) else None)
         with self._lock:
-            self._sources[token] = pairs
+            self._cache_source_locked(token, pairs)
             self._identities[token] = deepcopy(metadata)
+            self._identity_bytes[token] = self._identity_size(metadata)
             self._persisted[token] = {}
+            self._row_bytes[token] = 0
+            self._state_bytes[token] = 0
+            self._prune_locked()
         # Boundary imports may already contain successes. Preserve them without
         # storing an ever-growing result blob in task metadata.
         if rows or metadata["status"] == "complete":
@@ -154,6 +241,7 @@ class SupabaseDocumentCheckpointStore:
                 cached = self._states[token]
                 if task.get("completed_items") != len(cached["results"]) or task.get("failed_items") != len(cached["failures"]):
                     raise CheckpointError("The cloud checkpoint progress counts do not match its saved results.")
+                self._touch_locked(token)
                 return deepcopy(cached), list(self._sources[token])
         total = state["total_chunks"]
         items = []
@@ -204,11 +292,20 @@ class SupabaseDocumentCheckpointStore:
         if task.get("completed_items") != len(state["results"]) or task.get("failed_items") != len(state["failures"]):
             raise CheckpointError("The cloud checkpoint progress counts do not match its saved results.")
         with self._lock:
-            self._sources[token] = pairs
-            self._identities[token] = deepcopy(state)
+            # A worker may have acknowledged a newer write after the final
+            # server read but before this cache fill acquired the lock.
+            if self._stale_revision_locked(token, task.get("revision")):
+                return _CHANGED_SNAPSHOT
+            self._remember_revision_locked(token, task.get("revision"))
+            self._cache_source_locked(token, pairs)
+            self._identities[token] = deepcopy(_metadata(state))
+            self._identity_bytes[token] = self._identity_size(self._identities[token])
             self._persisted[token] = rows
+            self._row_bytes[token] = sum(self._row_size(row) for row in rows.values())
             self._states[token] = deepcopy(state)
+            self._state_bytes[token] = self._state_size(state)
             self._revisions[token] = task.get("revision")
+            self._prune_locked()
         return state, pairs
 
     def _identity(self, token, metadata):
@@ -242,24 +339,72 @@ class SupabaseDocumentCheckpointStore:
             "result": result, "error": error, "attempts": attempts,
         }
 
+    def _write_batches(self, changed):
+        """Decode only a bounded batch, including a valid large singleton."""
+        entries = iter(sorted(changed.items()))
+        entry = next(entries, None)
+        if entry is None:
+            yield [], {}, True
+            return
+        prepared = None
+        while entry is not None:
+            updates = []
+            acknowledged = {}
+            byte_count = 2  # JSON array brackets.
+            while entry is not None and len(updates) < WRITE_BATCH_ITEMS:
+                index, row = entry
+                update, size = prepared if prepared is not None else (None, None)
+                if update is None:
+                    update = self._update(index, row)
+                    size = len(json.dumps(update, ensure_ascii=False).encode("utf-8"))
+                prepared = (update, size)
+                next_size = byte_count + size + (2 if updates else 0)
+                if updates and next_size > WRITE_BATCH_BYTES:
+                    break
+                if next_size > MAX_UPDATE_BYTES:
+                    raise CheckpointError("A document result exceeds the cloud checkpoint size limit.")
+                updates.append(update)
+                acknowledged[index] = row
+                byte_count = next_size
+                entry = next(entries, None)
+                prepared = None
+            yield updates, acknowledged, entry is None
+
     def _write(self, token, metadata, changed):
-        task = self._call(
-            self.store.save_items, token,
-            [self._update(index, row) for index, row in sorted(changed.items())],
-            metadata=metadata, status=metadata["status"], lease_token=self._lease(token),
-        )
-        with self._lock:
-            for index, row in changed.items():
-                if row is None:
-                    self._persisted[token].pop(index, None)
-                else:
-                    self._persisted[token][index] = row
-            self._identities[token] = deepcopy(metadata)
-            self._states.pop(token, None)
-            self._revisions.pop(token, None)
+        task = None
+        for updates, acknowledged, final_batch in self._write_batches(changed):
+            batch_metadata = metadata
+            if not final_batch and metadata["status"] == "complete":
+                batch_metadata = {**metadata, "status": "incomplete"}
+            task = self._call(
+                self.store.save_items, token, updates,
+                metadata=batch_metadata, status=batch_metadata["status"], lease_token=self._lease(token),
+            )
+            with self._lock:
+                revision = task.get("revision") if isinstance(task, Mapping) else None
+                if self._stale_revision_locked(token, revision):
+                    # A newer full snapshot already includes this committed
+                    # write; its status and acknowledged rows take precedence.
+                    continue
+                self._remember_revision_locked(token, revision)
+                persisted = self._persisted[token]
+                for index, row in acknowledged.items():
+                    self._row_bytes[token] += self._row_size(row) - self._row_size(persisted.get(index))
+                    if row is None:
+                        persisted.pop(index, None)
+                    else:
+                        persisted[index] = row
+                self._identities[token] = deepcopy(batch_metadata)
+                self._identity_bytes[token] = self._identity_size(batch_metadata)
+                self._states.pop(token, None)
+                self._state_bytes[token] = 0
+                self._revisions.pop(token, None)
+                self._touch_locked(token)
+                self._prune_locked()
         return task
 
     def save(self, token, state):
+        self._lease(token)
         metadata = _metadata(state)
         self._identity(token, metadata)
         rows, contexts = _chunk_rows(state, metadata["total_chunks"])
@@ -273,6 +418,7 @@ class SupabaseDocumentCheckpointStore:
         return self._write(token, metadata, changed)
 
     def save_progress(self, token, state, chunk_index=None):
+        self._lease(token)
         metadata = _metadata(state)
         self._identity(token, metadata)
         changed = {}
@@ -309,6 +455,8 @@ class SupabaseDocumentCheckpointStore:
             raise CheckpointError("The cloud analysis did not return a valid worker lease.")
         with self._lock:
             self._leases[token] = task["lease_token"]
+            if token in self._cache_order:
+                self._touch_locked(token)
         return True
 
     def heartbeat(self, token):
@@ -326,6 +474,7 @@ class SupabaseDocumentCheckpointStore:
         finally:
             with self._lock:
                 self._leases.pop(token, None)
+                self._prune_locked()
 
     def is_active(self, token):
         task = self._task(token)
@@ -357,5 +506,5 @@ class SupabaseDocumentCheckpointStore:
         self._token(token)
         self._call(self.store.delete, token)
         with self._lock:
-            for cache in (self._leases, self._sources, self._identities, self._persisted, self._states, self._revisions):
-                cache.pop(token, None)
+            self._leases.pop(token, None)
+            self._drop_cache_locked(token)

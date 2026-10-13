@@ -57,6 +57,19 @@ def _snapshot(state):
     }
 
 
+def _update_snapshot(snapshot, state, current_index):
+    """Publish only the changed chunk while retaining independent UI mappings."""
+    for key, value in state.items():
+        if key not in {"results", "failures", "attempts"}:
+            snapshot[key] = dict(value) if key == "settings" else list(value) if key == "active_chunks" else value
+    if current_index is not None:
+        for key in ("results", "failures", "attempts"):
+            if current_index in state[key]:
+                snapshot[key][current_index] = state[key][current_index]
+            else:
+                snapshot[key].pop(current_index, None)
+
+
 def _analyze_chunk(settings, api_key, upper, lower):
     # Import providers only in workers. No Streamlit session state is read here.
     from src.direct_recall.comparison import compare_texts
@@ -134,9 +147,16 @@ class DocumentAnalysisJobs:
         if cloud_store is None:
             return
         from src.supabase_document_checkpoints import SupabaseDocumentCheckpointStore
-        adapter = SupabaseDocumentCheckpointStore(cloud_store)
+        owner_id = getattr(cloud_store, "owner_id", None)
         with self._lock:
-            self._cloud_stores.setdefault(adapter.owner_id, adapter)
+            adapter = self._cloud_stores.get(owner_id)
+            if adapter is None:
+                adapter = SupabaseDocumentCheckpointStore(cloud_store)
+                self._cloud_stores[adapter.owner_id] = adapter
+            else:
+                # Preserve active leases/caches while adopting the client's
+                # refreshed authenticated session for this verified owner.
+                adapter.bind_store(cloud_store)
 
     def cloud_enabled_for(self, owner_id):
         with self._lock:
@@ -258,7 +278,10 @@ class DocumentAnalysisJobs:
                 self._check_owner(existing["state"], owner_id)
                 if not existing.get("finished"):
                     return False
-            active_count = sum(not job.get("finished") for job in self._jobs.values())
+            active_count = sum(
+                not job.get("finished") or bool(job.get("storage_failed"))
+                for saved_token, job in self._jobs.items() if saved_token != token
+            )
             if active_count >= self._max_pending:
                 raise CheckpointError("Document analysis capacity is busy. Try starting this saved run again shortly.")
             store = self._store_for(token, owner_id=owner_id)
@@ -344,10 +367,14 @@ class DocumentAnalysisJobs:
                     cancellation.cancel()
                     return
 
+        remote = bool(getattr(store, "remote", False))
         heartbeat_thread = None
-        if getattr(store, "remote", False):
-            heartbeat_thread = Thread(target=heartbeat, name="document-lease-heartbeat", daemon=True)
-            heartbeat_thread.start()
+        state["failures"] = {
+            index: _redact_error(error, api_key) for index, error in state["failures"].items()
+        }
+        with self._lock:
+            if token in self._jobs:
+                self._jobs[token]["state"]["failures"] = dict(state["failures"])
 
         def checkpoint(updated):
             updated["updated_at"] = _now()
@@ -355,13 +382,12 @@ class DocumentAnalysisJobs:
                 updated["completed_at"] = updated["updated_at"]
             updated["stop_requested"] = stop.is_set()
             updated["error"] = _redact_error(updated.get("error"), api_key) if updated.get("error") else None
-            updated["failures"] = {
-                index: _redact_error(error, api_key)
-                for index, error in updated["failures"].items()
-            }
+            current = updated.get("current_chunk")
+            current_index = current - 1 if current else None
+            if current_index in updated["failures"]:
+                updated["failures"][current_index] = _redact_error(updated["failures"][current_index], api_key)
             # Stop outbound work if progress cannot be persisted.
             try:
-                current = updated.get("current_chunk")
                 if lease_errors:
                     raise CheckpointError("The cloud task lease could not be renewed. Resume after the active lease expires.") from lease_errors[0]
                 saved = store.save_progress(token, updated, current - 1 if current else None)
@@ -372,7 +398,7 @@ class DocumentAnalysisJobs:
             finally:
                 with self._lock:
                     if token in self._jobs:
-                        self._jobs[token]["state"] = _snapshot(updated)
+                        _update_snapshot(self._jobs[token]["state"], updated, current_index)
 
         def analyze_chunk(upper, lower):
             # A chunk can issue several provider calls. Carry the token into
@@ -385,6 +411,10 @@ class DocumentAnalysisJobs:
                 return result
 
         try:
+            if remote:
+                candidate = Thread(target=heartbeat, name="document-lease-heartbeat", daemon=True)
+                candidate.start()
+                heartbeat_thread = candidate
             run_chunk_analysis(
                 pairs, analyze_chunk,
                 state, on_update=checkpoint, should_stop=stop.is_set, sleep=stop.wait,
@@ -425,6 +455,7 @@ class DocumentAnalysisJobs:
                 heartbeat_done.set()
                 if heartbeat_thread is not None:
                     heartbeat_thread.join(timeout=1)
+                if remote:
                     try:
                         store.release(token)
                     except Exception:
