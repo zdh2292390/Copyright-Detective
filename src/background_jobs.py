@@ -88,7 +88,7 @@ def submit_background_job(key: str, label: str, runner: JobRunner) -> bool:
         existing = _JOBS.get(key)
         if existing and existing.get("status") in _ACTIVE_STATUSES:
             return False
-    from src.resumable_analysis import prepare_background_journal, journal_scope
+    from src.resumable_analysis import prepare_background_journal, journal_scope, report_analysis_progress
 
     token = CancellationToken()
     # The journal's heartbeat starts during preparation. Bind the background
@@ -109,6 +109,7 @@ def submit_background_job(key: str, label: str, runner: JobRunner) -> bool:
         record = {
             "key": key,
             "label": label,
+            "task_id": journal.task_id if journal is not None else None,
             "status": "queued",
             "current": 0,
             "total": 1,
@@ -212,6 +213,10 @@ def submit_background_job(key: str, label: str, runner: JobRunner) -> bool:
             record["total"] = total_count
             if message:
                 record["message"] = str(message)
+        report_analysis_progress(
+            current_count, total_count, unit="runs" if key.startswith("copyright_game2:") else "steps",
+            stage="background",
+        )
 
     def execute() -> None:
         # Workers remain UI-free after their originating Streamlit run ends.

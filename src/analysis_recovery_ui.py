@@ -7,9 +7,11 @@ from urllib.parse import urlsplit
 import streamlit as st
 
 from src.analysis_checkpoints import OFFICIAL_GAME_PAGE_KEYS, classify_checkpoint_error
+from src.analysis_work_progress import format_work_progress
 from src.resumable_analysis import (
     AnalysisCheckpointError, PENDING_RESTORE, RESUME_TASK,
-    canonical_page_key, decode, get_cloud_store_for_current_user, is_safe_state_key, key_belongs_to_page, unpack_snapshot,
+    canonical_page_key, decode, get_cloud_store_for_current_user, is_safe_state_key, key_belongs_to_page,
+    page_supports_analysis_recovery, unpack_snapshot,
 )
 
 
@@ -62,6 +64,11 @@ def apply_pending_analysis_restore():
     task = store.get_task(pending.get("task_id"))
     if not task:
         raise AnalysisCheckpointError("The saved task is not available for this account.")
+    if not page_supports_analysis_recovery(task.get("page_key")):
+        # Old queued restores must not unpack inputs or restart excluded pages.
+        if st.session_state.get(RESUME_TASK) == str(task["id"]):
+            st.session_state.pop(RESUME_TASK, None)
+        return
     if task.get("kill_requested") or task.get("status") in {"stopping", "killed"}:
         raise AnalysisCheckpointError("This task was killed and cannot be resumed. Start a new analysis.", kind="killed")
     if task.get("page_key") in OFFICIAL_GAME_PAGE_KEYS and task.get("server_managed") is not True:
@@ -191,6 +198,8 @@ def _queue_analysis_restore(task_id):
 
 
 def render_analysis_restore_feedback(page_key):
+    if not page_supports_analysis_recovery(page_key):
+        return None
     notice = st.session_state.get(_RESTORE_FEEDBACK)
     if not isinstance(notice, dict) or notice.get("page_key") != page_key:
         return None
@@ -311,9 +320,6 @@ def _step_description(task, display):
             details = [f"item {part + 1}" if type(part) is int else str(part).replace("_", " ") for part in parts]
             if details:
                 name += " / " + ", ".join(details)
-    index = step.get("index")
-    if type(index) is int:
-        name = f"Checkpoint {index + 1}: {name}"
     if task.get("status") == "complete":
         return "Finished / " + name
     if not _lease_active(task):
@@ -359,8 +365,54 @@ def _kill_saved_task(store, task_id):
     return True
 
 
+_SAVED_ANALYSIS_STYLES = """<style>
+/* Styles scoped to Saved analyses task cards. */
+[class*="st-key-analysis_saved_task_"] [data-testid="stButton"] button {
+    width: 7rem !important;
+    min-width: 7rem !important;
+    height: 2.5rem !important;
+    min-height: 2.5rem !important;
+    padding: 0.4rem 0.85rem !important;
+    line-height: 1.2 !important;
+    border-radius: 8px !important;
+    box-shadow: none !important;
+}
+[class*="st-key-analysis_saved_task_"] [class*="st-key-force_stop_controls_"]
+[data-testid="stButton"] button:not(:disabled) {
+    background: #fff7f7 !important;
+    border-color: #fca5a5 !important;
+    color: #b91c1c !important;
+}
+[class*="st-key-analysis_saved_task_"] [class*="st-key-force_stop_controls_"]
+[data-testid="stButton"] button:not(:disabled) [data-testid="stMarkdownContainer"],
+[class*="st-key-analysis_saved_task_"] [class*="st-key-force_stop_controls_"]
+[data-testid="stButton"] button:not(:disabled) p {
+    color: #b91c1c !important;
+}
+[class*="st-key-analysis_saved_task_"] [class*="st-key-force_stop_controls_"]
+[data-testid="stButton"] button:not(:disabled):hover {
+    background: #fee2e2 !important;
+    border-color: #ef4444 !important;
+}
+[class*="st-key-analysis_saved_task_"] [data-testid="stExpander"],
+[class*="st-key-analysis_saved_task_"] [data-testid="stExpander"] > details {
+    border: none !important;
+    box-shadow: none !important;
+    background: transparent !important;
+}
+[class*="st-key-analysis_saved_task_"] [data-testid="stExpander"] summary {
+    min-height: 2.5rem;
+    padding: 0.35rem 0 !important;
+    font-size: 0.875rem;
+}
+[class*="st-key-analysis_saved_task_"] [data-testid="stExpanderDetails"] {
+    padding: 0.5rem 0 !important;
+}
+</style>"""
+
+
 def render_analysis_recovery(page_key: str):
-    if page_key == "Legal Cases Display":
+    if page_key == "Legal Cases Display" or not page_supports_analysis_recovery(page_key):
         return
     try:
         store = get_cloud_store_for_current_user(page_key=page_key)
@@ -390,6 +442,7 @@ def render_analysis_recovery(page_key: str):
              and not task.get("kill_requested") and task.get("status") not in {"stopping", "killed"}]
     if not tasks:
         return
+    st.html(_SAVED_ANALYSIS_STYLES)
     with st.expander("Saved analyses", expanded=any(t.get("status") != "complete" for t in tasks)):
         with st.container(horizontal=True, vertical_alignment="center", gap="small"):
             st.caption("Resume reuses saved progress. Kill removes the task from this list.")
@@ -397,10 +450,6 @@ def render_analysis_recovery(page_key: str):
                 st.rerun()
         for task in tasks:
             label = (task.get("settings") or {}).get("label", "Analysis")
-            completed = int(task.get("completed_items") or 0)
-            total = int(task.get("total_items") or 0)
-            failed = int(task.get("failed_items") or 0)
-            pending = max(0, total - completed - failed)
             status = str(task.get("status") or "incomplete")
             active = _lease_active(task)
             stop_requested = bool(task.get("stop_requested"))
@@ -415,18 +464,21 @@ def render_analysis_recovery(page_key: str):
             apis = [api for api in display.get("apis") or [] if isinstance(api, dict)]
             with st.container(border=True, key=f"analysis_saved_task_{task['id']}", gap="small"):
                 with st.container(gap=None):
-                    with st.container(horizontal=True, vertical_alignment="center", gap="small"):
-                        st.markdown(f"**{label}**")
+                    with st.container(horizontal=True, horizontal_alignment="distribute",
+                                      vertical_alignment="center", gap="small"):
+                        st.markdown(f"**{label}**", width="content")
                         st.badge(display_status, color=status_color)
-                    if apis:
-                        api = apis[0]
-                        provider = api.get("provider") or "Custom API"
-                        model = api.get("model") or "Not recorded"
-                        extra = f" · +{len(apis) - 1} in Task details" if len(apis) > 1 else ""
-                        st.caption(f"API: {provider} / Model: {model}{extra}")
-                    else:
-                        st.caption("API / Model: not recorded yet")
-                    st.caption(f"**{completed} saved checkpoints** · {pending} pending · {failed} failed")
+                    with st.container(horizontal=True, horizontal_alignment="distribute",
+                                      vertical_alignment="center", gap=None):
+                        if apis:
+                            api = apis[0]
+                            provider = api.get("provider") or "Custom API"
+                            model = api.get("model") or "Not recorded"
+                            extra = f" · +{len(apis) - 1} in Task details" if len(apis) > 1 else ""
+                            st.caption(f"API: {provider} / Model: {model}{extra}", width="content")
+                        else:
+                            st.caption("API / Model: not recorded yet", width="content")
+                        st.caption(format_work_progress(task), width="content")
                     st.markdown(_step_description(task, display))
                 with st.container(horizontal=True, vertical_alignment="center", gap="small"):
                     st.button(
@@ -461,6 +513,8 @@ def render_analysis_recovery(page_key: str):
                         step = display.get("current_step") or {}
                         if step.get("operation"):
                             st.caption(f"Operation: {step['operation']}")
+                            if type(step.get("index")) is int:
+                                st.caption(f"Saved step: {step['index'] + 1}")
                             phase = {"running": "Started", "complete": "Saved", "failed": "Failed; Resume can retry"}.get(step.get("phase"))
                             if phase:
                                 st.caption(f"Checkpoint state: {phase}")
@@ -478,7 +532,7 @@ def render_analysis_recovery(page_key: str):
                             st.caption(f"API: {api.get('provider') or 'Custom API'} / Model: {api.get('model') or 'Not recorded'}")
                         if api.get("endpoint"):
                             st.text(f"{api.get('provider') or 'Custom API'} endpoint: {api['endpoint']}")
-                    st.caption("Checkpoints are recorded as the task runs; their count is not the total number of planned steps.")
+                    st.caption("Progress tracks analysis work, such as runs or questions; API calls are saved separately.")
                     st.caption("Kill retains the task record and saved results in the database.")
                     if not task.get("display") and apis:
                         st.caption("This older task shows APIs from recent checkpoints and the latest saved step.")

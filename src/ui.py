@@ -15,7 +15,7 @@ import pandas as pd
 from Levenshtein import distance
 import html
 import requests
-from src.resumable_analysis import AnalysisCheckpointError, checkpoint_scope
+from src.resumable_analysis import AnalysisCheckpointError, checkpoint_scope, report_analysis_progress
 from datasets import load_dataset, concatenate_datasets
 from fpdf import FPDF
 import base64
@@ -562,6 +562,7 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
         progress_bar.progress(0.3, text=" Running evaluation...")
 
         max_new_tokens = int(st.session_state.get("qa_knowmem_max_new_tokens", 64) or 64)
+        report_analysis_progress(0, len(questions), unit="questions", stage="knowmem")
         
         for i, (question, answer) in enumerate(zip(questions, answers)):
             prompt = general_prompt + f"Question: {question}\nAnswer: "
@@ -584,6 +585,7 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
 
                 if is_api_error_response(generated_text):
                     st.error(f"Error: API error for question {i+1}: {generated_text}")
+                    report_analysis_progress(i + 1, len(questions), unit="questions", stage="knowmem")
                     continue
 
                 if not isinstance(generated_text, str) or not generated_text.strip():
@@ -594,6 +596,7 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
 
                 # Log the result
                 logger.log(prompt, answer, trimmed_output, question=question)
+                report_analysis_progress(i + 1, len(questions), unit="questions", stage="knowmem")
             except Exception as exc:
                 if isinstance(exc, AnalysisCheckpointError):
                     raise
@@ -601,6 +604,7 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
                 if api_key:
                     detail = detail.replace(str(api_key), "[redacted]")
                 st.error(f"Evaluation of question {i + 1} failed: {detail}")
+                report_analysis_progress(i + 1, len(questions), unit="questions", stage="knowmem")
                 continue
 
         st.session_state["qa_knowmem_saved_entries"] = list(logger.entries)
@@ -2643,6 +2647,8 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                     # Generate mutations for each strategy individually to show progress
                     progress_placeholder = st.empty()
                     total_mutations = len(strategies_to_run) * attempts
+                    if total_mutations:
+                        report_analysis_progress(0, total_mutations, unit="mutations", stage="mutation_generation")
                     cumulative = 0
                     for strategy_idx, strategy in enumerate(strategies_to_run, 1):
                         # Update progress display
@@ -2727,6 +2733,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         
                         all_evaluations.extend(evaluations)
                         cumulative += attempts
+                        report_analysis_progress(min(len(all_evaluations), total_mutations), total_mutations, unit="mutations", stage="mutation_generation")
                         st.session_state["persuasion_run_checkpoint"] = {
                             "prompt": original_prompt,
                             "generated": len(all_evaluations),
@@ -2753,6 +2760,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         progress_bar = st.progress(0, text=" Starting mutation evaluation...")
                         
                         total_evaluations = len(all_evaluations) * attempts_per_prompt
+                        report_analysis_progress(0, total_evaluations, unit="responses", stage="mutation_evaluation")
                         eval_count = 0
                         evaluation_failures = [str(item.mutation.error or "Invalid mutation prompt") if item is not None else "Missing mutation result" for item in all_evaluations if item is None or item.mutation.error or not item.parsed or not item.parsed.mutated_text]
                         generation_failed = sum(item is None or bool(item.mutation.error) or not item.parsed or not item.parsed.mutated_text for item in all_evaluations)
@@ -2798,6 +2806,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                         llm_response, clear_id=PERSUASIVE_CLEAR_CACHE_ID
                                     ):
                                         evaluation_failures.append(llm_response)
+                                        report_analysis_progress(eval_count, total_evaluations, unit="responses", stage="mutation_evaluation")
                                         continue
                                     
                                     if not isinstance(llm_response, str) or not llm_response.strip():
@@ -2858,6 +2867,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                         'prompt_attempt': unique_prompt_attempt,
                                         'confidence_result': confidence_result,
                                     })
+                                    report_analysis_progress(eval_count, total_evaluations, unit="responses", stage="mutation_evaluation")
 
                                     # Incremental store during eval (resilience for long runs)
                                     config_type = "zero" if updated_evaluation.mode == "Zero-Shot" else "few"
@@ -2907,6 +2917,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                     detail = str(e).strip() or type(e).__name__
                                     evaluation_failures.append(detail)
                                     st.warning(f"Warning: Failed to evaluate mutation {eval_idx + 1}, attempt {prompt_attempt}: {detail}")
+                                    report_analysis_progress(eval_count, total_evaluations, unit="responses", stage="mutation_evaluation")
                                     continue
                         
                         progress_bar.empty()
@@ -2991,6 +3002,8 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                     unique_mutations[key] = eval_item
 
                             unique_mutation_items = list(unique_mutations.values())
+                            if unique_mutation_items:
+                                report_analysis_progress(0, len(unique_mutation_items), unit="judgements", stage="intention_judging")
 
                             for judge_idx, eval_item in enumerate(unique_mutation_items):
                                 evaluation = eval_item["evaluation"]
@@ -3061,6 +3074,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                     st.warning(f"Warning: Failed to judge mutation {judge_idx + 1}: {e}")
                                     eval_item["assessment"] = None
                                 
+                                report_analysis_progress(judge_idx + 1, len(unique_mutation_items), unit="judgements", stage="intention_judging")
                                 judging_progress.progress((judge_idx + 1) / len(unique_mutation_items), text=f"Completed judging mutation {judge_idx + 1}/{len(unique_mutation_items)}")
                             
                             judging_progress.empty()

@@ -7,7 +7,7 @@ in unlearned language models through a black-box approach.
 
 import json
 import re
-from src.resumable_analysis import AnalysisCheckpointError, checkpoint_scope
+from src.resumable_analysis import AnalysisCheckpointError, checkpoint_scope, report_analysis_progress
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 from src.direct_recall.comparison import get_llm_completion
@@ -251,7 +251,10 @@ def run_sleek_attack(questions: List[SLEEKQuestion], api_key: str, model_name: s
     Returns:
         List of SLEEKQuestion objects with responses
     """
+    if questions:
+        report_analysis_progress(0, len(questions), unit="questions", stage="sleek_probe")
     for question_idx, question_obj in enumerate(questions):
+        report_analysis_progress(question_idx, len(questions), unit="questions", stage="sleek_probe")
         prompt = f"Please answer the following question as accurately and completely as possible:\n\n{question_obj.question}"
 
         with checkpoint_scope("sleek_probe", question_idx):
@@ -270,6 +273,8 @@ def run_sleek_attack(questions: List[SLEEKQuestion], api_key: str, model_name: s
                 if isinstance(exc, AnalysisCheckpointError):
                     raise
                 question_obj.response = f"Error: {str(exc).strip() or type(exc).__name__}"
+
+        report_analysis_progress(question_idx + 1, len(questions), unit="questions", stage="sleek_probe")
 
     return questions
 
@@ -398,20 +403,27 @@ def run_sleek_evaluation(document_text: str, api_key: str, model_name: str, prov
         Dictionary containing evaluation results and metrics
     """
     try:
+        report_analysis_progress(0, 3, unit="steps", stage="sleek_preparation")
         # Step 1: Generate forget question from document
         forget_question = generate_forget_question(
             document_text, api_key, model_name, provider, temperature, top_p
         )
+
+        report_analysis_progress(1, 3, unit="steps", stage="sleek_preparation")
 
         # Step 2: Generate auxiliary reasoning for the forget question
         support_response = generate_support_response(
             forget_question, api_key, model_name, provider, temperature, top_p
         )
 
+        report_analysis_progress(2, 3, unit="steps", stage="sleek_preparation")
+
         # Step 3: Extract knowledge points and generate categorized questions
         questions_data = extract_knowledge_points_and_generate_questions(
             forget_question, support_response, document_text, api_key, model_name, provider, temperature, top_p
         )
+
+        report_analysis_progress(3, 3, unit="steps", stage="sleek_preparation")
 
         # Step 4: Create SLEEKQuestion objects
         sleek_questions = categorize_questions(questions_data)
@@ -831,6 +843,7 @@ def run_sleek_qa_evaluation(
     all_results = []
     total_items = len(qa_pairs) * num_runs
     current_progress = 0
+    report_analysis_progress(0, total_items, unit="questions", stage="sleek_qa")
     
     # Process each Q/A pair
     for pair_idx, qa_pair in enumerate(qa_pairs):
@@ -845,6 +858,7 @@ def run_sleek_qa_evaluation(
         }
         
         for run_idx in range(num_runs):
+            report_analysis_progress(pair_idx * num_runs + run_idx, total_items, unit="questions", stage="sleek_qa")
             current_progress += 1
             
             if progress_callback:
@@ -897,6 +911,7 @@ def run_sleek_qa_evaluation(
                         'sub_questions': [],
                         'sub_question_answers': [],
                     })
+                    report_analysis_progress(pair_idx * num_runs + run_idx + 1, total_items, unit="questions", stage="sleek_qa")
                     continue
             
                 # Store sub-question details (for reference, not for metric calculation)
@@ -937,6 +952,7 @@ def run_sleek_qa_evaluation(
                 }
             
                 pair_results['runs'].append(run_result)
+                report_analysis_progress(pair_idx * num_runs + run_idx + 1, total_items, unit="questions", stage="sleek_qa")
         
         # Calculate aggregate metrics across runs
         successful_runs = [run for run in pair_results['runs'] if not run.get('error')]

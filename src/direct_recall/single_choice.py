@@ -18,6 +18,7 @@ from anthropic import Anthropic
 from src.direct_recall.comparison import get_llm_completion
 from src.common.metrics.logger import is_api_error_response
 from src.api_concurrency import limit_api_concurrency
+from src.resumable_analysis import report_analysis_progress
 from src.provider_cancellation import provider_call
 from src.kimi_utils import normalize_kimi_sampling_params, kimi_request_extra_body
 from src.anthropic_utils import (
@@ -174,6 +175,8 @@ Source text:
 {text}
 """
 
+    if type(num_questions) is int and num_questions > 0:
+        report_analysis_progress(0, num_questions, unit="questions", stage="single_choice_generation")
     response = get_llm_completion(
         prompt,
         api_key,
@@ -203,6 +206,8 @@ Source text:
         if len(mcq_bank) == num_questions:
             break
 
+    if type(num_questions) is int and num_questions > 0:
+        report_analysis_progress(len(mcq_bank), num_questions, unit="questions", stage="single_choice_generation")
     return mcq_bank
 
 
@@ -302,8 +307,10 @@ def generate_single_choice_questions_from_fragments(
     mcq_bank: List[Dict[str, Any]] = []
     total_operations = len(fragments) * (num_distractors + 1)  # +1 for fragment extraction
     current_operation = 0
+    report_analysis_progress(0, len(fragments), unit="questions", stage="single_choice_generation")
     
     for i, correct_fragment in enumerate(fragments):
+        report_analysis_progress(i, len(fragments), unit="questions", stage="single_choice_generation")
         # Generate distractors for this fragment
         distractors = generate_distractors_for_fragment(
             correct_fragment,
@@ -320,6 +327,7 @@ def generate_single_choice_questions_from_fragments(
             progress_callback(current_operation, total_operations, i + 1)
         
         if len(distractors) < num_distractors:
+            report_analysis_progress(i + 1, len(fragments), unit="questions", stage="single_choice_generation")
             continue  # Skip if we couldn't generate enough distractors
         
         # Create the question
@@ -346,6 +354,7 @@ def generate_single_choice_questions_from_fragments(
         }
         
         mcq_bank.append(mcq)
+        report_analysis_progress(i + 1, len(fragments), unit="questions", stage="single_choice_generation")
         current_operation += 1
         if progress_callback:
             progress_callback(current_operation, total_operations, i + 1)
@@ -915,10 +924,14 @@ def run_single_choice_evaluation(
     all_results: List[List[Dict[str, Any]]] = []
     total_items = max(1, num_runs * len(questions))
     current = 0
+    planned_items = num_runs * len(questions)
+    if planned_items > 0:
+        report_analysis_progress(0, planned_items, unit="questions", stage="single_choice_evaluation")
 
     for run_idx in range(num_runs):
         run_results: List[Dict[str, Any]] = []
         for question_idx, mcq in enumerate(questions):
+            report_analysis_progress(run_idx * len(questions) + question_idx, planned_items, unit="questions", stage="single_choice_evaluation")
             try:
                 evaluation = evaluate_single_choice_question(
                     mcq,
@@ -954,6 +967,7 @@ def run_single_choice_evaluation(
             }
 
             run_results.append(result)
+            report_analysis_progress(run_idx * len(questions) + question_idx + 1, planned_items, unit="questions", stage="single_choice_evaluation")
             current += 1
             if progress_callback:
                 progress_callback(current, total_items, run_idx + 1, question_idx + 1, len(questions))

@@ -29,7 +29,7 @@ from src.pdf_preview import (
     build_text_memorization_plots,
 )
 from src.prompt_utils import get_full_prompt
-from src.resumable_analysis import AnalysisCheckpointError, checkpoint_scope
+from src.resumable_analysis import AnalysisCheckpointError, checkpoint_scope, report_analysis_progress
 from src.common.metrics.logger import is_api_error_response
 from src.job_guard import detection_job, finish_detection_job, render_run_button, reset_detection_job, wd
 from src.floating_clear_cache import (
@@ -1199,7 +1199,9 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 else:
                     with detection_job("Text Report Analysis"):
                         try:
+                            report_analysis_progress(0, 1, unit="reports", stage="text_report")
                             _save_text_report_narrative(results_data, api_key, prompt_type, model_choice, provider)
+                            report_analysis_progress(1, 1, unit="reports", stage="text_report")
                         except AnalysisCheckpointError:
                             raise
                         except Exception as exc:

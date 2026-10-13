@@ -69,7 +69,11 @@ def force_stop_detection_job():
     for key in list(st.session_state):
         if str(key).startswith("detection_run_"):
             st.session_state.pop(key, None)
-    st.session_state[STOP_NOTICE_KEY] = True
+    from src.resumable_analysis import page_supports_analysis_recovery
+    st.session_state[STOP_NOTICE_KEY] = (
+        True if page_supports_analysis_recovery(st.session_state.get("main_navigation"))
+        else "Stopped. Run this analysis again to restart."
+    )
     finish_detection_job(run_id=run_id)
     return True
 
@@ -247,14 +251,20 @@ def render_active_job_lock() -> None:
     if not is_detection_job_running():
         st.session_state.pop(JOB_UNLOCK_PENDING_KEY, None)
         _render_ui_unlock_styles()
-        if st.session_state.pop(STOP_NOTICE_KEY, False):
-            st.info("Stopped. Saved progress is preserved. Choose Resume to continue.")
+        notice = st.session_state.pop(STOP_NOTICE_KEY, False)
+        if notice:
+            st.info(notice if isinstance(notice, str) else
+                    "Stopped. Saved progress is preserved. Choose Resume to continue.")
         return
     job_label = st.session_state.get(JOB_LABEL_KEY, "Detection task")
     _render_running_banner(job_label)
+    from src.resumable_analysis import page_supports_analysis_recovery
+    stop_help = ("Stop now and keep saved progress. Requests already sent may still finish."
+                 if page_supports_analysis_recovery(st.session_state.get("main_navigation"))
+                 else "Stop this run. Requests already sent may still finish.")
     render_force_stop_button(
         key="force_stop_detection_job", on_click=force_stop_detection_job,
-        help="Stop now and keep saved progress. Requests already sent may still finish.",
+        help=stop_help,
     )
     _render_ui_lock_styles()
 

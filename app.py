@@ -27,7 +27,7 @@ from src.analysis_recovery_ui import (
     apply_pending_analysis_restore, render_analysis_recovery,
     render_analysis_restore_feedback, finish_analysis_restore_feedback,
 )
-from src.resumable_analysis import AnalysisCheckpointError, page_analysis_scope
+from src.resumable_analysis import AnalysisCheckpointError, page_analysis_scope, page_supports_analysis_recovery
 from src.run_cancellation import AnalysisCancelled
 from src.job_guard import (
     finish_detection_job,
@@ -150,7 +150,10 @@ try:
             render_copyright_game3_page(model_choice)
 except AnalysisCancelled:
     _page_failed = True
-    st.info("Analysis stopped. Saved run records and results are preserved.")
+    if page_supports_analysis_recovery(page):
+        st.info("Analysis stopped. Saved run records and results are preserved.")
+    else:
+        st.info("Analysis stopped. Run this analysis again to restart.")
 except AnalysisCheckpointError as exc:
     _page_failed = True
     st.error(str(exc))

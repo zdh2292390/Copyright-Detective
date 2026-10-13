@@ -180,7 +180,7 @@ _TASK_COLUMNS = (
 _SUMMARY_COLUMNS = (
     "id,owner_id,page_key,settings,dynamic_items,server_managed,total_items,status,completed_items,"
     "failed_items,stop_requested,kill_requested,lease_expires_at,revision,created_at,updated_at,"
-    "started_at,completed_at,kill_requested_at,killed_at,display:metadata->display,"
+    "started_at,completed_at,kill_requested_at,killed_at,display:metadata->display,work_progress:metadata->work_progress,"
     "latest_items:analysis_items(item_index,status,updated_at,operation:input->>operation,scope:input->scope,"
     "provider:input->request->>provider,model:input->request->>model,model_name:input->request->>model_name,"
     "endpoint:input->request->>endpoint,base_url:input->request->>base_url,"

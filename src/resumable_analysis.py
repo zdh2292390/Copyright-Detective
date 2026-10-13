@@ -108,6 +108,11 @@ def canonical_page_key(page_key: str | None) -> str | None:
     return _PAGE_ALIASES.get(page_key, page_key)
 
 
+def page_supports_analysis_recovery(page_key: str | None) -> bool:
+    """Unlearning runs do not persist cloud tasks, including remote execution."""
+    return canonical_page_key(page_key) != "Unlearning Detection"
+
+
 def key_belongs_to_page(key: str, page_key: str | None) -> bool:
     page_key = canonical_page_key(page_key)
     if page_key not in _PAGE_PREFIXES:
@@ -256,11 +261,13 @@ def snapshot_session(state: Any, page_key: str | None = None, *, max_bytes: int 
 def get_cloud_store_for_current_user(page_key: str | None = None):
     """Verify account identity before constructing an owner-bound cloud store.
 
-    Guests retain existing behavior. Signed-in accounts always use cloud
-    recovery: an authenticated client is sufficient for ordinary analyses,
+    Guests and excluded pages retain existing behavior. Signed-in accounts
+    use cloud recovery on supported pages: an authenticated client suffices
     while official competition jobs require the server-only service client.
     Authentication/configuration failures never fall back to temporary files.
     """
+    if not page_supports_analysis_recovery(page_key):
+        return None
     import streamlit as st
     from src.supabase_client import get_authenticated_client, get_secret
     if not st.session_state.get("access_token"):
@@ -346,6 +353,7 @@ class CallJournal:
         self.broken = False
         self.closed = False
         self.verified_complete = False
+        self._fresh_call_started = False
         self.lock = RLock()
         self.stop_event = Event()
         self.lease_token = None
@@ -412,6 +420,7 @@ class CallJournal:
                 if isinstance(existing_display.get("current_step"), dict):
                     restored_display["current_step"] = deepcopy(existing_display["current_step"])
             self.metadata["display"] = restored_display
+            self._last_api_was_cached = bool(self.items)
         except BaseException as exc:
             self.stop_event.set()
             if self.lease_token:
@@ -429,11 +438,54 @@ class CallJournal:
             getattr(store, "owner_id", ""), self.task_id, self.cancellation_token,
         )
 
+    def report_progress(self, current: int, total: int, *, unit: str = "items", stage: str = "analysis"):
+        """Persist business work positions independently of provider call counts."""
+        from src.analysis_work_progress import normalize_work_progress
+        progress = normalize_work_progress({"current": current, "total": total, "unit": unit, "stage": stage})
+        if progress is None:
+            raise AnalysisCheckpointError("Invalid analysis work progress.")
+        with self.lock:
+            if self.read_only or self.closed:
+                return
+            check_cancellation()
+            if self.cancellation_token is not None:
+                self.cancellation_token.check()
+            if self.broken:
+                raise AnalysisCheckpointError("Progress saving was interrupted. Resume this task before making more API calls.")
+            previous = normalize_work_progress(self.metadata.get("work_progress"))
+            # Cached replay revisits already completed positions. Keep the latest
+            # persisted position until replay reaches the remaining work.
+            stored = normalize_work_progress((self.task.get("metadata") or {}).get("work_progress"))
+            for candidate in (previous, stored):
+                if candidate is not None and all(candidate[key] == progress[key] for key in ("total", "unit", "stage")):
+                    progress["current"] = max(progress["current"], candidate["current"])
+            if progress == previous:
+                return
+            self.metadata["work_progress"] = progress
+            if self._last_api_was_cached:
+                # Avoid one cloud write per replayed unit. The next fresh call
+                # or finish() commits this reconstructed position with its data.
+                return
+            try:
+                self.task = self.store.save_progress(
+                    self.task_id, metadata=deepcopy(self.metadata), lease_token=self.lease_token,
+                )
+            except Exception as exc:
+                self.broken = True
+                raise _checkpoint_error_with_context(
+                    exc, "The analysis progress could not be saved. Saved calls remain available for recovery."
+                ) from exc
+            if self.task.get("stop_requested"):
+                if self.cancellation_token is not None:
+                    self.cancellation_token.cancel()
+                raise AnalysisCancelled("Analysis stopped. Saved progress is preserved.")
+
     def _display_metadata(self, request: dict, index: int, phase: str) -> dict:
         # Keep locally recovered API history when an old task's heartbeat
         # returns metadata that does not yet contain all of its saved calls.
         previous_display = self.metadata.get("display")
-        self.metadata.update(deepcopy(self.task.get("metadata") or {}))
+        self.metadata.update({key: deepcopy(value) for key, value in (self.task.get("metadata") or {}).items()
+                              if key != "work_progress"})
         self.metadata["display"] = update_task_display(previous_display, request, index, phase)
         return deepcopy(self.metadata)
 
@@ -503,6 +555,7 @@ class CallJournal:
                         )
                     self.visited_items.add(index)
                     if item.get("status") == "complete":
+                        self._last_api_was_cached = True
                         return decode(item["result"])
                 else:
                     if self.read_only:
@@ -536,6 +589,8 @@ class CallJournal:
                 self.failed = self.broken = True
                 raise _checkpoint_error_with_context(exc, "Unable to save the next request. No API call was started.") from exc
 
+            self._last_api_was_cached = False
+            self._fresh_call_started = True
             token = _SUPPRESSED.set(True)
             try:
                 check_cancellation()
@@ -589,7 +644,14 @@ class CallJournal:
             complete = success and not self.failed and not self.broken and (len(self.visited_items) == len(self.items) or self.verified_complete)
             metadata = deepcopy(self.metadata)
             metadata.update({key: deepcopy(value) for key, value in (self.task.get("metadata") or {}).items()
-                             if key != "display"})
+                             if key not in {"display", "work_progress"}})
+            if not complete and not self._fresh_call_started:
+                # An interrupted replay may still be rebuilding an earlier
+                # stage. Retain the last durable stage until real work resumes.
+                from src.analysis_work_progress import normalize_work_progress
+                stored = normalize_work_progress((self.task.get("metadata") or {}).get("work_progress"))
+                if stored is not None:
+                    metadata["work_progress"] = stored
             if complete and final_snapshot is not None:
                 metadata["final_session"] = final_snapshot
 
@@ -646,6 +708,8 @@ class PageRun:
         self.broken = False
 
     def ensure_journal(self):
+        if not page_supports_analysis_recovery(self.page_key):
+            return None
         if self.broken:
             raise AnalysisCheckpointError("Cloud checkpoints are unavailable. Restore the task before making more calls.")
         if self.journal is not None:
@@ -747,6 +811,23 @@ def finish_ui_run(success: bool):
         scope.finish(success)
 
 
+def report_analysis_progress(current: int, total: int, *, unit: str = "items", stage: str = "analysis"):
+    """Record the runner's real current/total without changing checkpoint identity."""
+    if _SUPPRESSED.get():
+        # Nested SDK/provider work may run on another thread while its parent
+        # owns the journal lock. Only the business coordinator publishes units.
+        return
+    scope = _CURRENT.get()
+    if isinstance(scope, PageRun):
+        if not scope.trigger or (scope.journal is not None and scope.journal.closed):
+            return
+        journal = scope.ensure_journal()
+    else:
+        journal = scope
+    if isinstance(journal, CallJournal):
+        journal.report_progress(current, total, unit=unit, stage=stage)
+
+
 def checkpoint_call(operation: str, payload: dict, invoke: Callable, *, is_success: Callable | None = None):
     check_cancellation()
     if _SUPPRESSED.get():
@@ -814,6 +895,8 @@ def prepare_background_journal(key: str, label: str):
     """Capture verified identity and frozen inputs on the UI thread, not workers."""
     scope = _CURRENT.get()
     if not isinstance(scope, PageRun) or not scope.trigger:
+        return None
+    if not page_supports_analysis_recovery(scope.page_key):
         return None
     if scope.broken:
         raise AnalysisCheckpointError("Cloud checkpoints are unavailable. Resume this task before making more calls.")

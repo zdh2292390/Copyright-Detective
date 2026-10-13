@@ -10,7 +10,7 @@ This module implements Q&A-based knowledge memorization detection for LLMs:
 from typing import List, Dict, Tuple, Optional, Any, Callable
 import json
 import math
-from src.resumable_analysis import AnalysisCheckpointError, checkpoint_scope
+from src.resumable_analysis import AnalysisCheckpointError, checkpoint_scope, report_analysis_progress
 from src.direct_recall.comparison import get_llm_completion
 from src.direct_recall.pdf_utils import extract_text_from_document
 from src.common.metrics.logger import normalize_answer, get_tokens, compute_token_f1, llm_judge_evaluate, is_api_error_response
@@ -61,6 +61,9 @@ Generate the Q&A pairs in the following JSON format:
 
 Only output the JSON array, nothing else."""
 
+    if type(num_pairs) is int and num_pairs > 0:
+        report_analysis_progress(0, num_pairs, unit="questions", stage="knowledge_qa_generation")
+
     # Get LLM completion
     response = get_llm_completion(
         prompt,
@@ -99,7 +102,10 @@ Only output the JSON array, nothing else."""
                             'question': str(pair['question']).strip(),
                             'answer': str(pair['answer']).strip()
                         })
-                return validated_pairs[:num_pairs]
+                accepted = validated_pairs[:num_pairs]
+                if type(num_pairs) is int and num_pairs > 0:
+                    report_analysis_progress(len(accepted), num_pairs, unit="questions", stage="knowledge_qa_generation")
+                return accepted
         
         return []
         
@@ -335,10 +341,13 @@ def run_knowledge_qa_evaluation(
     all_results = []
     total_items = num_runs * len(qa_pairs)
     current_item = 0
+    if total_items > 0:
+        report_analysis_progress(0, total_items, unit="questions", stage="knowledge_qa")
 
     for run_idx in range(num_runs):
         run_results = []
         for qa_idx, qa_pair in enumerate(qa_pairs):
+            report_analysis_progress(run_idx * len(qa_pairs) + qa_idx, total_items, unit="questions", stage="knowledge_qa")
             with checkpoint_scope("knowledge_qa", run_idx, qa_idx):
                 question = qa_pair.get('question', '') if isinstance(qa_pair, dict) else ''
                 ground_truth = qa_pair.get('answer', '') if isinstance(qa_pair, dict) else ''
@@ -371,6 +380,7 @@ def run_knowledge_qa_evaluation(
                             evaluation['llm_judge_reasoning'] = judge_result.get('reasoning', '')
                 evaluation['qa_index'] = qa_idx
                 run_results.append(evaluation)
+                report_analysis_progress(run_idx * len(qa_pairs) + qa_idx + 1, total_items, unit="questions", stage="knowledge_qa")
                 current_item += 1
                 if progress_callback:
                     progress_callback(current_item, total_items, run_idx + 1, qa_idx + 1, len(qa_pairs))
