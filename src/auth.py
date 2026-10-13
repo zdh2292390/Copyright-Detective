@@ -473,9 +473,9 @@ _AUTH_CLIENT_SCRIPT = f"""
         const app = appWindow(targetWin);
         if (!app || !app.location) return;
         persistReturnUrl(stripOAuthParams(new URL(app.location.href.split("#")[0])).toString());
-        // External OAuth must leave the entire browser tab, even when the
-        // application is displayed inside another site's frame.
-        app.top.location.href = oauthUrl;
+        // An embedding sandbox may forbid top navigation while allowing
+        // user-initiated tabs. OAuth callbacks do not require an opener.
+        app.open(oauthUrl, "_blank", "noopener,noreferrer");
     }}
 
     window.__copyrightDetectiveAuth = {{
@@ -913,7 +913,7 @@ def _bind_return_url_on_sign_in_click(login_url: str) -> None:
             if (app.__copyrightDetectiveReturnUrlListener) return;
             app.__copyrightDetectiveReturnUrlListener = true;
             // Delegation also covers links mounted after this iframe runs.
-            // The native _top target works even before this listener exists.
+            // The native link opens a tab even before this listener exists.
             app.document.addEventListener("click", function (event) {{
                 const link = event.target.closest && event.target.closest("a.github-sign-in-btn");
                 if (!link || link.getAttribute("href") !== app.__copyrightDetectiveGitHubLoginUrl) return;
@@ -938,7 +938,8 @@ def _github_sign_in_link_html(login_url: str, *, disabled: bool = False) -> str:
     else:
         control = (
             f'<a class="github-sign-in-btn" href="{escape(login_url, quote=True)}" '
-            f'target="_top" rel="noopener" aria-label="{label}">{label}</a>'
+            f'target="_blank" rel="noopener noreferrer" title="Open GitHub sign-in in a new tab" '
+            f'aria-label="{label}">{label}</a>'
         )
     return f'<div data-testid="stLinkButton">{control}</div>'
 
@@ -952,9 +953,9 @@ def render_github_sign_in_button(*, disabled: bool = False) -> None:
         return
 
     login_url = _with_oauth_navigation(login_url)
-    # st.link_button always opens a new tab. Reuse the existing button styles
-    # with a native top-level same-tab anchor. OAuth providers reject embedded
-    # login pages; PKCE still survives a fresh app session.
+    # Use a user-initiated native tab: embedded apps may forbid top navigation,
+    # and OAuth providers reject framed login pages. The main-mode callback
+    # carries PKCE/navigation in the URL and completes without an opener.
     st.markdown(_github_sign_in_link_html(login_url, disabled=disabled), unsafe_allow_html=True)
     if not disabled:
         _bind_return_url_on_sign_in_click(login_url)

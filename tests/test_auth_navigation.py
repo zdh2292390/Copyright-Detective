@@ -8,7 +8,7 @@ import shutil
 import subprocess
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from src import auth
@@ -29,7 +29,7 @@ class Controls(HTMLParser):
 
 
 # The component and app are same-origin. The surrounding preview is cross-origin:
-# its document/location cannot be read, but a user-initiated top navigation is allowed.
+# its document/location cannot be read, and sandbox restrictions block top navigation.
 JS_FIXTURE = r"""
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
@@ -60,7 +60,10 @@ const outer = {};
 const outerLocation = {};
 Object.defineProperty(outerLocation, 'href', {
     get() { throw new Error('SecurityError: cross-origin location'); },
-    set(value) { topNavigations.push(String(value)); },
+    set(value) {
+        topNavigations.push(String(value));
+        throw new Error('SecurityError: sandbox blocks top navigation');
+    },
 });
 Object.defineProperty(outer, 'document', {
     get() { throw new Error('SecurityError: cross-origin document'); },
@@ -72,12 +75,14 @@ outer.location = outerLocation;
 outer.parent = outer;
 outer.top = outer;
 const listeners = [];
+const openedTabs = [];
 const app = {
     location: location('https://app.example/?view=saved#input'),
     document: {addEventListener(...args) { listeners.push(args); }},
     localStorage: storage(),
     parent: outer,
     top: outer,
+    open(...args) { openedTabs.push(args); return null; },
 };
 const component = {
     location: location('https://app.example/component'),
@@ -94,12 +99,14 @@ const window = component;
 
 
 class AuthNavigationTests(unittest.TestCase):
-    def test_enabled_native_link_navigates_top_without_javascript(self):
+    def test_enabled_native_link_opens_new_tab_without_javascript(self):
         controls = Controls(auth._github_sign_in_link_html(LOGIN_URL))
         anchors = [attrs for tag, attrs in controls.elements if tag == "a"]
         self.assertEqual(len(anchors), 1)
         self.assertEqual(anchors[0]["href"], LOGIN_URL)
-        self.assertEqual(anchors[0]["target"], "_top")
+        self.assertEqual(anchors[0]["target"], "_blank")
+        self.assertEqual(set(anchors[0]["rel"].split()), {"noopener", "noreferrer"})
+        self.assertEqual(anchors[0]["title"], "Open GitHub sign-in in a new tab")
         self.assertFalse(any(name.startswith("on") for name in anchors[0]))
         self.assertNotIn("script", [tag for tag, _ in controls.elements])
 
@@ -144,6 +151,58 @@ class AuthNavigationTests(unittest.TestCase):
         self.assertEqual(json.loads(redirect[auth.OAUTH_NAVIGATION_PARAM][0]), {
             key: value for key, value in navigation.items() if key != "api_key"
         })
+
+    def test_render_uses_callback_that_completes_without_an_opener(self):
+        markdown = Mock()
+        navigation_url = LOGIN_URL + "&navigation=preserved"
+        with patch.object(auth, "st", SimpleNamespace(markdown=markdown)), \
+                patch.object(auth, "_oauth_callback_in_progress", return_value=False), \
+                patch.object(auth, "get_oauth_redirect_url", return_value=LOGIN_URL) as get_url, \
+                patch.object(auth, "_with_oauth_navigation", return_value=navigation_url) as add_navigation, \
+                patch.object(auth, "_bind_return_url_on_sign_in_click") as bind_click:
+            auth.render_github_sign_in_button()
+        get_url.assert_called_once_with("github", for_popup=False)
+        add_navigation.assert_called_once_with(LOGIN_URL)
+        markdown.assert_called_once()
+        self.assertTrue(markdown.call_args.kwargs["unsafe_allow_html"])
+        controls = Controls(markdown.call_args.args[0])
+        link = next(attrs for tag, attrs in controls.elements if tag == "a")
+        self.assertEqual(link["href"], navigation_url)
+        self.assertEqual(link["target"], "_blank")
+        bind_click.assert_called_once_with(navigation_url)
+
+    def test_disabled_render_has_no_login_link_or_click_listener(self):
+        markdown = Mock()
+        with patch.object(auth, "st", SimpleNamespace(markdown=markdown)), \
+                patch.object(auth, "_oauth_callback_in_progress", return_value=False), \
+                patch.object(auth, "get_oauth_redirect_url", return_value=LOGIN_URL), \
+                patch.object(auth, "_with_oauth_navigation", side_effect=lambda url: url), \
+                patch.object(auth, "_bind_return_url_on_sign_in_click") as bind_click:
+            auth.render_github_sign_in_button(disabled=True)
+        controls = Controls(markdown.call_args.args[0])
+        self.assertFalse(any(tag == "a" for tag, _ in controls.elements))
+        self.assertTrue(any(tag == "button" and "disabled" in attrs for tag, attrs in controls.elements))
+        bind_click.assert_not_called()
+
+    def test_code_callback_completes_in_new_tab_without_popup_forwarding(self):
+        user = SimpleNamespace(id="owner")
+        response = SimpleNamespace(
+            user=user, session=SimpleNamespace(user=user, access_token="access", refresh_token="refresh")
+        )
+        exchange = Mock(return_value=response)
+        client = SimpleNamespace(auth=SimpleNamespace(exchange_code_for_session=exchange))
+        query = {"code": "callback-code", auth.OAUTH_PKCE_PARAM: "callback-verifier"}
+        with patch.object(auth, "auth_enabled", return_value=True), \
+                patch.object(auth, "is_logged_in", return_value=False), \
+                patch.object(auth, "_oauth_query_param", side_effect=query.get), \
+                patch.object(auth, "_get_pkce_verifier", return_value="callback-verifier"), \
+                patch.object(auth, "create_supabase_client", return_value=client), \
+                patch.object(auth, "_run_auth_client") as run_bridge, \
+                patch.object(auth, "_complete_login") as complete_login:
+            auth.handle_oauth_callback()
+        exchange.assert_called_once_with({"auth_code": "callback-code", "code_verifier": "callback-verifier"})
+        complete_login.assert_called_once_with(user, "access", "refresh")
+        run_bridge.assert_not_called()
 
     def run_bridge(self, checks, *, script=None):
         if not NODE:
@@ -210,12 +269,13 @@ assert.equal(bridge.readCachedAuth().access_token, 'access');
 assert.equal(topNavigations.length, 0);
 """)
 
-    def test_javascript_login_stores_app_route_and_navigates_top(self):
+    def test_javascript_login_opens_new_tab_when_sandbox_blocks_top_navigation(self):
         self.run_bridge(r"""
 const oauthUrl = 'https://auth.example/auth/v1/authorize?provider=github';
 bridge.signInWithGitHub(window, oauthUrl);
 assert.equal(app.localStorage.getItem('copyright_detective_return_url'), 'https://app.example/?view=saved');
-assert.deepEqual(topNavigations, [oauthUrl]);
+assert.deepEqual(openedTabs, [[oauthUrl, '_blank', 'noopener,noreferrer']]);
+assert.equal(topNavigations.length, 0);
 assert.equal(app.location.href, 'https://app.example/?view=saved#input');
 """)
 
