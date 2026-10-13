@@ -8,6 +8,7 @@ chunk rows separately so a long run does not rewrite its accumulated result blob
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import hashlib
 import json
 import math
@@ -35,6 +36,7 @@ METADATA_KEYS = frozenset({
     "current_chunk", "current_attempt", "retry_in_seconds", "retry_attempt",
     "started_at", "updated_at", "completed_at", "owner_id", "revision", "stop_requested",
     "active_chunks", "concurrency_limit", "effective_concurrency",
+    "kill_requested", "kill_requested_at", "killed_at",
 })
 TOKEN_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 MAX_CHUNKS = 500_000
@@ -135,11 +137,12 @@ def _metadata(state: Any) -> dict[str, Any]:
         raise CheckpointError("Checkpoint has an invalid document fingerprint.")
     clean["settings"] = _settings(clean.get("settings"))
     total = _integer(clean.get("total_chunks"), "chunk count")
-    if not isinstance(clean.get("status"), str) or clean["status"] not in {"running", "incomplete", "complete"}:
+    if not isinstance(clean.get("status"), str) or clean["status"] not in {"running", "incomplete", "complete", "stopping", "killed"}:
         raise CheckpointError("Checkpoint has an invalid analysis status.")
     clean["error"] = _text(clean.get("error"), "error", nullable=True, limit=100_000)
-    if "stop_requested" in clean and not isinstance(clean["stop_requested"], bool):
-        raise CheckpointError("Checkpoint has an invalid stop request.")
+    for key in ("stop_requested", "kill_requested"):
+        if key in clean and not isinstance(clean[key], bool):
+            raise CheckpointError(f"Checkpoint has an invalid {key} flag.")
     if "active_chunks" in clean:
         active = clean["active_chunks"]
         if not isinstance(active, list) or len(active) > total:
@@ -148,12 +151,12 @@ def _metadata(state: Any) -> dict[str, Any]:
             _integer(index, "active chunk", minimum=1, maximum=total)
         if len(set(active)) != len(active):
             raise CheckpointError("Checkpoint has duplicate active chunks.")
-        if clean["status"] == "complete" and active:
-            raise CheckpointError("A complete checkpoint cannot contain active chunks.")
+        if clean["status"] in {"complete", "killed"} and active:
+            raise CheckpointError("A terminal checkpoint cannot contain active chunks.")
     for key in ("concurrency_limit", "effective_concurrency"):
         if key in clean:
             _integer(clean[key], key, minimum=1, maximum=8)
-    for key in ("started_at", "updated_at", "completed_at", "owner_id"):
+    for key in ("started_at", "updated_at", "completed_at", "kill_requested_at", "killed_at", "owner_id"):
         if key in clean:
             _text(clean[key], key, nullable=True, limit=1024)
     for key in ("current_attempt", "retry_attempt", "revision"):
@@ -330,6 +333,8 @@ class DocumentCheckpointStore:
                 raise CheckpointError("Document recovery checkpoint was not found.")
             stored = self._stored_metadata(job)
             self._check_identity(stored, metadata)
+            metadata = self._preserve_kill(stored, metadata)
+            metadata_json = _json(metadata)
             existing = {}
             for row in connection.execute("SELECT * FROM chunk_state WHERE token = ?", (token,)):
                 expected = _hash(_json([row["result_json"], row["failure"], row["attempts"]]))
@@ -390,7 +395,10 @@ class DocumentCheckpointStore:
             job = connection.execute("SELECT * FROM jobs WHERE token = ?", (token,)).fetchone()
             if job is None:
                 raise CheckpointError("Document recovery checkpoint was not found.")
-            self._check_identity(self._stored_metadata(job), metadata)
+            stored = self._stored_metadata(job)
+            self._check_identity(stored, metadata)
+            metadata = self._preserve_kill(stored, metadata)
+            metadata_json = _json(metadata)
             if chunk_index is not None:
                 previous = connection.execute("SELECT * FROM chunk_state WHERE token = ? AND chunk_index = ?", (token, chunk_index)).fetchone()
                 if previous is not None:
@@ -413,6 +421,43 @@ class DocumentCheckpointStore:
                     raise CheckpointError("A complete checkpoint must contain a successful result for every chunk.")
             if job["metadata"] != metadata_json:
                 connection.execute("UPDATE jobs SET metadata = ?, metadata_hash = ? WHERE token = ?", (metadata_json, _hash(metadata_json), token))
+
+    @staticmethod
+    def _preserve_kill(stored, metadata):
+        # A checkpoint prepared before Kill cannot revive the durable task.
+        if stored.get("kill_requested") or stored.get("status") == "killed":
+            metadata = dict(metadata)
+            metadata["kill_requested"] = True
+            metadata["stop_requested"] = True
+            metadata["kill_requested_at"] = stored.get("kill_requested_at") or metadata.get("kill_requested_at")
+            metadata["status"] = "killed" if stored.get("status") == "killed" or metadata.get("status") == "killed" else "stopping"
+            if metadata["status"] == "killed":
+                metadata["killed_at"] = stored.get("killed_at") or metadata.get("killed_at")
+                metadata["active_chunks"] = []
+        return metadata
+
+    def request_kill(self, token: str, *, active=False):
+        """Retain the journal, while making Kill durable even without a worker."""
+        token = _token(token)
+        with self._connection() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            job = connection.execute("SELECT * FROM jobs WHERE token = ?", (token,)).fetchone()
+            if job is None:
+                return False
+            metadata = self._stored_metadata(job)
+            if metadata["status"] == "complete":
+                return False
+            now = datetime.now(timezone.utc).isoformat()
+            metadata.update(kill_requested=True, stop_requested=True, updated_at=now,
+                            retry_in_seconds=0, retry_attempt=None)
+            metadata["kill_requested_at"] = metadata.get("kill_requested_at") or now
+            metadata["status"] = "killed" if metadata.get("status") == "killed" or not active else "stopping"
+            if metadata["status"] == "killed":
+                metadata["killed_at"] = metadata.get("killed_at") or now
+                metadata["active_chunks"] = []
+            data = _json(metadata)
+            connection.execute("UPDATE jobs SET metadata = ?, metadata_hash = ? WHERE token = ?", (data, _hash(data), token))
+            return metadata
 
     def load(self, token: str) -> tuple[dict[str, Any], list[tuple[str, str]]] | None:
         token = _token(token)

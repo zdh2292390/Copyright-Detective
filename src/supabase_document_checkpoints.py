@@ -186,7 +186,29 @@ class SupabaseDocumentCheckpointStore:
             raise CheckpointError("The cloud document checkpoint has an invalid owner.")
         if task.get("settings") != metadata["settings"] or task.get("total_items") != metadata["total_chunks"] or task.get("fingerprint") != metadata["fingerprint"]:
             raise CheckpointError("The cloud document checkpoint settings or fingerprint do not match.")
-        return metadata
+        # Task columns are the lifecycle authority. RPCs deliberately leave
+        # document metadata untouched when an owner kills an inactive task.
+        return self._project_task_state(task, metadata)
+
+    @staticmethod
+    def _project_task_state(task, state):
+        state = dict(state)
+        status = task.get("status")
+        if status not in {"queued", "running", "incomplete", "complete", "stopping", "killed"}:
+            raise CheckpointError("The cloud document checkpoint has an invalid status.")
+        state["status"] = "incomplete" if status == "queued" else status
+        state["stop_requested"] = bool(task.get("stop_requested"))
+        state["kill_requested"] = bool(task.get("kill_requested")) or status in {"stopping", "killed"}
+        for key in ("kill_requested_at", "killed_at", "started_at", "completed_at", "updated_at"):
+            if key in task:
+                state[key] = task[key]
+        if state["kill_requested"]:
+            state["stop_requested"] = True
+            state["retry_in_seconds"] = 0
+            state["retry_attempt"] = None
+        if status == "killed":
+            state["active_chunks"] = []
+        return state
 
     def create(self, state, chunk_pairs):
         metadata = _metadata(state)
@@ -242,7 +264,7 @@ class SupabaseDocumentCheckpointStore:
                 if task.get("completed_items") != len(cached["results"]) or task.get("failed_items") != len(cached["failures"]):
                     raise CheckpointError("The cloud checkpoint progress counts do not match its saved results.")
                 self._touch_locked(token)
-                return deepcopy(cached), list(self._sources[token])
+                return self._project_task_state(task, deepcopy(cached)), list(self._sources[token])
         total = state["total_chunks"]
         items = []
         for offset in range(0, total, 1000):
@@ -284,7 +306,7 @@ class SupabaseDocumentCheckpointStore:
         if not isinstance(source, Mapping) or source.get("pairs_hash") != _pair_hash(pairs):
             raise CheckpointError("The cloud document source chunks failed their integrity check.")
         stored_status = task.get("status")
-        if stored_status not in {"queued", "running", "incomplete", "complete"}:
+        if stored_status not in {"queued", "running", "incomplete", "complete", "stopping", "killed"}:
             raise CheckpointError("The cloud document checkpoint has an invalid status.")
         state["status"] = "incomplete" if stored_status == "queued" else stored_status
         state["stop_requested"] = bool(task.get("stop_requested"))
@@ -469,7 +491,8 @@ class SupabaseDocumentCheckpointStore:
         if lease is None:
             return
         try:
-            status = "complete" if metadata and metadata.get("status") == "complete" else "incomplete"
+            status = ("killed" if metadata and (metadata.get("kill_requested") or metadata.get("status") in {"stopping", "killed"})
+                      else "complete" if metadata and metadata.get("status") == "complete" else "incomplete")
             self._call(self.store.release, token, lease, status=status)
         finally:
             with self._lock:
@@ -487,12 +510,34 @@ class SupabaseDocumentCheckpointStore:
         self._call(self.store.request_stop, token)
         return True
 
+    def request_kill(self, token, *, active=False):
+        # Kill also terminates queued and paused tasks. Unlike resumable Stop,
+        # it must reach the owner-scoped RPC without requiring a live lease.
+        if self._task(token) is None:
+            return False
+        task = self._call(self.store.kill_task, token)
+        if not isinstance(task, Mapping):
+            raise CheckpointError("The cloud analysis did not acknowledge Kill.")
+        state = self._state_metadata(task)
+        if not state.get("kill_requested") and state["status"] not in {"stopping", "killed"}:
+            return False
+        with self._lock:
+            self._remember_revision_locked(token, task.get("revision"))
+            self._states.pop(token, None)
+            self._revisions.pop(token, None)
+            self._state_bytes[token] = 0
+            if token in self._identities:
+                self._identities[token] = deepcopy(state)
+        return state
+
     def list_for_owner(self):
         tasks = self._call(self.store.list_tasks, page_key=DOCUMENT_PAGE_KEY, statuses=["queued", "running", "incomplete"], limit=100)
         result = []
         for task in tasks:
             if not isinstance(task, Mapping) or task.get("owner_id") != self.owner_id or task.get("page_key") != DOCUMENT_PAGE_KEY:
                 raise CheckpointError("The saved document list contains an invalid account scope.")
+            if task.get("kill_requested") or task.get("status") in {"stopping", "killed"}:
+                continue
             metadata = self._state_metadata(task)
             result.append({
                 "token": self._token(task.get("id")), "settings": metadata["settings"],

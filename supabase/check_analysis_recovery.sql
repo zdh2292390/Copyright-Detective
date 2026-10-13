@@ -1,7 +1,8 @@
 -- Read-only diagnostics. Run in the same project used by SUPABASE_URL.
 -- Only PostgreSQL catalogs are read; no task content or credentials are selected.
 -- Functional checks below should be true. If a column/RPC/FK is missing or wrong,
--- rerun analysis_checkpoints.sql before applying analysis_saved_details.sql.
+-- rerun analysis_checkpoints.sql (or the incremental analysis_task_lifecycle.sql),
+-- then apply analysis_saved_details.sql if the recent-item index is missing.
 
 -- Both tables need RLS and SELECT for browser reads and service-role workers.
 -- The policy expression is included for review: it should scope auth.uid() to owner_id.
@@ -44,6 +45,11 @@ with expected(table_name, column_name, expected_type, expected_not_null) as (val
     ('analysis_tasks', 'completed_items', 'integer', true),
     ('analysis_tasks', 'failed_items', 'integer', true),
     ('analysis_tasks', 'stop_requested', 'boolean', true),
+    ('analysis_tasks', 'kill_requested', 'boolean', true),
+    ('analysis_tasks', 'kill_requested_at', 'timestamp with time zone', false),
+    ('analysis_tasks', 'killed_at', 'timestamp with time zone', false),
+    ('analysis_tasks', 'started_at', 'timestamp with time zone', false),
+    ('analysis_tasks', 'completed_at', 'timestamp with time zone', false),
     ('analysis_tasks', 'lease_token', 'uuid', false),
     ('analysis_tasks', 'lease_generation', 'bigint', true),
     ('analysis_tasks', 'lease_expires_at', 'timestamp with time zone', false),
@@ -118,10 +124,73 @@ left join pg_index i on i.indexrelid = expected.oid
 left join pg_class c on c.oid = i.indexrelid
 left join pg_am am on am.oid = c.relam;
 
--- All ten lifecycle RPCs must have these exact argument types and names, because
+-- The status constraint must allow terminal Kill while retaining every existing
+-- resumable lifecycle state. This reads only the constraint, never task contents.
+with expected as (
+    select array['complete','creating','incomplete','killed','queued','running','stopping']::text[] as statuses
+), actual as (
+    select c.oid, c.convalidated,
+           array(select distinct m[1]
+                 from regexp_matches(pg_get_expr(c.conbin, c.conrelid), '''([^'']+)''::text', 'g') m
+                 order by m[1]) as statuses
+    from pg_constraint c
+    where c.conrelid = to_regclass('public.analysis_tasks')
+      and c.conname = 'analysis_tasks_status_check' and c.contype = 'c'
+)
+select actual.oid is not null as lifecycle_status_constraint_exists,
+       coalesce(actual.convalidated and actual.statuses = expected.statuses, false) as lifecycle_status_constraint_ready
+from expected left join actual on true;
+
+-- Terminal Kill flags, timestamps and leases must agree. Review the catalog
+-- expression below as well as these key predicates; no task rows are inspected.
+with expected as (
+    select to_regclass('public.analysis_tasks') as task_table
+), actual as (
+    select c.oid, c.convalidated, pg_get_expr(c.conbin, c.conrelid) as expression
+    from pg_constraint c
+    where c.conrelid = to_regclass('public.analysis_tasks')
+      and c.conname = 'analysis_tasks_kill_lifecycle_check' and c.contype = 'c'
+)
+select actual.oid is not null as kill_lifecycle_constraint_exists,
+       coalesce(actual.convalidated
+           and actual.expression like '%NOT kill_requested%'
+           and actual.expression like '%kill_requested AND stop_requested%'
+           and actual.expression like '%kill_requested_at IS NULL%'
+           and actual.expression like '%kill_requested_at IS NOT NULL%'
+           and actual.expression like '%killed_at IS NULL%'
+           and actual.expression like '%killed_at IS NOT NULL%'
+           and actual.expression like '%lease_token IS NULL%'
+           and actual.expression like '%lease_token IS NOT NULL%'
+           and actual.expression like '%lease_expires_at IS NULL%'
+           and actual.expression like '%lease_expires_at IS NOT NULL%'
+           and actual.expression like '%''stopping''::text%'
+           and actual.expression like '%''killed''::text%', false) as kill_lifecycle_constraint_ready,
+       actual.expression as kill_lifecycle_constraint_expression
+from expected left join actual on true;
+
+-- Cleanup never scans unrelated tasks or revokes an active worker's lease.
+select i.indexrelid is not null as kill_cleanup_index_exists,
+       coalesce(i.indisvalid and i.indisready and am.amname = 'btree'
+           and i.indrelid = to_regclass('public.analysis_tasks')
+           and i.indnkeyatts = 2 and i.indnatts = 2
+           and array(
+               select a.attname::text
+               from unnest(i.indkey) with ordinality as key_column(attnum, position)
+               join pg_attribute a on a.attrelid = i.indrelid and a.attnum = key_column.attnum
+               order by key_column.position
+           ) = array['owner_id', 'lease_expires_at']::text[]
+           and pg_get_expr(i.indpred, i.indrelid) = '(kill_requested AND (status = ''stopping''::text))',
+           false) as kill_cleanup_index_ready
+from (select to_regclass('public.analysis_tasks_kill_cleanup_idx') as oid) expected
+left join pg_index i on i.indexrelid = expected.oid
+left join pg_class c on c.oid = i.indexrelid
+left join pg_am am on am.oid = c.relam;
+
+-- All twelve lifecycle RPCs must have these exact argument types and names, because
 -- the Python store invokes PostgREST with named p_* JSON arguments. Matching a
 -- function name alone can hide a stale overload, missing argument, or wrong type.
--- Kill uses analysis_request_stop; metadata saves use analysis_save_items/release.
+-- Stop uses analysis_request_stop; terminal Kill uses analysis_kill_task.
+-- Reconciliation returns an integer count; all other lifecycle RPCs return jsonb.
 with expected(name, signature, parameter_names) as (values
     ('analysis_create_task',
      'public.analysis_create_task(uuid,uuid,text,jsonb,jsonb,integer,text,jsonb,boolean)',
@@ -142,6 +211,10 @@ with expected(name, signature, parameter_names) as (values
      array['p_owner_id','p_task_id','p_lease_token','p_status','p_metadata']::text[]),
     ('analysis_request_stop', 'public.analysis_request_stop(uuid,uuid)',
      array['p_owner_id','p_task_id']::text[]),
+    ('analysis_kill_task', 'public.analysis_kill_task(uuid,uuid)',
+     array['p_owner_id','p_task_id']::text[]),
+    ('analysis_reconcile_killed_tasks', 'public.analysis_reconcile_killed_tasks(uuid)',
+     array['p_owner_id']::text[]),
     ('analysis_delete', 'public.analysis_delete(uuid,uuid)',
      array['p_owner_id','p_task_id']::text[])
 ), roles as (
@@ -152,7 +225,9 @@ select expected.name as rpc, expected.signature as expected_signature,
        p.oid is not null as exact_signature_exists,
        coalesce(p.proargnames = expected.parameter_names and p.proargmodes is null
            and p.pronargs = cardinality(expected.parameter_names), false) as parameter_names_match,
-       coalesce(p.prokind = 'f' and p.prorettype = to_regtype('jsonb') and not p.proretset, false) as returns_jsonb,
+       coalesce(p.prokind = 'f' and p.prorettype = to_regtype(
+           case when expected.name = 'analysis_reconcile_killed_tasks' then 'integer' else 'jsonb' end
+       ) and not p.proretset, false) as returns_expected_type,
        coalesce(has_function_privilege(roles.authenticated_oid, p.oid, 'EXECUTE'), false) as authenticated_can_execute,
        coalesce(has_function_privilege(roles.service_role_oid, p.oid, 'EXECUTE'), false) as service_role_can_execute,
        coalesce(p.prosecdef, false) as security_definer

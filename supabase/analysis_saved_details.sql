@@ -1,8 +1,9 @@
 -- Incremental Saved analyses upgrade for an existing checkpoint installation.
 -- Run in the same Supabase project as SUPABASE_URL, after analysis_checkpoints.sql.
 -- API/model/current-step summaries use existing metadata.display JSONB; no new
--- columns, statuses, backfill, or Kill RPC are needed. Existing tasks fall back
--- to recent analysis_items; the current analysis_request_stop RPC retains leases.
+-- columns or backfill are needed for these display fields. Existing tasks use
+-- recent analysis_items. Terminal Kill is a separate lifecycle upgrade:
+-- run analysis_task_lifecycle.sql (or the latest full checkpoint migration).
 -- If check_analysis_recovery.sql reports missing columns, FK, grants or RPCs,
 -- reapply the full analysis_checkpoints.sql before running this optional index upgrade.
 -- This script is rerunnable and leaves tasks, checkpoints and official scores intact.

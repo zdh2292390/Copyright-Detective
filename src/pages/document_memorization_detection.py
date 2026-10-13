@@ -311,7 +311,7 @@ def _document_task_stage(state, *, active=False) -> str:
     if state.get("status") == "complete":
         return "Complete"
     if active and state.get("stop_requested"):
-        return "Killing: waiting for already-sent requests to finish"
+        return "Stopping: waiting for already-sent requests to finish"
     if active and state.get("retry_in_seconds"):
         attempt = state.get("retry_attempt") or state.get("current_attempt")
         retry = f" (attempt {attempt})" if attempt else ""
@@ -386,12 +386,33 @@ def _render_document_task_details(state, token, *, active=False) -> None:
                 st.caption(f"{label}: {timestamp}")
 
 
+def _document_job_hidden(state) -> bool:
+    return bool(state and (state.get("kill_requested") or state.get("status") in {"stopping", "killed"}))
+
+
+def _detach_document_job(token) -> None:
+    # Worker cleanup continues independently after the card is removed.
+    if st.session_state.get("pdf_cloud_recovery_selection") == token:
+        st.session_state.pop("pdf_cloud_recovery_selection", None)
+    current = st.session_state.get(PDF_JOB_TOKEN_KEY)
+    if current in (None, token) or st.query_params.get(PDF_JOB_QUERY_KEY) == token:
+        st.session_state.pop(PDF_JOB_TOKEN_KEY, None)
+        if st.query_params.get(PDF_JOB_QUERY_KEY) == token:
+            st.query_params.pop(PDF_JOB_QUERY_KEY, None)
+        for key in (
+            "pdf_analysis_state", "pdf_analysis_results", "pdf_report_bytes", "pdf_report_fingerprint",
+            "pdf_analysis_model", "pdf_analysis_chunk_size", "pdf_analysis_continuation_method",
+            "pdf_analysis_temperature", "pdf_analysis_top_p", "pdf_analysis_score_type", "pdf_analysis_top_k",
+            "pdf_active_document_name",
+        ):
+            st.session_state.pop(key, None)
+        reset_detection_job()
+
+
 def _kill_document_job(token, owner_id) -> None:
     try:
-        if DOCUMENT_JOBS.force_stop(token, owner_id=owner_id):
-            _trigger_pdf_rerun()
-        else:
-            st.info("No active requests to kill. Saved progress is kept.")
+        if DOCUMENT_JOBS.force_kill(token, owner_id=owner_id):
+            _detach_document_job(token)
     except (CheckpointError, ValueError) as exc:
         st.error(f"Could not kill analysis: {exc}")
 
@@ -401,11 +422,12 @@ def _render_document_recovery_list(active_token=None, *, disabled=False):
     if not owner_id or st.session_state.get("_pdf_verified_cloud_owner") != owner_id or not DOCUMENT_JOBS.cloud_enabled_for(owner_id):
         return
     try:
-        saved = DOCUMENT_JOBS.list_saved(owner_id=owner_id)
+        saved = [item for item in DOCUMENT_JOBS.list_saved(owner_id=owner_id) if not _document_job_hidden(item)]
     except (CheckpointError, ValueError) as exc:
         st.error(f"Could not list saved document analyses: {exc}")
         return
     if not saved:
+        st.session_state.pop("pdf_cloud_recovery_selection", None)
         return
     st.markdown("**Saved analyses**")
     entries = {item["token"]: item for item in saved}
@@ -442,15 +464,14 @@ def _render_document_recovery_list(active_token=None, *, disabled=False):
         except (CheckpointError, ValueError) as exc:
             st.error(f"Could not read the saved analysis: {exc}")
     with kill_col:
-        kill_clicked = render_force_stop_button(
+        render_force_stop_button(
             label="Kill", key="kill_selected_saved_pdf_analysis", width="stretch",
+            on_click=lambda: _kill_document_job(selected, owner_id),
             disabled=not selected_state or selected_state.get("status") == "complete" or (
                 bool(entries[selected].get("active")) and bool(selected_state.get("stop_requested"))
             ),
-            help="Stop this task's pending chunks and retries, keeping saved progress. Already-sent requests may still finish.",
+            help="End this task and remove it from Saved analyses. Its source and results remain stored.",
         )
-    if kill_clicked:
-        _kill_document_job(selected, owner_id)
     if open_saved:
         try:
             state = DOCUMENT_JOBS.get(selected, owner_id=owner_id)
@@ -477,6 +498,9 @@ def _restore_document_job():
         state = DOCUMENT_JOBS.get(token, owner_id=st.session_state.get("user_id"))
         if state is None:
             raise CheckpointError("The saved analysis is no longer available. Start a new run.")
+        if _document_job_hidden(state):
+            _detach_document_job(token)
+            return None
         st.session_state[PDF_JOB_TOKEN_KEY] = token
         _sync_document_job(state)
         return token
@@ -519,6 +543,9 @@ def _poll_document_job(token, owner_id) -> None:
     if state is None:
         st.error("The saved analysis is no longer available.")
         return
+    if _document_job_hidden(state):
+        _detach_document_job(token)
+        st.rerun()
     _sync_document_job(state)
     if not _document_job_is_active(token, owner_id):
         # Remove timed polling after the task ends and render its final report.
@@ -529,20 +556,21 @@ def _poll_document_job(token, owner_id) -> None:
     st.progress(completed / max(total, 1), text=f"{completed:,} / {total:,} chunks complete")
     st.caption("Analysis continues in the background if you refresh or switch pages. Progress is saved after each chunk.")
     if state.get("stop_requested"):
-        st.caption("Killing... Saved progress is kept. Resume becomes available after active requests finish.")
-    if render_force_stop_button(
-        key="stop_pdf_analysis",
-        label="Killing..." if state.get("stop_requested") else "Kill",
-        disabled=bool(state.get("stop_requested")),
-        help="Stops pending chunks and retries while keeping saved progress. A request already sent may still finish at the provider.",
-    ):
-        _kill_document_job(token, owner_id)
+        st.caption("Stopping... Saved progress is kept. Resume becomes available after active requests finish.")
+    render_force_stop_button(
+        key="stop_pdf_analysis", label="Kill",
+        on_click=lambda: _kill_document_job(token, owner_id),
+        help="End this task and remove it from Saved analyses. Its source and results remain stored.",
+    )
 
 
 def _render_document_job(token, api_key, provider, *, show_resume_button=True) -> None:
     owner_id = st.session_state.get("user_id")
     state = DOCUMENT_JOBS.get(token, owner_id=owner_id)
     if state is None:
+        return
+    if _document_job_hidden(state):
+        _detach_document_job(token)
         return
     _sync_document_job(state)
     settings = state["settings"]
@@ -556,6 +584,9 @@ def _render_document_job(token, api_key, provider, *, show_resume_button=True) -
         # The worker may have finished between the snapshot and active check.
         state = DOCUMENT_JOBS.get(token, owner_id=owner_id)
         if state is None:
+            return
+        if _document_job_hidden(state):
+            _detach_document_job(token)
             return
         _sync_document_job(state)
     if state["status"] != "complete":
@@ -577,12 +608,11 @@ def _render_document_job(token, api_key, provider, *, show_resume_button=True) -
                         help="Continue with this document's saved settings.",
                     )
             with columns[-1]:
-                kill_clicked = render_force_stop_button(
+                render_force_stop_button(
                     label="Kill", key="kill_saved_pdf_analysis", width="stretch",
-                    help="Stop pending chunks and retries, keeping saved progress. Already-sent requests may still finish.",
+                    on_click=lambda: _kill_document_job(token, owner_id),
+                    help="End this task and remove it from Saved analyses. Its source and results remain stored.",
                 )
-            if kill_clicked:
-                _kill_document_job(token, owner_id)
             if resume_clicked:
                 try:
                     DOCUMENT_JOBS.submit(token, api_key, owner_id=owner_id)

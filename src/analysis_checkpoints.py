@@ -167,19 +167,20 @@ OFFICIAL_GAME_PAGE_KEYS = frozenset({
     'Copyright Challenge',
     'Copyright Challenge 1',
 })
-_TASK_STATUSES = frozenset({"creating", "queued", "running", "incomplete", "complete"})
+_TASK_STATUSES = frozenset({"creating", "queued", "running", "incomplete", "complete", "stopping", "killed"})
 _ITEM_STATUSES = frozenset({"pending", "complete", "failed"})
 _MAX_ITEMS = 500_000
 _MAX_JSON_BYTES = 16 * 1024 * 1024
 _MAX_BATCH_BYTES = 4 * 1024 * 1024
 _TASK_COLUMNS = (
     "id,owner_id,page_key,fingerprint,settings,source,metadata,dynamic_items,server_managed,"
-    "total_items,status,completed_items,failed_items,stop_requested,"
-    "lease_token,lease_generation,lease_expires_at,revision,created_at,updated_at"
+    "total_items,status,completed_items,failed_items,stop_requested,kill_requested,"
+    "lease_token,lease_generation,lease_expires_at,revision,created_at,updated_at,started_at,completed_at,kill_requested_at,killed_at"
 )
 _SUMMARY_COLUMNS = (
     "id,owner_id,page_key,settings,dynamic_items,server_managed,total_items,status,completed_items,"
-    "failed_items,stop_requested,lease_expires_at,revision,created_at,updated_at,display:metadata->display,"
+    "failed_items,stop_requested,kill_requested,lease_expires_at,revision,created_at,updated_at,"
+    "started_at,completed_at,kill_requested_at,killed_at,display:metadata->display,"
     "latest_items:analysis_items(item_index,status,updated_at,operation:input->>operation,scope:input->scope,"
     "provider:input->request->>provider,model:input->request->>model,model_name:input->request->>model_name,"
     "endpoint:input->request->>endpoint,base_url:input->request->>base_url,"
@@ -191,7 +192,7 @@ _ITEM_COLUMNS = "task_id,owner_id,item_index,input,status,result,error,attempts,
 # response and require reconciliation; never repeat those blindly.
 _RETRYABLE_RPCS = frozenset({
     "create_task", "put_items", "finalize_task", "claim", "heartbeat",
-    "save_items", "request_stop", "delete",
+    "save_items", "request_stop", "kill_task", "reconcile_killed_tasks", "delete",
 })
 _CHECKPOINT_ATTEMPTS = 2
 _CHECKPOINT_RETRY_DELAY = 0.25
@@ -288,12 +289,12 @@ class SupabaseAnalysisCheckpointStore:
         self.owner_id = _uuid(owner_id, "owner_id")
         self.batch_size = _integer(batch_size, "batch_size", 1, 1000)
 
-    def _rpc(self, method: str, **params: Any) -> dict[str, Any]:
+    def _rpc(self, method: str, *, _parse=_row, **params: Any) -> Any:
         arguments = {"p_owner_id": self.owner_id, **params}
         attempts = _CHECKPOINT_ATTEMPTS if method in _RETRYABLE_RPCS else 1
         for attempt in range(attempts):
             try:
-                return _row(self.client.rpc(f"analysis_{method}", arguments).execute())
+                return _parse(self.client.rpc(f"analysis_{method}", arguments).execute())
             except Exception as exc:
                 diagnostic = classify_checkpoint_error(exc, operation="write")
                 if diagnostic.kind != "network" or attempt + 1 == attempts:
@@ -399,18 +400,22 @@ class SupabaseAnalysisCheckpointStore:
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         task_id = _uuid(task_id, "task_id")
+        self.reconcile_killed_tasks()
         rows = self._query(self.client.table("analysis_tasks").select(_TASK_COLUMNS)
                            .eq("owner_id", self.owner_id).eq("id", task_id).limit(1))
         return rows[0] if rows else None
 
     def list_tasks(self, *, page_key: str | None = None, statuses: Iterable[str] | None = None,
-                   offset: int = 0, limit: int = 50, summary_only: bool = False) -> list[dict[str, Any]]:
+                   offset: int = 0, limit: int = 50, summary_only: bool = False,
+                   exclude_killed: bool = False) -> list[dict[str, Any]]:
         offset = _integer(offset, "offset")
         limit = _integer(limit, "limit", 1, 1000)
-        if not isinstance(summary_only, bool):
-            raise AnalysisCheckpointError("summary_only must be a boolean.")
+        if not isinstance(summary_only, bool) or not isinstance(exclude_killed, bool):
+            raise AnalysisCheckpointError("summary_only and exclude_killed must be booleans.")
         columns = _SUMMARY_COLUMNS if summary_only else _TASK_COLUMNS
         query = self.client.table("analysis_tasks").select(columns).eq("owner_id", self.owner_id)
+        if exclude_killed:
+            query = query.eq("kill_requested", False)
         if summary_only:
             # Recent compact legacy checkpoints, without prompts/results or
             # large session snapshots. The display metadata tracks newer runs.
@@ -426,6 +431,7 @@ class SupabaseAnalysisCheckpointStore:
             if not values:
                 return []
             query = query.in_("status", values)
+        self.reconcile_killed_tasks()
         return self._query(query.order("updated_at", desc=True).order("id").range(offset, offset + limit - 1))
 
     def load_items(self, task_id: str, *, offset: int = 0, limit: int = 200) -> list[dict[str, Any]]:
@@ -455,7 +461,7 @@ class SupabaseAnalysisCheckpointStore:
     def save_items(self, task_id: str, updates: Iterable[Mapping[str, Any]], *,
                    metadata: Mapping[str, Any] | None = None, status: str | None = None,
                    lease_token: str) -> dict[str, Any]:
-        if status is not None and status not in {"running", "incomplete", "complete"}:
+        if status is not None and status not in {"running", "incomplete", "complete", "stopping", "killed"}:
             raise AnalysisCheckpointError("Invalid saved task status.")
         safe_updates = []
         indices = set()
@@ -501,14 +507,24 @@ class SupabaseAnalysisCheckpointStore:
 
     def release(self, task_id: str, lease_token: str, *, status: str = "incomplete",
                 metadata: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        if status not in {"incomplete", "complete"}:
-            raise AnalysisCheckpointError("A released task must be incomplete or complete.")
+        if status not in {"incomplete", "complete", "killed"}:
+            raise AnalysisCheckpointError("A released task must be incomplete, complete or killed.")
         return self._rpc("release", p_task_id=_uuid(task_id, "task_id"),
                          p_lease_token=_uuid(lease_token, "lease_token"), p_status=status,
                          p_metadata=None if metadata is None else _json(metadata, "metadata", object_only=True))
 
     def request_stop(self, task_id: str) -> dict[str, Any]:
         return self._rpc("request_stop", p_task_id=_uuid(task_id, "task_id"))
+
+    def kill_task(self, task_id: str) -> dict[str, Any]:
+        """Terminal cancellation; retain the task and checkpoint audit record."""
+        return self._rpc("kill_task", p_task_id=_uuid(task_id, "task_id"))
+
+    def reconcile_killed_tasks(self) -> int:
+        """Finalize abandoned Kill cleanup only after its worker lease expires."""
+        def parse_count(response):
+            return _integer(_data(response), "reconciled task count", high=2**31 - 1)
+        return self._rpc("reconcile_killed_tasks", _parse=parse_count)
 
     def delete(self, task_id: str) -> None:
         self._rpc("delete", p_task_id=_uuid(task_id, "task_id"))

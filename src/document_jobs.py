@@ -261,6 +261,11 @@ class DocumentAnalysisJobs:
                 state, pairs = latest
                 self._check_owner(state, owner_id)
                 validate_analysis_state(pairs, state)
+            if state.get("kill_requested") or state["status"] in {"stopping", "killed"}:
+                if not remote and state["status"] != "killed":
+                    store.request_kill(token, active=False)
+                    state, _ = store.load(token)
+                return state
             if state["status"] == "running" and not active:
                 state["status"] = "incomplete"
                 state["error"] = "The server stopped before this analysis finished. Resume to process the remaining chunks."
@@ -292,6 +297,8 @@ class DocumentAnalysisJobs:
             self._check_owner(state, owner_id)
             validate_analysis_state(pairs, state)
             self._validate_settings(state)
+            if state.get("kill_requested") or state["status"] in {"stopping", "killed"}:
+                return False
             if not str(api_key or "").strip() and state["settings"]["provider"] != "Local vLLM":
                 raise ValueError("Enter an API key before starting or resuming analysis.")
             if state["status"] == "complete":
@@ -309,6 +316,9 @@ class DocumentAnalysisJobs:
                     self._check_owner(state, owner_id)
                     validate_analysis_state(pairs, state)
                     self._validate_settings(state)
+                    if state.get("kill_requested") or state["status"] in {"stopping", "killed"}:
+                        store.release(token)
+                        return False
                 if existing is not None:
                     retained = existing["state"]
                     if not getattr(store, "remote", False):
@@ -328,17 +338,18 @@ class DocumentAnalysisJobs:
                 state["concurrency_limit"] = limit
                 state["effective_concurrency"] = limit
                 state["error"] = None
-                state["started_at"] = _now()
-                state["updated_at"] = state["started_at"]
+                state["started_at"] = state.get("started_at") or _now()
+                state["updated_at"] = _now()
                 store.save(token, state)
                 stop = Event()
                 cancellation = CancellationToken()
+                kill = Event()
                 self._jobs[token] = {
                     "state": _snapshot(state), "stop": stop, "store": store,
-                    "cancellation": cancellation,
+                    "cancellation": cancellation, "kill": kill,
                 }
                 try:
-                    self._executor.submit(self._run, token, state, pairs, str(api_key or "").strip(), stop, store, cancellation)
+                    self._executor.submit(self._run, token, state, pairs, str(api_key or "").strip(), stop, store, cancellation, kill)
                 except Exception:
                     self._jobs.pop(token, None)
                     state["status"] = "incomplete"
@@ -351,14 +362,32 @@ class DocumentAnalysisJobs:
                     store.release(token)
                 raise
 
-    def _run(self, token, state, pairs, api_key, stop, store, cancellation):
+    def _run(self, token, state, pairs, api_key, stop, store, cancellation, kill):
         heartbeat_done = Event()
         lease_errors = []
+
+        def apply_kill(updated, task=None):
+            if isinstance(task, dict) and (task.get("kill_requested") or task.get("status") in {"stopping", "killed"}):
+                kill.set()
+                for key in ("kill_requested_at", "killed_at"):
+                    if task.get(key):
+                        updated[key] = task[key]
+            if kill.is_set():
+                updated["kill_requested"] = True
+                updated["kill_requested_at"] = updated.get("kill_requested_at") or _now()
+                updated["stop_requested"] = True
+                updated["status"] = "stopping"
+                updated["retry_in_seconds"] = 0
+                updated["retry_attempt"] = None
+                stop.set()
+                cancellation.cancel()
 
         def heartbeat():
             while not heartbeat_done.wait(LEASE_HEARTBEAT_SECONDS):
                 try:
-                    if store.heartbeat(token).get("stop_requested"):
+                    task = store.heartbeat(token)
+                    apply_kill(state, task)
+                    if task.get("stop_requested"):
                         stop.set()
                         cancellation.cancel()
                 except Exception as exc:
@@ -381,6 +410,7 @@ class DocumentAnalysisJobs:
             if updated["status"] == "complete" and not updated.get("completed_at"):
                 updated["completed_at"] = updated["updated_at"]
             updated["stop_requested"] = stop.is_set()
+            apply_kill(updated)
             updated["error"] = _redact_error(updated.get("error"), api_key) if updated.get("error") else None
             current = updated.get("current_chunk")
             current_index = current - 1 if current else None
@@ -391,6 +421,7 @@ class DocumentAnalysisJobs:
                 if lease_errors:
                     raise CheckpointError("The cloud task lease could not be renewed. Resume after the active lease expires.") from lease_errors[0]
                 saved = store.save_progress(token, updated, current - 1 if current else None)
+                apply_kill(updated, saved)
                 if isinstance(saved, dict) and saved.get("stop_requested"):
                     stop.set()
                     cancellation.cancel()
@@ -432,6 +463,9 @@ class DocumentAnalysisJobs:
             state["active_chunks"] = []
             state["updated_at"] = _now()
             state["stop_requested"] = stop.is_set()
+            apply_kill(state)
+            if kill.is_set():
+                state["error"] = "Analysis killed by request. The saved source and results are retained."
             state["failures"] = {
                 index: _redact_error(error, api_key)
                 for index, error in state["failures"].items()
@@ -455,15 +489,31 @@ class DocumentAnalysisJobs:
                 heartbeat_done.set()
                 if heartbeat_thread is not None:
                     heartbeat_thread.join(timeout=1)
-                if remote:
-                    try:
-                        store.release(token)
-                    except Exception:
-                        # Expiry provides recovery if the server cannot release
-                        # its own lease. Never overwrite a replacement worker.
-                        pass
+                # Serialize final lifecycle persistence with an arriving Kill.
                 with self._lock:
                     job = self._jobs.get(token)
+                    if kill.is_set():
+                        state.update(
+                            status="killed", kill_requested=True, stop_requested=True,
+                            killed_at=state.get("killed_at") or _now(), active_chunks=[],
+                            retry_in_seconds=0, retry_attempt=None,
+                        )
+                        state["updated_at"] = state["killed_at"]
+                        try:
+                            store.save(token, state)
+                        except Exception:
+                            if job is not None:
+                                job["storage_failed"] = True
+                        finally:
+                            if job is not None:
+                                job["state"] = _snapshot(state)
+                    if remote:
+                        try:
+                            store.release(token)
+                        except Exception:
+                            # Expiry provides recovery if the server cannot release
+                            # its own lease. Never overwrite a replacement worker.
+                            pass
                     if job is not None and not job.get("storage_failed"):
                         self._jobs.pop(token, None)
                     elif job is not None:
@@ -523,6 +573,33 @@ class DocumentAnalysisJobs:
         their cancelled worker cannot start another request or publish results.
         """
         return self.stop(token, owner_id=owner_id, force=True)
+
+    def force_kill(self, token, *, owner_id=None):
+        """Terminally kill a task, retain its journal, and prevent Resume."""
+        with self._lock:
+            job = self._jobs.get(token)
+            active = bool(job is not None and not job.get("finished"))
+            store = job["store"] if active else self._store_for(token, owner_id=owner_id)
+            if job is not None:
+                self._check_owner(job["state"], owner_id)
+            else:
+                saved = store.load(token)
+                if saved is None:
+                    return False
+                self._check_owner(saved[0], owner_id)
+            killed = store.request_kill(token, active=active)
+            if not killed or not (killed.get("kill_requested") or killed.get("status") in {"stopping", "killed"}):
+                return False
+            if job is not None:
+                job["state"].update({key: killed[key] for key in (
+                    "status", "kill_requested", "kill_requested_at", "killed_at", "stop_requested", "updated_at"
+                ) if key in killed})
+                job["state"]["kill_requested"] = True
+                if active:
+                    job["kill"].set()
+                    job["stop"].set()
+                    job["cancellation"].cancel()
+            return True
 
     def delete(self, token, *, owner_id=None):
         with self._lock:

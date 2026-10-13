@@ -306,6 +306,8 @@ class CallJournal:
     """One fenced writer; cached responses survive a fresh application process."""
 
     def __init__(self, store: Any, task: dict, *, heartbeat: bool = True):
+        if task.get("kill_requested") or task.get("status") in {"stopping", "killed"}:
+            raise AnalysisCheckpointError("This task was killed and cannot be resumed. Start a new analysis.", kind="killed")
         self.store = store
         self.task = task
         self.task_id = str(task["id"])
@@ -339,6 +341,8 @@ class CallJournal:
             if not self.read_only:
                 self.task = store.claim(self.task_id, ttl_seconds=LEASE_TTL)
                 self.lease_token = self.task["lease_token"]
+                if self.task.get("kill_requested") or self.task.get("status") in {"stopping", "killed"}:
+                    raise AnalysisCheckpointError("This task was killed and cannot be resumed. Start a new analysis.", kind="killed")
                 self.metadata.update(deepcopy(self.task.get("metadata") or {}))
                 # A large restored journal can take longer than its lease to
                 # download. Renew it during loading, before any paid API call.

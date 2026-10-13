@@ -44,6 +44,7 @@ class MemoryDocumentJobs:
         self.stop_calls = []
         self.submit_calls = []
         self.failure = None
+        self.completion_won = False
 
     def get(self, token, *, owner_id):
         return deepcopy(self.state)
@@ -62,13 +63,15 @@ class MemoryDocumentJobs:
             "updated_at": self.state["updated_at"], "active": self.active,
         }]
 
-    def force_stop(self, token, *, owner_id):
+    def force_kill(self, token, *, owner_id):
         self.stop_calls.append((token, owner_id))
         if self.failure:
             raise self.failure
-        if self.active:
-            self.state["stop_requested"] = True
-        return self.active
+        if self.completion_won:
+            self.state["status"] = "complete"
+            return False
+        self.state.update(stop_requested=True, kill_requested=True, status="stopping" if self.active else "killed")
+        return True
 
     def submit(self, token, api_key, *, owner_id):
         self.submit_calls.append((token, api_key, owner_id))
@@ -121,30 +124,63 @@ class DocumentSavedAnalysisUITests(unittest.TestCase):
         self.assertFalse(app.button(key="resume_saved_pdf_analysis").disabled)
         self.assertEqual(app.button(key="kill_saved_pdf_analysis").label, "Kill")
 
-    def test_paused_kill_calls_owner_scoped_stop_and_keeps_progress(self):
+    def test_paused_kill_removes_card_and_keeps_progress(self):
         app = self.open_app()
         app.button(key="kill_saved_pdf_analysis").click().run()
         self.assertEqual(self.jobs.stop_calls, [(TOKEN, OWNER)])
         self.assertEqual(len(self.jobs.state["results"]), 2)
-        self.assertIn("No active requests to kill. Saved progress is kept.", self.text(app))
-        self.assertFalse(app.button(key="resume_saved_pdf_analysis").disabled)
+        self.assertEqual(self.jobs.state["status"], "killed")
+        self.assertNotIn("Saved analysis:", self.text(app))
+        self.assertNotIn("resume_saved_pdf_analysis", [button.key for button in app.button])
 
-    def test_active_kill_waits_for_existing_requests_before_resume(self):
+    def test_active_kill_removes_card_while_cleanup_continues(self):
         app = self.open_app(task(status="running", active_chunks=[3, 4]), active=True)
         self.assertIn("Stage: Analyzing chunks 3, 4 / 10", self.text(app))
-        self.assertEqual(app.button(key="stop_pdf_analysis").label, "Kill")
-        self.assertNotIn("resume_saved_pdf_analysis", [button.key for button in app.button])
         app.button(key="stop_pdf_analysis").click().run()
         self.assertEqual(self.jobs.stop_calls, [(TOKEN, OWNER)])
         self.assertTrue(self.jobs.active)
-        self.assertTrue(app.button(key="stop_pdf_analysis").disabled)
-        self.assertEqual(app.button(key="stop_pdf_analysis").label, "Killing...")
+        self.assertTrue(self.jobs.state["kill_requested"])
+        self.assertNotIn("Saved analysis:", self.text(app))
         self.assertNotIn("resume_saved_pdf_analysis", [button.key for button in app.button])
-        self.jobs.active = False
-        self.jobs.state.update(status="incomplete", active_chunks=[])
-        app.run()
-        self.assertFalse(app.button(key="resume_saved_pdf_analysis").disabled)
+        self.assertNotIn("stop_pdf_analysis", [button.key for button in app.button])
         self.assertEqual(len(self.jobs.state["results"]), 2)
+
+    def test_kill_detaches_current_query_token_and_cached_report(self):
+        app = self.open_app()
+        app.session_state[document_page.PDF_JOB_TOKEN_KEY] = TOKEN
+        app.session_state["pdf_report_bytes"] = b"old report"
+        app.session_state["pdf_report_fingerprint"] = "old fingerprint"
+        app.query_params[document_page.PDF_JOB_QUERY_KEY] = TOKEN
+        app.button(key="kill_saved_pdf_analysis").click().run()
+        self.assertEqual(len(app.exception), 0)
+        for key in (document_page.PDF_JOB_TOKEN_KEY, "pdf_analysis_state", "pdf_analysis_results",
+                    "pdf_report_bytes", "pdf_report_fingerprint"):
+            self.assertNotIn(key, app.session_state.filtered_state)
+        self.assertNotIn(document_page.PDF_JOB_QUERY_KEY, app.query_params)
+        app.run()
+        self.assertNotIn("Saved analysis:", self.text(app))
+
+    def test_completion_before_kill_keeps_completed_card_and_recovery_link(self):
+        app = self.open_app()
+        app.session_state[document_page.PDF_JOB_TOKEN_KEY] = TOKEN
+        app.query_params[document_page.PDF_JOB_QUERY_KEY] = TOKEN
+        self.jobs.completion_won = True
+        app.button(key="kill_saved_pdf_analysis").click().run()
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(self.jobs.state["status"], "complete")
+        self.assertEqual(app.session_state[document_page.PDF_JOB_TOKEN_KEY], TOKEN)
+        self.assertEqual(app.query_params[document_page.PDF_JOB_QUERY_KEY], [TOKEN])
+        self.assertIn("Saved analysis:", self.text(app))
+
+    def test_paused_selected_kill_removes_recovery_entry_on_refresh(self):
+        app = self.open_app(recovery=True)
+        app.selectbox(key="pdf_cloud_recovery_selection").select(TOKEN).run()
+        app.button(key="kill_selected_saved_pdf_analysis").click().run()
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(self.jobs.state["status"], "killed")
+        self.assertNotIn("pdf_cloud_recovery_selection", app.session_state.filtered_state)
+        app.run()
+        self.assertNotIn("Saved analyses", self.text(app))
 
     def test_retry_stage_shows_attempt_and_delay(self):
         app = self.open_app(task(status="running", active_chunks=[3], retry_in_seconds=4.5, retry_attempt=2), active=True)
@@ -159,7 +195,9 @@ class DocumentSavedAnalysisUITests(unittest.TestCase):
         self.assertIn("API: OpenAI / Model: saved-model", self.text(app))
         app.button(key="kill_selected_saved_pdf_analysis").click().run()
         self.assertEqual(self.jobs.stop_calls, [(TOKEN, OWNER)])
-        self.assertTrue(app.button(key="kill_selected_saved_pdf_analysis").disabled)
+        self.assertEqual(self.jobs.state["status"], "stopping")
+        self.assertNotIn("Saved analyses", self.text(app))
+        self.assertNotIn("kill_selected_saved_pdf_analysis", [button.key for button in app.button])
 
     def test_kill_remains_available_when_resume_button_is_elsewhere(self):
         app = self.open_app(show_resume=False)

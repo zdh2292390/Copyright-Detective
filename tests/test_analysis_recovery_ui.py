@@ -62,6 +62,9 @@ class MemoryStore:
     def __init__(self):
         self.tasks = []
         self.stop_calls = []
+        self.kill_calls = []
+        self.delete_calls = []
+        self.items = [{"task_id": TASK_ID, "item_index": 0, "status": "complete", "result": {"answer": "saved"}}]
         self.failure = None
 
     def list_tasks(self, **kwargs):
@@ -75,6 +78,23 @@ class MemoryStore:
         if row["status"] != "complete":
             row["stop_requested"] = True
         return deepcopy(row)
+
+    def kill_task(self, task_id):
+        self.kill_calls.append(task_id)
+        if self.failure is not None:
+            raise self.failure
+        row = next(row for row in self.tasks if row["id"] == task_id and row["owner_id"] == self.owner_id)
+        if row["status"] != "complete":
+            row.update(kill_requested=True, kill_requested_at="2026-10-13T12:00:00Z")
+            if analysis_recovery_ui._lease_active(row):
+                row.update(status="stopping", stop_requested=True)
+            else:
+                row.update(status="killed", stop_requested=True, killed_at="2026-10-13T12:00:00Z")
+        return deepcopy(row)
+
+    def delete(self, task_id):
+        self.delete_calls.append(task_id)
+        raise AssertionError("Kill must preserve durable task rows and checkpoint items")
 
 
 class SavedAnalysisUITests(unittest.TestCase):
@@ -167,62 +187,96 @@ class SavedAnalysisUITests(unittest.TestCase):
         self.assertEqual(self.store.stop_calls, [])
         self.assertEqual(len(app.exception), 0)
 
-    def test_completed_and_stopping_tasks_keep_correct_controls(self):
+    def test_completed_and_resumably_stopped_tasks_keep_correct_controls(self):
         self.store.tasks = [
             task(status="complete", display=display(["text_report_narrative"], phase="complete")),
-            task(id=OTHER_TASK_ID, status="running", stop_requested=True,
-                 lease_expires_at=lease(timedelta(minutes=5)), display=display(["knowledge_qa", 0, 0])),
+            task(id=OTHER_TASK_ID, status="incomplete", stop_requested=True,
+                 display=display(["knowledge_qa", 0, 0])),
         ]
         app = self.open_app()
         completed = app.button(key=f"_analysis_resume:{TASK_ID}")
         self.assertEqual(completed.label, "View results")
         self.assertFalse(completed.disabled)
         self.assertTrue(app.button(key=f"_analysis_kill:{TASK_ID}").disabled)
-        self.assertTrue(app.button(key=f"_analysis_resume:{OTHER_TASK_ID}").disabled)
-        stopping = app.button(key=f"_analysis_kill:{OTHER_TASK_ID}")
-        self.assertTrue(stopping.disabled)
-        self.assertEqual(stopping.label, "Stopping...")
-        self.assertIn("Resume is available after current requests finish", self.text(app))
+        self.assertFalse(app.button(key=f"_analysis_resume:{OTHER_TASK_ID}").disabled)
+        self.assertFalse(app.button(key=f"_analysis_kill:{OTHER_TASK_ID}").disabled)
+        self.assertIn("Stopped / 4 saved checkpoints", self.text(app))
 
-    def test_kill_stops_only_selected_owned_task_and_persists_cloud_request(self):
+    def test_resumable_stop_in_cleanup_can_still_be_terminally_killed(self):
+        self.store.tasks = [task(status="running", stop_requested=True,
+                                 lease_expires_at=lease(timedelta(minutes=5)))]
+        app = self.open_app()
+        self.assertTrue(app.button(key=f"_analysis_resume:{TASK_ID}").disabled)
+        kill = app.button(key=f"_analysis_kill:{TASK_ID}")
+        self.assertFalse(kill.disabled)
+        self.assertEqual(kill.label, "Kill")
+        kill.click().run()
+        self.assertEqual(self.store.kill_calls, [TASK_ID])
+        self.assert_task_absent(app)
+        self.assertEqual(self.store.tasks[0]["status"], "stopping")
+        self.assertTrue(self.store.tasks[0]["kill_requested"])
+
+    def assert_task_absent(self, app, task_id=TASK_ID):
+        self.assertEqual(len(app.exception), 0)
+        self.assertNotIn(f"_analysis_resume:{task_id}", [button.key for button in app.button])
+        self.assertNotIn(f"_analysis_kill:{task_id}", [button.key for button in app.button])
+        self.assertNotIn("Task ID: " + task_id, self.text(app))
+
+    def test_kill_hides_only_selected_owned_task_and_preserves_its_durable_history(self):
         self.store.tasks = [task(), task(id=OTHER_TASK_ID, settings={"label": "Other saved task"})]
+        original_items = deepcopy(self.store.items)
         selected = self.bind_token(OWNER, TASK_ID)
         different_owner = self.bind_token(OTHER_OWNER, TASK_ID)
         different_task = self.bind_token(OWNER, OTHER_TASK_ID)
         app = self.open_app()
         app.button(key=f"_analysis_kill:{TASK_ID}").click().run()
-        self.assertEqual(len(app.exception), 0)
         self.assertTrue(selected.cancelled)
         self.assertFalse(different_owner.cancelled)
         self.assertFalse(different_task.cancelled)
-        self.assertEqual(self.store.stop_calls, [TASK_ID])
-        self.assertIn("Stopped / 4 saved checkpoints", self.text(app))
-        self.assertTrue(app.button(key=f"_analysis_kill:{TASK_ID}").disabled)
-        self.assertFalse(app.button(key=f"_analysis_resume:{TASK_ID}").disabled)
+        self.assertEqual(self.store.kill_calls, [TASK_ID])
+        self.assertEqual(self.store.stop_calls, [])
+        self.assertEqual(self.store.delete_calls, [])
+        self.assert_task_absent(app)
         self.assertFalse(app.button(key=f"_analysis_kill:{OTHER_TASK_ID}").disabled)
+        self.assertEqual(len(self.store.tasks), 2)
+        self.assertEqual(self.store.tasks[0]["status"], "killed")
+        self.assertTrue(self.store.tasks[0]["kill_requested"])
         self.assertEqual(self.store.tasks[0]["completed_items"], 4)
+        self.assertEqual(self.store.items, original_items)
+        app.run()
+        self.assert_task_absent(app)
+        self.assert_task_absent(self.open_app())
 
-    def test_active_kill_blocks_resume_until_requests_release_lease(self):
+    def test_active_kill_disappears_during_cleanup_and_stays_absent_after_worker_release(self):
         self.store.tasks = [task(status="running", lease_expires_at=lease(timedelta(minutes=5)),
                                  display=display(["knowledge_qa", 0, 0]))]
+        original_items = deepcopy(self.store.items)
         local = self.bind_token(OWNER, TASK_ID)
         app = self.open_app()
         app.button(key=f"_analysis_kill:{TASK_ID}").click().run()
-        self.assertEqual(len(app.exception), 0)
         self.assertTrue(local.cancelled)
-        self.assertEqual(self.store.stop_calls, [TASK_ID])
-        self.assertTrue(app.button(key=f"_analysis_resume:{TASK_ID}").disabled)
-        self.assertTrue(app.button(key=f"_analysis_kill:{TASK_ID}").disabled)
-        self.assertIn("Stopping at / Checkpoint 8", self.text(app))
-        self.store.tasks[0].update(lease_expires_at=None, status="incomplete")
+        self.assertEqual(self.store.kill_calls, [TASK_ID])
+        self.assertEqual(self.store.tasks[0]["status"], "stopping")
+        self.assertIsNotNone(self.store.tasks[0]["lease_expires_at"])
+        self.assert_task_absent(app)
+        self.assert_task_absent(self.open_app())
+        self.store.tasks[0].update(lease_expires_at=None, status="killed", killed_at="2026-10-13T12:01:00Z")
         app.run()
-        self.assertEqual(len(app.exception), 0)
-        self.assertFalse(app.button(key=f"_analysis_resume:{TASK_ID}").disabled)
-        self.assertIn("Stopped at / Checkpoint 8", self.text(app))
+        self.assert_task_absent(app)
         self.assertEqual(self.store.tasks[0]["completed_items"], 4)
+        self.assertEqual(self.store.items, original_items)
 
-    def test_cloud_kill_failure_is_actionable_and_retry_clears_error(self):
+    def test_terminal_tasks_never_reappear_even_from_an_unfiltered_legacy_store(self):
+        for terminal in (task(status="stopping"), task(status="killed"), task(status="incomplete", kill_requested=True)):
+            with self.subTest(status=terminal["status"], kill_requested=terminal.get("kill_requested")):
+                self.store.tasks = [terminal, task(id=OTHER_TASK_ID)]
+                app = self.open_app()
+                self.assert_task_absent(app)
+                self.assertFalse(app.button(key=f"_analysis_resume:{OTHER_TASK_ID}").disabled)
+
+    def test_cloud_kill_failure_keeps_card_until_retry_is_durably_saved(self):
         self.store.tasks = [task()]
+        original = deepcopy(self.store.tasks)
         local = self.bind_token(OWNER, TASK_ID)
         self.store.failure = ConnectionError("PRIVATE CONNECTION DETAIL")
         app = self.open_app()
@@ -230,16 +284,33 @@ class SavedAnalysisUITests(unittest.TestCase):
         self.assertEqual(len(app.exception), 0)
         self.assertTrue(local.cancelled)
         text = self.text(app)
-        self.assertIn("Retry Kill to stop this task across sessions", text)
-        self.assertIn("Saved progress is preserved", text)
+        self.assertIn("Retry Kill", text)
         self.assertNotIn("PRIVATE CONNECTION DETAIL", text)
         self.assertFalse(app.button(key=f"_analysis_kill:{TASK_ID}").disabled)
+        self.assertEqual(self.store.tasks, original)
+        self.assertFalse(self.open_app().button(key=f"_analysis_kill:{TASK_ID}").disabled)
         self.store.failure = None
         app.button(key=f"_analysis_kill:{TASK_ID}").click().run()
-        self.assertEqual(len(app.exception), 0)
-        self.assertEqual(self.store.stop_calls, [TASK_ID, TASK_ID])
+        self.assertEqual(self.store.kill_calls, [TASK_ID, TASK_ID])
         self.assertEqual(len(app.warning), 0)
+        self.assert_task_absent(app)
+
+    def test_completion_winning_kill_race_keeps_results_and_restore_selection(self):
+        self.store.tasks = [task()]
+        app = self.open_app()
+        app.session_state[analysis_recovery_ui.PENDING_RESTORE] = {"task_id": TASK_ID}
+        app.session_state[analysis_recovery_ui.RESUME_TASK] = TASK_ID
+        # A worker commits completion after the card renders but before Kill.
+        self.store.tasks[0]["status"] = "complete"
+        app.button(key=f"_analysis_kill:{TASK_ID}").click().run()
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(self.store.kill_calls, [TASK_ID])
+        self.assertEqual(app.button(key=f"_analysis_resume:{TASK_ID}").label, "View results")
         self.assertTrue(app.button(key=f"_analysis_kill:{TASK_ID}").disabled)
+        self.assertEqual(app.session_state[analysis_recovery_ui.PENDING_RESTORE], {"task_id": TASK_ID})
+        self.assertEqual(app.session_state[analysis_recovery_ui.RESUME_TASK], TASK_ID)
+        self.assertFalse(self.store.tasks[0].get("kill_requested"))
+        self.assertEqual(self.store.delete_calls, [])
 
     def test_missing_checkpoint_still_renders_actionable_card(self):
         self.store.tasks = [task(total_items=0, completed_items=0, failed_items=0)]
@@ -256,19 +327,24 @@ class CheckpointSummaryQueryTests(unittest.TestCase):
 
         def respond(request):
             requests.append(request)
-            return httpx.Response(200, json=[], headers={"Content-Type": "application/json"})
+            return httpx.Response(200, json=0 if "/rpc/" in request.url.path else [], headers={"Content-Type": "application/json"})
 
         with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
             client = SyncPostgrestClient("https://checkpoint.invalid/rest/v1", http_client=http_client)
-            store = SupabaseAnalysisCheckpointStore(SimpleNamespace(table=client.from_), OWNER)
-            self.assertEqual(store.list_tasks(page_key=PAGE, limit=10, summary_only=True), [])
+            store = SupabaseAnalysisCheckpointStore(SimpleNamespace(table=client.from_, rpc=client.rpc), OWNER)
+            self.assertEqual(store.list_tasks(page_key=PAGE, limit=10, summary_only=True, exclude_killed=True,
+                                              statuses=["creating", "queued", "running", "incomplete", "complete"]), [])
 
-        self.assertEqual(len(requests), 1)
-        request = requests[0]
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(requests[0].url.path, "/rest/v1/rpc/analysis_reconcile_killed_tasks")
+        self.assertEqual(requests[0].read(), ('{"p_owner_id":"' + OWNER + '"}').encode())
+        request = requests[1]
         self.assertEqual(request.url.path, "/rest/v1/analysis_tasks")
         query = request.url.params
         self.assertEqual(query["owner_id"], "eq." + OWNER)
         self.assertEqual(query["page_key"], "eq." + PAGE)
+        self.assertEqual(query["status"], "in.(creating,queued,running,incomplete,complete)")
+        self.assertEqual(query["kill_requested"].lower(), "eq.false")
         self.assertEqual(query["order"], "updated_at.desc,id.asc")
         self.assertEqual(query["latest_items.order"], "updated_at.desc,item_index.desc")
         self.assertEqual(query["latest_items.offset"], "0")

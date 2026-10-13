@@ -143,10 +143,13 @@ try:
 
             render_copyright_game3_page(model_choice)
 except AnalysisCancelled:
-    st.info("Stopped. Saved progress is preserved. Choose Resume to continue.")
+    st.info("Analysis stopped. Saved run records and results are preserved.")
 except AnalysisCheckpointError as exc:
     st.error(str(exc))
-    st.caption("Saved successful calls are preserved. Choose Resume under Saved analyses to continue.")
+    if exc.kind == "killed":
+        st.caption("Start a new analysis to run another task.")
+    else:
+        st.caption("Saved successful calls are preserved. Choose Resume under Saved analyses to continue.")
 except Exception:
     logger.exception("Unhandled page error on %s", page)
     st.error(

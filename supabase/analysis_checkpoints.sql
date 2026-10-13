@@ -17,16 +17,29 @@ create table if not exists public.analysis_tasks (
     server_managed boolean not null default false,
     total_items integer not null check (total_items between 0 and 500000),
     status text not null default 'creating'
-        check (status in ('creating', 'queued', 'running', 'incomplete', 'complete')),
+        check (status in ('creating', 'queued', 'running', 'incomplete', 'complete', 'stopping', 'killed')),
     completed_items integer not null default 0 check (completed_items >= 0),
     failed_items integer not null default 0 check (failed_items >= 0),
     stop_requested boolean not null default false,
+    -- Stop pauses a resumable run. Kill permanently retires it without deleting history.
+    kill_requested boolean not null default false,
+    kill_requested_at timestamptz,
+    killed_at timestamptz,
+    started_at timestamptz,
+    completed_at timestamptz,
     lease_token uuid,
     lease_generation bigint not null default 0,
     lease_expires_at timestamptz,
     revision bigint not null default 0,
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now(),
+    constraint analysis_tasks_kill_lifecycle_check check (
+        (not kill_requested and status not in ('stopping', 'killed')
+            and kill_requested_at is null and killed_at is null)
+        or (kill_requested and stop_requested and kill_requested_at is not null
+            and ((status = 'stopping' and lease_token is not null and lease_expires_at is not null and killed_at is null)
+                or (status = 'killed' and lease_token is null and lease_expires_at is null and killed_at is not null)))
+    ),
     unique (id, owner_id),
     check (completed_items + failed_items <= total_items),
     check ((lease_token is null) = (lease_expires_at is null))
@@ -35,6 +48,29 @@ create table if not exists public.analysis_tasks (
 -- Existing rows have no authenticated/server provenance. Never infer trusted
 -- Game input from ownership, a client-supplied field or an old saved response.
 alter table public.analysis_tasks add column if not exists server_managed boolean not null default false;
+
+-- Preserve legacy Stop semantics; never infer a terminal Kill from stop_requested.
+-- Historical timestamps remain null when the original transition time is unknown.
+alter table public.analysis_tasks add column if not exists kill_requested boolean not null default false;
+alter table public.analysis_tasks add column if not exists kill_requested_at timestamptz;
+alter table public.analysis_tasks add column if not exists killed_at timestamptz;
+alter table public.analysis_tasks add column if not exists started_at timestamptz;
+alter table public.analysis_tasks add column if not exists completed_at timestamptz;
+alter table public.analysis_tasks drop constraint if exists analysis_tasks_status_check;
+alter table public.analysis_tasks add constraint analysis_tasks_status_check
+    check (status in ('creating', 'queued', 'running', 'incomplete', 'complete', 'stopping', 'killed'));
+
+-- Terminal transitions retain the active lease while draining and clear it only
+-- after finalization. Kill timestamps never appear on an ordinary resumable Stop.
+alter table public.analysis_tasks drop constraint if exists analysis_tasks_kill_lifecycle_check;
+alter table public.analysis_tasks add constraint analysis_tasks_kill_lifecycle_check
+    check (
+        (not kill_requested and status not in ('stopping', 'killed')
+            and kill_requested_at is null and killed_at is null)
+        or (kill_requested and stop_requested and kill_requested_at is not null
+            and ((status = 'stopping' and lease_token is not null and lease_expires_at is not null and killed_at is null)
+                or (status = 'killed' and lease_token is null and lease_expires_at is null and killed_at is not null)))
+    );
 
 alter table public.analysis_tasks drop constraint if exists analysis_tasks_page_key_check;
 alter table public.analysis_tasks add constraint analysis_tasks_page_key_check
@@ -68,6 +104,11 @@ create index if not exists analysis_tasks_owner_updated_idx
 -- Match both owner-scoped FK columns before the deterministic recent-item order.
 create index if not exists analysis_items_task_updated_idx
     on public.analysis_items(task_id, owner_id, updated_at desc, item_index desc);
+
+-- Crash recovery only examines this owner's terminal kills with an expired lease.
+create index if not exists analysis_tasks_kill_cleanup_idx
+    on public.analysis_tasks(owner_id, lease_expires_at)
+    where kill_requested and status = 'stopping';
 
 alter table public.analysis_tasks enable row level security;
 alter table public.analysis_items enable row level security;
@@ -241,7 +282,7 @@ declare
 begin
     task := public.analysis_locked_task(p_owner_id, p_task_id, null, false);
     perform public.analysis_check_json(p_items);
-    if task.status <> 'creating' or task.dynamic_items or jsonb_typeof(p_items) <> 'array'
+    if task.kill_requested or task.status <> 'creating' or task.dynamic_items or jsonb_typeof(p_items) <> 'array'
         or jsonb_array_length(p_items) > 1000 then
         raise exception 'Analysis task is not accepting initial work items.' using errcode = '22023';
     end if;
@@ -276,7 +317,7 @@ declare
     item_count integer;
 begin
     task := public.analysis_locked_task(p_owner_id, p_task_id, null, false);
-    if task.status <> 'creating' then
+    if task.kill_requested or task.status <> 'creating' then
         return to_jsonb(task);
     end if;
     select count(*) into item_count from public.analysis_items
@@ -302,7 +343,7 @@ begin
     if p_lease_token is null or p_ttl_seconds is null or p_ttl_seconds not between 60 and 900 then
         raise exception 'Invalid analysis lease.' using errcode = '22023';
     end if;
-    if task.status in ('creating', 'complete') then
+    if task.kill_requested or task.status in ('creating', 'complete', 'stopping', 'killed') then
         raise exception 'analysis_lease: task cannot be claimed in this state.' using errcode = 'P0001';
     end if;
     if task.lease_token is not null and task.lease_expires_at > clock_timestamp()
@@ -313,7 +354,7 @@ begin
     new_generation := task.lease_generation + case when task.lease_token = p_lease_token
         and task.lease_expires_at > clock_timestamp() then 0 else 1 end;
     update public.analysis_tasks set status = 'running', lease_token = p_lease_token,
-        lease_generation = new_generation,
+        lease_generation = new_generation, started_at = coalesce(task.started_at, clock_timestamp()),
         lease_expires_at = clock_timestamp() + make_interval(secs => p_ttl_seconds),
         stop_requested = case when new_generation = task.lease_generation then task.stop_requested else false end,
         metadata = case when new_generation = task.lease_generation then task.metadata
@@ -349,7 +390,7 @@ declare task public.analysis_tasks%rowtype;
 begin
     task := public.analysis_locked_task(p_owner_id, p_task_id, p_lease_token);
     perform public.analysis_check_json(p_input);
-    if not task.dynamic_items or task.status <> 'running' or task.stop_requested
+    if not task.dynamic_items or task.status <> 'running' or task.stop_requested or task.kill_requested
         or p_index is null or p_index <> task.total_items or task.total_items >= 500000 then
         raise exception 'Analysis append must be the next item of an active dynamic task.' using errcode = '22023';
     end if;
@@ -387,7 +428,8 @@ begin
     task := public.analysis_locked_task(p_owner_id, p_task_id, p_lease_token);
     perform public.analysis_check_json(p_updates);
     if jsonb_typeof(p_updates) <> 'array' or jsonb_array_length(p_updates) > 1000
-        or (p_status is not null and p_status not in ('running', 'incomplete', 'complete'))
+        or (p_status is not null and p_status not in ('running', 'incomplete', 'complete', 'stopping', 'killed'))
+        or (p_status in ('stopping', 'killed') and not task.kill_requested)
         or (task.status = 'complete' and p_status is not null and p_status <> 'complete') then
         raise exception 'Invalid analysis progress update.' using errcode = '22023';
     end if;
@@ -438,7 +480,8 @@ begin
             error = next_error, attempts = next_attempts, updated_at = clock_timestamp()
             where task_id = p_task_id and owner_id = p_owner_id and item_index = next_index;
     end loop;
-    if p_status = 'complete' then
+    -- A Kill that won the row lock cannot be overwritten by a late completion.
+    if p_status = 'complete' and not task.kill_requested then
         select count(*), count(*) filter (where status = 'complete') into actual_count, actual_complete
             from public.analysis_items where task_id = p_task_id and owner_id = p_owner_id;
         if actual_count <> task.total_items or actual_complete <> task.total_items then
@@ -451,7 +494,10 @@ begin
         next_metadata := jsonb_set(next_metadata, '{stop_requested}', 'true'::jsonb);
     end if;
     update public.analysis_tasks set completed_items = completed_count, failed_items = failed_count,
-        metadata = next_metadata, stop_requested = next_stop, status = coalesce(p_status, task.status),
+        metadata = next_metadata, stop_requested = next_stop,
+        status = case when task.kill_requested then 'stopping' else coalesce(p_status, task.status) end,
+        completed_at = case when not task.kill_requested and coalesce(p_status, task.status) = 'complete'
+            then coalesce(task.completed_at, clock_timestamp()) else task.completed_at end,
         revision = revision + 1, updated_at = clock_timestamp()
         where id = p_task_id and owner_id = p_owner_id returning * into task;
     return to_jsonb(task);
@@ -464,11 +510,17 @@ create or replace function public.analysis_release(
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare task public.analysis_tasks%rowtype;
 begin
-    if p_status is null or p_status not in ('incomplete', 'complete') then
+    task := public.analysis_locked_task(p_owner_id, p_task_id, p_lease_token);
+    if p_status is null or p_status not in ('incomplete', 'complete', 'killed')
+        or (p_status = 'killed' and not task.kill_requested) then
         raise exception 'Invalid released analysis status.' using errcode = '22023';
     end if;
-    perform public.analysis_save_items(p_owner_id, p_task_id, '[]'::jsonb, p_metadata, p_status, p_lease_token);
+    task := jsonb_populate_record(null::public.analysis_tasks,
+        public.analysis_save_items(p_owner_id, p_task_id, '[]'::jsonb, p_metadata, p_status, p_lease_token));
     update public.analysis_tasks set lease_token = null, lease_expires_at = null,
+        status = case when task.kill_requested then 'killed' else task.status end,
+        killed_at = case when task.kill_requested then coalesce(task.killed_at, clock_timestamp())
+            else task.killed_at end,
         revision = revision + 1, updated_at = clock_timestamp()
         where id = p_task_id and owner_id = p_owner_id returning * into task;
     return to_jsonb(task);
@@ -480,7 +532,7 @@ returns jsonb language plpgsql security definer set search_path = '' as $$
 declare task public.analysis_tasks%rowtype;
 begin
     task := public.analysis_locked_task(p_owner_id, p_task_id, null, false);
-    if task.status = 'complete' then
+    if task.status = 'complete' or task.kill_requested or task.status in ('stopping', 'killed') then
         return to_jsonb(task);
     end if;
     update public.analysis_tasks set stop_requested = true,
@@ -490,6 +542,60 @@ begin
         revision = revision + 1, updated_at = clock_timestamp()
         where id = p_task_id and owner_id = p_owner_id returning * into task;
     return to_jsonb(task);
+end;
+$$;
+
+-- Terminal Kill preserves the complete task/item journal for audit, while the
+-- application removes it from Saved analyses immediately after this RPC succeeds.
+-- Retain an active lease until accepted provider requests drain; no second worker
+-- can claim this run even if an old client tries to Resume it.
+create or replace function public.analysis_kill_task(p_owner_id uuid, p_task_id uuid)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+    task public.analysis_tasks%rowtype;
+    active_lease boolean;
+    transition_time timestamptz := clock_timestamp();
+begin
+    task := public.analysis_locked_task(p_owner_id, p_task_id, null, false);
+    if task.status in ('complete', 'killed') then
+        return to_jsonb(task);
+    end if;
+    active_lease := task.lease_token is not null and task.lease_expires_at > transition_time;
+    if task.kill_requested and active_lease and task.status = 'stopping' then
+        return to_jsonb(task);
+    end if;
+    update public.analysis_tasks set kill_requested = true, stop_requested = true,
+        kill_requested_at = coalesce(task.kill_requested_at, transition_time),
+        metadata = jsonb_set(metadata, '{stop_requested}', 'true'::jsonb),
+        status = case when active_lease then 'stopping' else 'killed' end,
+        killed_at = case when active_lease then task.killed_at else coalesce(task.killed_at, transition_time) end,
+        lease_token = case when active_lease then task.lease_token else null end,
+        lease_expires_at = case when active_lease then task.lease_expires_at else null end,
+        revision = revision + 1, updated_at = transition_time
+        where id = p_task_id and owner_id = p_owner_id returning * into task;
+    return to_jsonb(task);
+end;
+$$;
+
+-- A process may crash after Kill but before its fenced release. Reconcile only
+-- terminal kills whose leases have expired, within the caller's verified owner.
+-- Ordinary authenticated users retain official-game write restrictions.
+create or replace function public.analysis_reconcile_killed_tasks(p_owner_id uuid)
+returns integer language plpgsql security definer set search_path = '' as $$
+declare
+    reconciled_count integer;
+    transition_time timestamptz := clock_timestamp();
+begin
+    perform public.analysis_check_owner(p_owner_id);
+    update public.analysis_tasks set status = 'killed', killed_at = coalesce(killed_at, transition_time),
+        lease_token = null, lease_expires_at = null,
+        revision = revision + 1, updated_at = transition_time
+        where owner_id = p_owner_id and kill_requested and status = 'stopping'
+          and (lease_expires_at is null or lease_expires_at <= transition_time)
+          and (not public.analysis_is_official_game_page(page_key)
+               or (coalesce(auth.role(), '') = 'service_role' and server_managed));
+    get diagnostics reconciled_count = row_count;
+    return reconciled_count;
 end;
 $$;
 
@@ -523,7 +629,8 @@ begin
             'analysis_check_owner','analysis_check_json','analysis_is_official_game_page','analysis_check_page_write','analysis_locked_task',
             'analysis_create_task','analysis_put_items','analysis_finalize_task',
             'analysis_claim','analysis_heartbeat','analysis_append_item',
-            'analysis_save_items','analysis_release','analysis_request_stop','analysis_delete'
+            'analysis_save_items','analysis_release','analysis_request_stop','analysis_kill_task',
+            'analysis_reconcile_killed_tasks','analysis_delete'
         ) loop
         execute format('revoke all on function %s from public, anon, authenticated, service_role', f.signature);
         if f.proname not in ('analysis_check_owner','analysis_check_json','analysis_is_official_game_page','analysis_check_page_write','analysis_locked_task') then

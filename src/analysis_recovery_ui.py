@@ -61,6 +61,8 @@ def apply_pending_analysis_restore():
     task = store.get_task(pending.get("task_id"))
     if not task:
         raise AnalysisCheckpointError("The saved task is not available for this account.")
+    if task.get("kill_requested") or task.get("status") in {"stopping", "killed"}:
+        raise AnalysisCheckpointError("This task was killed and cannot be resumed. Start a new analysis.", kind="killed")
     if task.get("page_key") in OFFICIAL_GAME_PAGE_KEYS and task.get("server_managed") is not True:
         raise AnalysisCheckpointError(
             "This older official-game checkpoint cannot be verified. Start a new task; "
@@ -219,15 +221,26 @@ def _kill_saved_task(store, task_id):
     cancel_task(store.owner_id, str(task_id))
     error_key = f"_analysis_kill_error:{task_id}"
     try:
-        store.request_stop(str(task_id))
+        killed = store.kill_task(str(task_id))
+        if killed.get("status") == "complete" and not killed.get("kill_requested"):
+            # Completion won the database row lock; keep its result available.
+            st.session_state.pop(error_key, None)
+            return False
+        if not killed.get("kill_requested") and killed.get("status") not in {"stopping", "killed"}:
+            raise AnalysisCheckpointError("The cloud task did not acknowledge Kill.")
     except Exception as exc:
         diagnostic = classify_checkpoint_error(exc)
         st.session_state[error_key] = (
-            "The cloud stop request failed. Retry Kill to stop this task across sessions. "
+            "The cloud Kill request failed. Retry Kill to terminate and remove this task. "
             f"Saved progress is preserved. {diagnostic}"
         )
         return False
     st.session_state.pop(error_key, None)
+    if st.session_state.get(RESUME_TASK) == str(task_id):
+        st.session_state.pop(RESUME_TASK, None)
+    pending = st.session_state.get(PENDING_RESTORE)
+    if isinstance(pending, dict) and pending.get("task_id") == str(task_id):
+        st.session_state.pop(PENDING_RESTORE, None)
     return True
 
 
@@ -240,7 +253,10 @@ def render_analysis_recovery(page_key: str):
             return
         limit_key = f"_analysis_task_list_limit:{page_key}"
         limit = int(st.session_state.get(limit_key, 50))
-        tasks = store.list_tasks(page_key=page_key, limit=limit, summary_only=True)
+        tasks = store.list_tasks(
+            page_key=page_key, limit=limit, summary_only=True, exclude_killed=True,
+            statuses=["creating", "queued", "running", "incomplete", "complete"],
+        )
     except Exception as exc:
         diagnostic = classify_checkpoint_error(exc, operation="read")
         st.warning(f"Cloud recovery is unavailable. {diagnostic}")
@@ -255,11 +271,12 @@ def render_analysis_recovery(page_key: str):
         st.caption("New signed-in analyses will wait until cloud checkpoints are available.")
         return
     has_more = len(tasks) >= limit
-    tasks = [task for task in tasks if task.get("dynamic_items")]
+    tasks = [task for task in tasks if task.get("dynamic_items")
+             and not task.get("kill_requested") and task.get("status") not in {"stopping", "killed"}]
     if not tasks:
         return
     with st.expander("Saved analyses", expanded=any(t.get("status") != "complete" for t in tasks)):
-        st.caption("Resume restores the original settings and saved calls. Kill stops a task and keeps its saved progress.")
+        st.caption("Resume restores the original settings and saved calls. Kill terminates and removes a task from this list; its database record is retained.")
         if st.button("Refresh status", key=f"_analysis_refresh:{page_key}"):
             st.rerun()
         for task in tasks:
@@ -303,10 +320,10 @@ def render_analysis_recovery(page_key: str):
                 with columns[2]:
                     from src.job_guard import render_force_stop_button
                     if render_force_stop_button(
-                        label="Stopping..." if stopping else "Kill", key=f"_analysis_kill:{task['id']}",
+                        label="Kill", key=f"_analysis_kill:{task['id']}",
                         on_click=lambda task_id=str(task["id"]): _kill_saved_task(store, task_id),
-                        disabled=stop_requested or status == "complete", width="stretch",
-                        help="Stop this task and preserve saved progress. Requests already sent may need time to finish.",
+                        disabled=status == "complete", width="stretch",
+                        help="Terminate this task and remove it from Saved analyses. Its run record and saved results remain in the database.",
                     ):
                         st.rerun()
                 error = st.session_state.get(f"_analysis_kill_error:{task['id']}")
@@ -315,7 +332,7 @@ def render_analysis_recovery(page_key: str):
                 with st.expander("Task details", expanded=False):
                     st.caption(f"Task ID: {task['id']}")
                     st.caption(f"Page: {task.get('page_key') or page_key}")
-                    for field, title in (("created_at", "Created"), ("updated_at", "Last updated")):
+                    for field, title in (("created_at", "Created"), ("started_at", "Started"), ("updated_at", "Last updated"), ("completed_at", "Completed")):
                         value = task.get(field)
                         if value:
                             try:
@@ -337,7 +354,7 @@ def render_analysis_recovery(page_key: str):
                         st.caption("This older task shows APIs from recent checkpoints and the latest saved step.")
                 if active:
                     st.caption(
-                        "Kill requested. Resume is available after current requests finish."
+                        "Stop requested. Resume is available after current requests finish."
                         if stopping else
                         "This task is active. After a server restart, Resume becomes available within 3 minutes."
                     )
