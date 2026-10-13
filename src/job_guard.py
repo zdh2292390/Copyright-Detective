@@ -251,27 +251,33 @@ def render_active_job_lock() -> None:
             st.info("Stopped. Saved progress is preserved. Choose Resume to continue.")
         return
     job_label = st.session_state.get(JOB_LABEL_KEY, "Detection task")
-    with st.container(border=True, key="active_analysis_controls"):
-        status_col, stop_col = st.columns([5, 1], gap="small", vertical_alignment="center")
-        with status_col:
-            _render_running_banner(job_label)
-        with stop_col:
-            render_force_stop_button(
-                key="force_stop_detection_job", on_click=force_stop_detection_job, width="stretch",
-                help="Stop now and keep saved progress. Requests already sent may still finish.",
-            )
+    _render_running_banner(job_label)
+    render_force_stop_button(
+        key="force_stop_detection_job", on_click=force_stop_detection_job,
+        help="Stop now and keep saved progress. Requests already sent may still finish.",
+    )
     _render_ui_lock_styles()
 
 
 def render_background_job_lock(label: str) -> None:
     """Lock interactive UI for a separately managed background job."""
-    # Each background task already renders its own progress and Stop action.
+    _render_running_banner(label)
     _render_ui_lock_styles()
 
 
 def _render_running_banner(label: str) -> None:
-    st.markdown(f"**{label}** · Running")
-    st.caption("Settings are locked while analysis runs. Saved progress is kept.")
+    st.markdown(
+        (
+            '<div class="detection-job-status" '
+            'style="padding:0.75rem 1rem;background:#fff3cd;border:1px solid #ffc107;'
+            'border-radius:8px;margin-bottom:1rem;">'
+            f"⏳ <strong>{label}</strong> is running. "
+            "Please do not switch pages or adjust main-page parameters "
+            "to avoid interrupting the task."
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
 
 
 

@@ -2500,21 +2500,7 @@ section[data-testid="stSidebar"] div[data-testid="stLinkButton"] > button:disabl
     }
 }
 
-/* Keep the main action distinct from the compact stop/recovery controls. */
-[data-testid="stButton"] > button[kind="primary"],
-[data-testid="stButton"] > button[data-testid="baseButton-primary"] {
-    background: var(--primary) !important;
-    color: #ffffff !important;
-    border: 1px solid var(--primary) !important;
-    min-height: 2.75rem !important;
-    box-shadow: 0 2px 6px rgba(37, 99, 235, 0.16) !important;
-}
-[data-testid="stButton"] > button[kind="primary"]:hover,
-[data-testid="stButton"] > button[data-testid="baseButton-primary"]:hover {
-    background: var(--primary-700) !important;
-    border-color: var(--primary-700) !important;
-    transform: none;
-}
+/* Styles apply only to the new Stop controls. */
 [class*="st-key-force_stop_controls_"] [data-testid="stButton"] > button {
     background: #fff7f7 !important;
     color: #b91c1c !important;
@@ -2533,7 +2519,4 @@ section[data-testid="stSidebar"] div[data-testid="stLinkButton"] > button:disabl
     background: #f8fafc !important;
     color: #64748b !important;
     border-color: #cbd5e1 !important;
-}
-.st-key-active_analysis_controls [data-testid="stVerticalBlock"] {
-    gap: 0.35rem;
 }

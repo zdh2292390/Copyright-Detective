@@ -283,7 +283,7 @@ def background_job_running(key: str) -> bool:
 
 
 @st.fragment(run_every=2)
-def _render_active_background_job_status(key: str, display_label: Optional[str] = None) -> None:
+def _render_active_background_job_status(key: str) -> None:
     """Poll an active job and unregister the fragment once it finishes."""
     state = get_background_job(key)
     if not state:
@@ -291,27 +291,22 @@ def _render_active_background_job_status(key: str, display_label: Optional[str] 
     status = str(state.get("status") or "")
     current = int(state.get("current") or 0)
     total = max(1, int(state.get("total") or 1))
-    label = str(display_label or state.get("label") or "Game run")
+    label = str(state.get("label") or "Game run")
     message = str(state.get("message") or "")
     if status in _ACTIVE_STATUSES:
+        st.progress(min(current / total, 1.0), text=f"{label}: {message} ({current}/{total})")
+        if status == "stopping":
+            st.caption("Stopping. Saved progress is kept; Resume is available after current requests finish.")
+        else:
+            st.caption("This run continues in the background if the page reruns or you switch views.")
         from src.job_guard import render_force_stop_button
 
-        progress_column, stop_column = st.columns([5, 1], vertical_alignment="center")
-        with progress_column:
-            st.progress(min(current / total, 1.0), text=f"{label}: {current}/{total}")
-        with stop_column:
-            render_force_stop_button(
-                key=f"force_stop_background_job:{key}",
-                label="Stopping…" if status == "stopping" else "Stop",
-                on_click=lambda: force_stop_background_job(key),
-                disabled=status == "stopping",
-                help="Stop this run and keep saved progress to resume later.",
-                width="stretch",
-            )
-        st.caption(
-            "Stopping. Saved progress is kept."
-            if status == "stopping" else
-            message or "Runs in the background. Saved progress is kept."
+        render_force_stop_button(
+            key=f"force_stop_background_job:{key}",
+            label="Stopping…" if status == "stopping" else "Stop",
+            on_click=lambda: force_stop_background_job(key),
+            disabled=status == "stopping",
+            help="Stop this run and keep saved progress to resume later.",
         )
         return
 
@@ -325,20 +320,19 @@ def _render_active_background_job_status(key: str, display_label: Optional[str] 
 def render_background_job_status(
     key: str,
     *,
-    display_label: Optional[str] = None,
     completed_message: Optional[str] = None,
     completed_message_ttl_seconds: Optional[float] = None,
 ) -> None:
-    """Render progress with an optional short label; saved task names stay intact."""
+    """Render a job, polling only while it is actively running."""
     state = get_background_job(key)
     if not state:
         return
     status = str(state.get("status") or "")
     if status in _ACTIVE_STATUSES:
-        _render_active_background_job_status(key, display_label)
+        _render_active_background_job_status(key)
         return
 
-    label = str(display_label or state.get("label") or "Game run")
+    label = str(state.get("label") or "Game run")
     if status == "completed":
         if completed_message_ttl_seconds is not None:
             try:

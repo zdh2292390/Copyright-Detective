@@ -833,7 +833,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
     run_analysis = render_run_button(
         "Text Memorization Detection",
         "run_snippet_analysis_button",
-        "Analyze text",
+        "🚀 Run: Text Memorization Detection",
     )
 
     if run_analysis:

@@ -414,31 +414,33 @@ def _poll_document_job(token, owner_id) -> None:
         st.rerun()
     completed = len(state["results"])
     total = state["total_chunks"]
-    progress_text = f"{completed:,} / {total:,} chunks complete"
-    if state["failures"]:
-        progress_text += f" · {len(state['failures']):,} failed"
-    progress_col, stop_col = st.columns([5, 1], vertical_alignment="center")
-    with progress_col:
-        st.progress(completed / max(total, 1), text=progress_text)
-    with stop_col:
-        stop_clicked = render_force_stop_button(
-            key="stop_pdf_analysis",
-            label="Stopping…" if state.get("stop_requested") else "Stop",
-            disabled=bool(state.get("stop_requested")), width="stretch",
-            help="Stops pending chunks and retries while keeping saved progress. A request already sent may still finish at the provider.",
+    limit = state.get("concurrency_limit", 1)
+    effective = state.get("effective_concurrency", limit)
+    if limit > 1:
+        progress_text = (
+            f"{completed}/{total} chunks succeeded · {len(state['failures'])} failed "
+            f"· {len(state.get('active_chunks', []))} active chunks · concurrency limit {effective}"
         )
+    else:
+        progress_text = f"Analyzing chunk {state.get('current_chunk') or 1}/{total} · {completed} succeeded · {len(state['failures'])} failed"
+    st.progress(completed / max(total, 1), text=progress_text)
+    st.caption("Analysis continues in the background if you refresh or switch pages. Progress is saved after each chunk.")
+    if state.get("retry_in_seconds"):
+        if limit > 1:
+            st.caption(
+                f"Temporary API error; new chunk requests are paused for up to "
+                f"{state['retry_in_seconds']:.1f} seconds before retrying."
+            )
+        else:
+            st.caption(f"Temporary API error; retry {state.get('retry_attempt')} after {state['retry_in_seconds']:.1f} seconds.")
     if state.get("stop_requested"):
         st.caption("Stopping… Saved progress is kept. Resume becomes available after active requests finish.")
-    elif state.get("retry_in_seconds"):
-        st.caption(f"Retrying in {state['retry_in_seconds']:.1f}s after a temporary API error.")
-    else:
-        parallel_limit = state.get("effective_concurrency", state.get("concurrency_limit", 1))
-        if parallel_limit > 1:
-            active_chunks = len(state.get("active_chunks", []))
-            st.caption(f"{active_chunks} active · Up to {parallel_limit} chunks in parallel · Progress saved automatically.")
-        else:
-            st.caption("Progress is saved after each chunk. This analysis continues in the background.")
-    if stop_clicked:
+    if render_force_stop_button(
+        key="stop_pdf_analysis",
+        label="Stopping…" if state.get("stop_requested") else "Stop",
+        disabled=bool(state.get("stop_requested")),
+        help="Stops pending chunks and retries while keeping saved progress. A request already sent may still finish at the provider.",
+    ):
         try:
             DOCUMENT_JOBS.force_stop(token, owner_id=owner_id)
         except (CheckpointError, ValueError) as exc:
@@ -452,27 +454,28 @@ def _render_document_job(token, api_key, provider, *, show_resume_button=True) -
         return
     _sync_document_job(state)
     settings = state["settings"]
-    with st.container(border=True):
-        st.markdown(f"**{settings['filename']}**")
-        st.caption(settings["model"])
-        if _document_job_is_active(token, owner_id):
-            _poll_document_job(token, owner_id)
+    st.markdown("---")
+    st.markdown(f"**Saved analysis: {settings['filename']} · {settings['model']}**")
+    st.caption("Bookmark this page to restore this analysis after reconnecting. The recovery link provides access to this document; keep it private.")
+    if _document_job_is_active(token, owner_id):
+        _poll_document_job(token, owner_id)
+        return
+    if state["status"] == "running":
+        # The worker may have finished between the snapshot and active check.
+        state = DOCUMENT_JOBS.get(token, owner_id=owner_id)
+        if state is None:
             return
-        if state["status"] == "running":
-            # The worker may have finished between the snapshot and active check.
-            state = DOCUMENT_JOBS.get(token, owner_id=owner_id)
-            if state is None:
-                return
-            _sync_document_job(state)
-        completed = len(state["results"])
-        total = state["total_chunks"]
-        progress_col, resume_col = st.columns([5, 1], vertical_alignment="center")
-        with progress_col:
-            st.progress(completed / max(total, 1), text=f"{completed:,} / {total:,} chunks complete")
-        if state["status"] != "complete":
-            if provider != settings["provider"]:
-                st.caption(f"Select {settings['provider']} in the sidebar to resume.")
-            if show_resume_button:
+        _sync_document_job(state)
+    if state["status"] != "complete":
+        if provider != settings["provider"]:
+            st.info(f"Select {settings['provider']} in the sidebar to resume this saved analysis.")
+        if show_resume_button:
+            with st.container(border=True):
+                completed = len(state["results"])
+                total = state["total_chunks"]
+                progress_col, resume_col = st.columns([5, 1], vertical_alignment="center")
+                with progress_col:
+                    st.progress(completed / max(total, 1), text=f"{completed:,} / {total:,} chunks complete")
                 with resume_col:
                     resume_clicked = st.button(
                         "Resume", key="resume_saved_pdf_analysis", width="stretch",
@@ -725,7 +728,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         saved_analysis and saved_analysis.get("fingerprint") == fingerprint
         and len(saved_analysis["results"]) < saved_analysis["total_chunks"]
     )
-    button_label = "Analyze document"
+    button_label = "🔍 Run: Document Memorization Detection"
     if resume_analysis:
         button_label = "Resume analysis"
         st.caption(
@@ -734,7 +737,8 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         )
     elif saved_analysis and saved_analysis.get("status") != "complete":
         st.caption(
-            "Saved progress is available below. Analyze document starts a new run with these settings."
+            "An incomplete analysis is saved. Use Resume below to "
+            "continue with its original document and settings, or use Run to start a new analysis."
         )
 
     analyze_document = render_run_button(

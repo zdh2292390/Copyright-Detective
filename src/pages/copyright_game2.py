@@ -247,7 +247,7 @@ def _render_clear_dialog() -> None:
     confirm_col, cancel_col = st.columns(2)
     with confirm_col:
         confirmed = st.button(
-            "Clear session",
+            "Confirm",
             type="primary",
             width="stretch",
             key="_copyright_game2_clear_confirm",
@@ -753,7 +753,7 @@ def _start_scaling(
 
     def execute(report) -> ScalingBatch:
         def update(current: int, total: int) -> None:
-            report(current, total, "Generating responses")
+            report(current, total, f"Generated responses: {current}/{total}")
 
         return run_provider_scaling(
             api_key,
@@ -828,7 +828,7 @@ def _render_provider_workspace(
     clicked = render_run_button(
         "Copyright Challenge 2 - Inference Scaling",
         _key("run_both_providers"),
-        "Run comparison",
+        "Run: Inference Scaling",
         type="primary",
         disabled=(
             any_running
@@ -836,7 +836,7 @@ def _render_provider_workspace(
             or not active_providers
             or not all_keys_ready
         ),
-        help="Run the selected models using the settings above.",
+        help="Start both locked models together with the settings configured above.",
     )
 
     status_columns = st.columns(2, gap="large")
@@ -844,9 +844,8 @@ def _render_provider_workspace(
         with column:
             render_background_job_status(
                 _job_key(provider),
-                display_label=provider,
                 completed_message=(
-                    f"{provider} complete. Results are below."
+                    f"{provider} scaling finished. Results and any request failures are available below."
                 ),
             )
 
