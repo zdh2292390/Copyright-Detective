@@ -3619,14 +3619,22 @@ def render_jailbreak_persuasion_probe_section(api_key, model_choice, provider):
                             detail = detail.replace(str(api_key), "[redacted]")
                         st.error(f"Probe failed: {detail}")
                     else:
+                        st.session_state["persuasion_probe_results"] = {
+                            "ground_truth": ground_truth_probe,
+                            "generated_text": generated_text,
+                            "metrics": metrics_map,
+                        }
                         st.success("Done:Probe completed. Review the overlap below.")
-                        render_direct_recall_diff(
-                            ground_truth_probe,
-                            generated_text,
-                            title="Ground Truth vs. Probe Output",
-                            metrics=metrics_map,
-                        )
         finish_detection_job()
+
+    saved_probe = st.session_state.get("persuasion_probe_results")
+    if isinstance(saved_probe, dict):
+        render_direct_recall_diff(
+            saved_probe["ground_truth"],
+            saved_probe["generated_text"],
+            title="Ground Truth vs. Probe Output",
+            metrics=saved_probe["metrics"],
+        )
 
 
 def render_sleek_attack_page(api_key, model_choice, provider):

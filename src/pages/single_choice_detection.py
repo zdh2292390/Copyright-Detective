@@ -29,6 +29,7 @@ from src.pdf_preview import (
     render_pdf_preview_with_blob,
 )
 from src.job_guard import detection_job, render_run_button, wd
+from src.analysis_checkpoints import AnalysisCheckpointError
 from src.upload_cache import resolve_uploaded_file
 from src.direct_recall.pdf_utils import extract_text_from_document
 
@@ -416,6 +417,8 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
 
                 except Exception as exc:
                     progress_bar.empty()
+                    if isinstance(exc, AnalysisCheckpointError):
+                        raise
                     st.error(f"❌ Generation failed: {exc}")
 
     # Handle predefined examples - load them directly
@@ -531,6 +534,8 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
                             st.success(f"✅ Completed {total_items} single-choice evaluations.")
                 except Exception as exc:  # noqa: BLE001
                     progress_bar.empty()
+                    if isinstance(exc, AnalysisCheckpointError):
+                        raise
                     st.error(f"❌ Evaluation failed: {exc}")
 
     if st.session_state['sc_evaluation_results']:

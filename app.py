@@ -23,7 +23,10 @@ elif sys.path[0] != project_root_str:
 os.chdir(project_root_str)
 
 from src.auth import init_auth
-from src.analysis_recovery_ui import apply_pending_analysis_restore, render_analysis_recovery
+from src.analysis_recovery_ui import (
+    apply_pending_analysis_restore, render_analysis_recovery,
+    render_analysis_restore_feedback, finish_analysis_restore_feedback,
+)
 from src.resumable_analysis import AnalysisCheckpointError, page_analysis_scope
 from src.run_cancellation import AnalysisCancelled
 from src.job_guard import (
@@ -102,8 +105,11 @@ api_key, model_choice, provider, page = render_sidebar()
 # Render main content behind a final safety boundary. Streamlit rerun/stop signals
 # inherit from BaseException, so this catches real page failures without blocking navigation.
 _script_job_run_id = get_detection_job_run_id()
+_restore_feedback_slot = None
+_page_failed = False
 try:
     with page_analysis_scope(page, st.session_state):
+        _restore_feedback_slot = render_analysis_restore_feedback(page)
         render_analysis_recovery(page)
         if page == "Content Recall Detection":
             render_snippet_to_document_page(api_key, model_choice, provider)
@@ -143,14 +149,17 @@ try:
 
             render_copyright_game3_page(model_choice)
 except AnalysisCancelled:
+    _page_failed = True
     st.info("Analysis stopped. Saved run records and results are preserved.")
 except AnalysisCheckpointError as exc:
+    _page_failed = True
     st.error(str(exc))
     if exc.kind == "killed":
         st.caption("Start a new analysis to run another task.")
     else:
         st.caption("Saved successful calls are preserved. Choose Resume under Saved analyses to continue.")
 except Exception:
+    _page_failed = True
     logger.exception("Unhandled page error on %s", page)
     st.error(
         "This page encountered an unexpected problem, but the application is still running. "
@@ -160,6 +169,7 @@ except Exception:
     if st.button("Retry page", key="_global_page_retry"):
         st.rerun()
 finally:
+    finish_analysis_restore_feedback(page, _restore_feedback_slot, failed=_page_failed)
     # Always release the run lock when this script finishes (success or error).
     if _script_job_run_id is not None and is_detection_job_running() and _script_job_run_id == get_detection_job_run_id():
         finish_detection_job(show_clear_cache=False, run_id=_script_job_run_id)

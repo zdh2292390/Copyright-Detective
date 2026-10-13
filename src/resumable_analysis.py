@@ -61,6 +61,7 @@ _SAFE_KEYS = frozenset({
     "input_prompt", "reference", "generation_mode", "strategies", "attempts",
     "attempts_per_prompt", "generation_checklist", "baseline_selector", "prompt_preview",
     "generation_results", "evaluation_results", "mutation_store", "last_run_config",
+    "generated_persuasion_mutations", "stage1_reference_texts", "last_stage1_prompt",
     "confidence_analysis_result", "judge_provider", "judge_model", "judge_temperature",
     "judge_top_p", "secondary_judge_provider", "secondary_judge_model",
 })
@@ -85,12 +86,30 @@ _PAGE_EXTRA_KEYS = {
     "Content Recall Detection": {"content_recall_mode", "custom_user_prompt", "custom_continuation_prompt", "current_prompt_template", "previous_prompting_method", "previous_prompting_method_example", "previous_input_method_example", "continuation_method_selector", "prompt_mode_selector", "confidence_analysis_result"},
     "Knowledge Memorization Detection": {"knowledge_detection_mode", "num_qa_pairs", "num_eval_runs", "eval_temperature", "eval_top_p", "enable_llm_judge"},
     "Unlearning Detection": {"unlearning_method", "unlearning_detection_mode"},
-    "Persuasive Jailbreak Detection": {"input_prompt", "reference", "generation_mode", "strategies", "attempts", "attempts_per_prompt", "generation_checklist", "baseline_selector", "prompt_preview", "generation_results", "evaluation_results", "mutation_store", "last_run_config", "confidence_analysis_result", "judge_provider", "judge_model", "judge_temperature", "judge_top_p", "secondary_judge_provider", "secondary_judge_model"},
+    "Persuasive Jailbreak Detection": {"input_prompt", "reference", "generation_mode", "strategies", "attempts", "attempts_per_prompt", "generation_checklist", "baseline_selector", "prompt_preview", "generation_results", "evaluation_results", "mutation_store", "last_run_config", "generated_persuasion_mutations", "stage1_reference_texts", "last_stage1_prompt", "confidence_analysis_result", "judge_provider", "judge_model", "judge_temperature", "judge_top_p", "secondary_judge_provider", "secondary_judge_model"},
 }
 _PAGE_EXTRA_KEYS["Game 3: The Memory Vault Hunt"] = _PAGE_EXTRA_KEYS["Knowledge Memorization Detection"]
 
 
+_PAGE_ALIASES = {
+    "Copyright Challenge": "Game 1: The Hidden Passage Hunt",
+    "Copyright Challenge 1": "Game 1: The Hidden Passage Hunt",
+    "Game 2: The Hidden Passage Hunt": "Game 1: The Hidden Passage Hunt",
+    "Copyright Challenge 2": "Game 2: The Cross-Model Scaling Quest",
+    "Game 1: The Cross-Model Scaling Quest": "Game 2: The Cross-Model Scaling Quest",
+    "Game 2: The Twin Oracle Duel": "Game 2: The Cross-Model Scaling Quest",
+    "Game 2: The Two-Model Continuation Duel": "Game 2: The Cross-Model Scaling Quest",
+    "Copyright Challenge 3": "Game 3: The Memory Vault Hunt",
+    "Game 3: The Knowledge Memorization Challenge": "Game 3: The Memory Vault Hunt",
+}
+
+
+def canonical_page_key(page_key: str | None) -> str | None:
+    return _PAGE_ALIASES.get(page_key, page_key)
+
+
 def key_belongs_to_page(key: str, page_key: str | None) -> bool:
+    page_key = canonical_page_key(page_key)
     if page_key not in _PAGE_PREFIXES:
         return True
     if key in {"main_navigation", "detection_navigation", "game_navigation"} or key.startswith("sidebar_"):
@@ -649,10 +668,10 @@ class PageRun:
         if self.store is None:
             return None
         try:
-            resume_id = self.state.pop(RESUME_TASK, None)
+            resume_id = self.state.get(RESUME_TASK)
             if resume_id:
                 task = self.store.get_task(resume_id)
-                if not task or task.get("page_key") != self.page_key:
+                if not task or canonical_page_key(task.get("page_key")) != canonical_page_key(self.page_key):
                     raise AnalysisCheckpointError("The saved task is not available on this page for your account.")
                 source = task.get("source") or {}
                 if source.get("trigger_key") != self.trigger:
@@ -674,6 +693,10 @@ class PageRun:
                     work_items=[], dynamic_items=True,
                 )
             self.journal = CallJournal(self.store, task)
+            # Failed validation or lease startup must retain the task selected
+            # for Resume; the next Run must not silently create a new task.
+            if resume_id and self.state.get(RESUME_TASK) == resume_id:
+                self.state.pop(RESUME_TASK, None)
             self.state["_analysis_current_task_id"] = self.journal.task_id
             return self.journal
         except AnalysisCheckpointError:
@@ -801,10 +824,10 @@ def prepare_background_journal(key: str, label: str):
         store = scope.store
         if store is None:
             return None
-        resume_id = scope.state.pop(RESUME_TASK, None)
+        resume_id = scope.state.get(RESUME_TASK)
         if resume_id:
             task = store.get_task(resume_id)
-            if not task or task.get("page_key") != scope.page_key:
+            if not task or canonical_page_key(task.get("page_key")) != canonical_page_key(scope.page_key):
                 raise AnalysisCheckpointError("This background task is not available for your account.")
             source = task.get("source") or {}
             if source.get("background_key") != key or source.get("trigger_key") != scope.trigger:
@@ -817,7 +840,10 @@ def prepare_background_journal(key: str, label: str):
                         "journal_version": 2},
                 work_items=[], dynamic_items=True,
             )
-        return CallJournal(store, task)
+        journal = CallJournal(store, task)
+        if resume_id and scope.state.get(RESUME_TASK) == resume_id:
+            scope.state.pop(RESUME_TASK, None)
+        return journal
     except AnalysisCheckpointError:
         scope.broken = True
         raise

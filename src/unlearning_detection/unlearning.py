@@ -15,6 +15,8 @@ import io
 import contextlib
 import traceback
 from src.common.progress import start_llm_progress, update_llm_progress, complete_llm_progress
+from src.analysis_checkpoints import AnalysisCheckpointError
+from src.run_cancellation import AnalysisCancelled
 
 _run_feature_analysis = None
 try:  # pragma: no cover - prefer vendored toolkit for local fixes
@@ -251,6 +253,8 @@ def run_representational_analysis(
                 inline_artifacts=inline_artifacts,
                 warnings=remote_result.warnings,
             )
+        except (AnalysisCheckpointError, AnalysisCancelled):
+            raise
         except ImportError as exc:
             raise RuntimeError("Remote representational execution dependencies are unavailable.") from exc
         except Exception as e:

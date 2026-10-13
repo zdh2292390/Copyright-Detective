@@ -175,7 +175,11 @@ def execute_analysis_remotely(
         finally:
             response.close()
 
-    submitted = checkpoint_call("representational.submit", submission, submit_once)
+    submitted = checkpoint_call(
+        "representational.submit", submission, submit_once,
+        is_success=lambda value: value["http_status"] == 202
+            or _has_usable_artifacts(value["response"], api_key=api_key),
+    )
     if submitted["http_status"] == 200:
         return _completed_result(submitted["response"], api_key=api_key)
     task_id = submitted["response"]["task_id"]
@@ -230,8 +234,17 @@ def execute_analysis_remotely(
     result = checkpoint_call(
         "representational.result", {"agent_url": agent_url, "task_id": task_id},
         wait_for_result,
+        is_success=lambda value: _has_usable_artifacts(value, api_key=api_key),
     )
     return _completed_result(result, api_key=api_key)
+
+
+def _has_usable_artifacts(value, api_key=None) -> bool:
+    """A finished request with no usable report is an incomplete analysis."""
+    try:
+        return bool(_completed_result(value, api_key=api_key).visualizations)
+    except (TypeError, ValueError, RuntimeError):
+        return False
 
 
 def _response_object(response, context: str) -> Dict[str, Any]:

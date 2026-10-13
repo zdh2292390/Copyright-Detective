@@ -10,6 +10,7 @@ import textwrap
 import zipfile
 import math
 import json
+import base64
 import hashlib
 from numbers import Real
 import random
@@ -102,6 +103,7 @@ from src.unlearning_detection import (
     list_representational_features,
     run_representational_analysis,
 )
+from src.unlearning_detection.unlearning import InlineArtifact, RepresentationalAnalysisResult
 
 
 def load_wikimia_dataset(length: int) -> Optional[List[Dict[str, Any]]]:
@@ -2090,6 +2092,57 @@ def run_min_k_prob_analysis(
     }
 
 
+def _representational_result_snapshot(result):
+    """Save inline report data as JSON without restoring server filesystem paths."""
+    warnings = list(result.warnings)
+    if result.generated_artifacts:
+        warnings.append("File artifacts remain on the original server; saved reports retain inline artifacts only.")
+    return {
+        "__representational_result__": 1,
+        "feature_id": result.feature_id,
+        "feature_name": result.feature_name,
+        "warnings": warnings,
+        "error": result.error,
+        "inline_artifacts": [
+            {"title": artifact.title, "mime_type": artifact.mime_type,
+             "data": base64.b64encode(artifact.data).decode("ascii"),
+             "description": artifact.description}
+            for artifact in result.inline_artifacts
+        ],
+    }
+
+
+def _representational_result_from_snapshot(value):
+    if value is None or isinstance(value, RepresentationalAnalysisResult):
+        return value
+    if not isinstance(value, dict) or value.get("__representational_result__") != 1:
+        raise ValueError("The saved representational report has an unsupported format.")
+    if (not isinstance(value.get("feature_id"), str)
+            or not isinstance(value.get("feature_name"), str)
+            or not isinstance(value.get("warnings"), list)
+            or any(not isinstance(warning, str) for warning in value["warnings"])
+            or (value.get("error") is not None and not isinstance(value["error"], str))
+            or not isinstance(value.get("inline_artifacts"), list)):
+        raise ValueError("The saved representational report contains invalid metadata.")
+    artifacts = []
+    for artifact in value["inline_artifacts"]:
+        if (not isinstance(artifact, dict)
+                or not isinstance(artifact.get("title"), str)
+                or not isinstance(artifact.get("mime_type"), str)
+                or not isinstance(artifact.get("data"), str)
+                or (artifact.get("description") is not None and not isinstance(artifact["description"], str))):
+            raise ValueError("The saved representational report contains an invalid artifact.")
+        try:
+            data = base64.b64decode(artifact["data"], validate=True)
+        except (ValueError, UnicodeEncodeError) as exc:
+            raise ValueError("The saved representational report contains invalid artifact data.") from exc
+        artifacts.append(InlineArtifact(title=artifact["title"], mime_type=artifact["mime_type"],
+                                        data=data, description=artifact.get("description")))
+    return RepresentationalAnalysisResult(feature_id=value["feature_id"], feature_name=value["feature_name"],
+                                         output_path="", generated_artifacts=[], inline_artifacts=artifacts,
+                                         warnings=list(value["warnings"]), error=value.get("error"))
+
+
 def render_representational_analysis_page(api_key, model_choice, provider):
     """Render the representational analysis experience."""
     
@@ -2313,7 +2366,11 @@ def render_representational_analysis_page(api_key, model_choice, provider):
     )
 
     # Load previous result from session state (if exists and button not clicked)
-    rep_result = st.session_state.get('unlearn_last_result')
+    try:
+        rep_result = _representational_result_from_snapshot(st.session_state.get('unlearn_last_result'))
+    except ValueError as exc:
+        st.warning(str(exc))
+        rep_result = None
     analysis_request = st.session_state.get('unlearn_last_request')
     
     # Only run analysis when button is clicked
@@ -2463,7 +2520,7 @@ def render_representational_analysis_page(api_key, model_choice, provider):
                         with st.spinner("🔎 Computing representational differences... this may take several minutes for large models."):
                             try:
                                 rep_result = run_representational_analysis(**analysis_request)
-                                st.session_state['unlearn_last_result'] = rep_result
+                                st.session_state['unlearn_last_result'] = _representational_result_snapshot(rep_result)
                                 st.session_state['unlearn_last_request'] = {key: value for key, value in analysis_request.items() if key != 'agent_key'}
                             except ValueError as exc:
                                 st.error(f"❌ {exc}")

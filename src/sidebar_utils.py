@@ -94,6 +94,21 @@ def render_model_selectbox(provider: str, config: Dict[str, Any], *, disabled: b
     models = list(config["models"])
     widget_key = str(config["key"])
     current_model = st.session_state.get(widget_key)
+    restored_models = st.session_state.get("_analysis_restored_models")
+    saved_model = restored_models.get(widget_key) if isinstance(restored_models, dict) else None
+    preserve_saved_model = (
+        isinstance(current_model, str) and bool(current_model.strip())
+        and saved_model == current_model
+    )
+    if isinstance(restored_models, dict) and widget_key in restored_models and not preserve_saved_model:
+        # A changed selection is a new configuration, not the saved run's model.
+        updated_models = dict(restored_models)
+        updated_models.pop(widget_key)
+        st.session_state["_analysis_restored_models"] = updated_models
+    if preserve_saved_model and current_model not in models:
+        # Restore the exact request identity even after the public catalog changes.
+        # The provider layer still reports models that are no longer available.
+        models.append(current_model)
     if widget_key in st.session_state and current_model not in models:
         # Saved profiles and hot deployments can retain removed IDs or None.
         replacement = model_replacement(provider, current_model)
