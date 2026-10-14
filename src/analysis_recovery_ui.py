@@ -209,7 +209,7 @@ def finish_analysis_restore_feedback(page_key, slot, *, failed=False):
         return
     task_id = notice.get("task_id")
     if failed:
-        message = ("Saved results could not be displayed. Retry View results; saved calls remain unchanged."
+        message = ("Saved results could not be displayed. Retry View; saved calls remain unchanged."
                    if notice.get("action") == "results" else
                    "The saved task could not finish resuming. Review the error below and retry Resume. Saved progress is preserved.")
         notice.update(status="error", message=message)
@@ -224,7 +224,7 @@ def finish_analysis_restore_feedback(page_key, slot, *, failed=False):
             "then retry Resume. Saved progress is preserved."
         )
         if notice.get("action") == "results":
-            message = "The saved result view has not finished. Retry View results; no new API calls will be made."
+            message = "The saved result view has not finished. Retry View; no new API calls will be made."
         notice.update(status="blocked", message=message)
         slot.warning(message)
     else:
@@ -444,7 +444,7 @@ def _render_saved_analysis_card(task, store, page_key):
             with st.container(horizontal=True, vertical_alignment="center", gap="small",
                               key=f"history_actions_{task['id']}"):
                 st.button(
-                    "View results" if status == "complete" else "Resume",
+                    "View" if status == "complete" else "Resume",
                     key=f"_analysis_resume:{task['id']}", disabled=active and status != "complete", width="content", type="primary",
                     on_click=_queue_analysis_restore, args=(str(task["id"]),),
                     help=("Wait for this active task to stop before resuming."

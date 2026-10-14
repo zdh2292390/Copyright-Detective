@@ -498,7 +498,7 @@ def _render_document_recovery_list(active_token=None, *, disabled=False, api_key
                             wrong_provider = provider != settings["provider"]
                             blocked = disabled or (not complete and (active or needs_key or wrong_provider))
                             action = st.button(
-                                "View results" if complete else "Resume", key=f"history_open_document_{token}",
+                                "View" if complete else "Resume", key=f"history_open_document_{token}",
                                 width="content", disabled=blocked, type="primary",
                                 help=("View the saved report without making API calls." if complete else
                                       f"Continue remaining chunks with the original settings. Select {settings['provider']} and enter its API key first."),
