@@ -414,20 +414,20 @@ def _render_active_background_job_status(key: str) -> None:
     label = str(state.get("label") or "Game run")
     message = str(state.get("message") or "")
     if status in _ACTIVE_STATUSES:
-        st.progress(min(current / total, 1.0), text=f"{label}: {message} ({current}/{total})")
+        from src.job_guard import render_running_status_row
+
+        render_running_status_row(
+            label, key=f"force_stop_background_job:{key}",
+            status={"queued": "Queued", "running": "Running", "stopping": "Stopping"}[status],
+            on_stop=lambda: force_stop_background_job(key),
+            disabled=status == "stopping",
+            help="Stop this run and keep saved progress to resume later.",
+        )
+        st.progress(min(current / total, 1.0), text=f"{message} ({current}/{total})")
         if status == "stopping":
             st.caption("Stopping. Saved progress is kept; Resume is available after current requests finish.")
         else:
             st.caption("This run continues in the background if the page reruns or you switch views.")
-        from src.job_guard import render_force_stop_button
-
-        render_force_stop_button(
-            key=f"force_stop_background_job:{key}",
-            label="Stopping…" if status == "stopping" else "Stop",
-            on_click=lambda: force_stop_background_job(key),
-            disabled=status == "stopping",
-            help="Stop this run and keep saved progress to resume later.",
-        )
         return
 
     completion_token = str(state.get("finished_at") or status)

@@ -8,7 +8,7 @@ import streamlit as st
 
 from src.analysis_checkpoints import OFFICIAL_GAME_PAGE_KEYS, classify_checkpoint_error
 from src.analysis_work_progress import format_work_progress
-from src.history_ui import HISTORY_STYLES, render_history_details
+from src.history_ui import HISTORY_STYLES, render_history_details, confirm_task_deletion
 from src.analysis_result_restore import completed_result_snapshot
 from src.resumable_analysis import (
     AnalysisCheckpointError, PENDING_RESTORE, RESUME_TASK, VIEW_TASK, VIEW_PAGE,
@@ -369,6 +369,27 @@ def _kill_saved_task(store, task_id, *, task_completed=False):
     return True
 
 
+
+def _stop_saved_task(store, task_id):
+    """Pause a task while retaining its inputs and successful responses."""
+    from src.run_cancellation import cancel_task
+    task_id = str(task_id)
+    cancelled = cancel_task(store.owner_id, task_id)
+    error_key = f"_analysis_stop_error:{task_id}"
+    try:
+        task = store.request_stop(task_id)
+        if not task.get("stop_requested") and task.get("status") != "complete":
+            raise AnalysisCheckpointError("The task did not acknowledge Stop. Retry Stop.")
+    except Exception as exc:
+        st.session_state[error_key] = str(classify_checkpoint_error(exc))
+        return False
+    st.session_state.pop(error_key, None)
+    if cancelled and st.session_state.get("_analysis_current_task_id") == task_id:
+        from src.job_guard import finish_detection_job
+        finish_detection_job()
+    return True
+
+
 def render_analysis_recovery(page_key: str):
     if (page_key == "Content Recall Detection" and
             (st.session_state.get("content_recall_mode") == "Document Memorization Detection"
@@ -440,9 +461,17 @@ def _render_saved_analysis_card(task, store, page_key):
                               key=f"history_header_{task['id']}"):
                 st.markdown(f"**{label}**", width="content")
                 st.badge(display_status, color=status_color)
+                if active and status != "complete":
+                    from src.job_guard import render_force_stop_button
+                    render_force_stop_button(
+                        key=f"_analysis_stop:{task['id']}", label="Stopping…" if stopping else "Stop",
+                        disabled=stopping, width="content",
+                        on_click=lambda task_id=str(task['id']): _stop_saved_task(store, task_id),
+                        help="Pause this task and keep saved progress for Resume.",
+                    )
         with actions:
             with st.container(horizontal=True, vertical_alignment="center", gap="small",
-                              key=f"history_actions_{task['id']}"):
+                              key=f"history_actions_{task['id']}", horizontal_alignment="right"):
                 st.button(
                     "View" if status == "complete" else "Resume",
                     key=f"_analysis_resume:{task['id']}", disabled=active and status != "complete", width="content", type="primary",
@@ -456,12 +485,14 @@ def _render_saved_analysis_card(task, store, page_key):
                     from src.job_guard import render_force_stop_button
                     if render_force_stop_button(
                         label="Kill", key=f"_analysis_kill:{task['id']}",
-                        on_click=lambda task_id=str(task['id']), complete=status == "complete":
-                            _kill_saved_task(store, task_id, task_completed=complete),
                         disabled=False, width="content",
                         help="Stop this task and permanently delete its inputs, checkpoints and results.",
                     ):
-                        st.rerun()
+                        confirm_task_deletion(
+                            task_id=str(task['id']), owner_id=store.owner_id, label=label,
+                            on_confirm=lambda task_id=str(task['id']), complete=status == "complete":
+                                _kill_saved_task(store, task_id, task_completed=complete),
+                        )
         with st.container(horizontal=True, vertical_alignment="center", gap="small"):
             if apis:
                 api = apis[0]
@@ -488,3 +519,6 @@ def _render_saved_analysis_card(task, store, page_key):
         error = st.session_state.get(f"_analysis_kill_error:{task['id']}")
         if error:
             st.warning(error)
+        stop_error = st.session_state.get(f"_analysis_stop_error:{task['id']}")
+        if stop_error:
+            st.warning(stop_error)

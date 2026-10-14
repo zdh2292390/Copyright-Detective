@@ -23,6 +23,7 @@ elif sys.path[0] != project_root_str:
 os.chdir(project_root_str)
 
 from src.auth import init_auth
+from src.history_ui import render_pending_task_deletion
 from src.analysis_recovery_ui import (
     apply_pending_analysis_restore, render_analysis_recovery,
     render_analysis_restore_feedback, finish_analysis_restore_feedback,
@@ -164,7 +165,7 @@ except AnalysisCheckpointError as exc:
     if exc.kind == "killed":
         st.caption("Start a new analysis to run another task.")
     else:
-        st.caption("Saved successful calls are preserved. Choose Resume under Saved analyses to continue.")
+        st.caption("Saved successful calls are preserved. Choose Resume under History to continue.")
 except Exception:
     _page_failed = True
     logger.exception("Unhandled page error on %s", page)
@@ -180,6 +181,8 @@ finally:
     # Always release the run lock when this script finishes (success or error).
     if _script_job_run_id is not None and is_detection_job_running() and _script_job_run_id == get_detection_job_run_id():
         finish_detection_job(show_clear_cache=False, run_id=_script_job_run_id)
+
+render_pending_task_deletion()
 
 # Footer (commented out as it's not defined)
 # render_footer()

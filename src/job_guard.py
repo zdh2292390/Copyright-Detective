@@ -1,6 +1,7 @@
 """Guard long-running detection jobs from accidental Streamlit reruns."""
 
 from contextlib import contextmanager
+from html import escape
 from typing import Any, Iterator
 from contextvars import ContextVar
 from threading import Lock, Thread
@@ -257,37 +258,85 @@ def render_active_job_lock() -> None:
                     "Stopped. Saved progress is preserved. Choose Resume to continue.")
         return
     job_label = st.session_state.get(JOB_LABEL_KEY, "Detection task")
-    _render_running_banner(job_label)
     from src.resumable_analysis import page_supports_analysis_recovery
     stop_help = ("Stop now and keep saved progress. Requests already sent may still finish."
                  if page_supports_analysis_recovery(st.session_state.get("main_navigation"))
                  else "Stop this run. Requests already sent may still finish.")
-    render_force_stop_button(
-        key="force_stop_detection_job", on_click=force_stop_detection_job,
+    render_running_status_row(
+        job_label, key="force_stop_detection_job", on_stop=force_stop_detection_job,
         help=stop_help,
     )
+    st.caption("Keep this page open and leave parameters unchanged while the analysis runs.")
     _render_ui_lock_styles()
 
 
 def render_background_job_lock(label: str) -> None:
-    """Lock interactive UI for a separately managed background job."""
-    _render_running_banner(label)
+    """Lock controls; the background status poller renders its status and Stop."""
     _render_ui_lock_styles()
 
 
-def _render_running_banner(label: str) -> None:
+def render_running_status_row(
+    label: str, *, key: str, status: str = "Running", on_stop=None,
+    disabled: bool = False, help: str | None = None,
+) -> None:
+    """Keep the active state and its Stop action in one compact horizontal row."""
+    from src.history_ui import HISTORY_STYLES
+
+    st.markdown(HISTORY_STYLES, unsafe_allow_html=True)
     st.markdown(
-        (
-            '<div class="detection-job-status" '
-            'style="padding:0.75rem 1rem;background:#fff3cd;border:1px solid #ffc107;'
-            'border-radius:8px;margin-bottom:1rem;">'
-            f"⏳ <strong>{label}</strong> is running. "
-            "Please do not switch pages or adjust main-page parameters "
-            "to avoid interrupting the task."
-            "</div>"
-        ),
+        """<style>
+        [class*="st-key-running_status_"] {
+            column-gap: 0.625rem !important;
+            row-gap: 0.35rem !important;
+            align-items: center !important;
+        }
+        [class*="st-key-running_status_"] .detection-job-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            min-height: 2.25rem;
+            font-size: 0.875rem;
+            line-height: 1.35;
+        }
+        [class*="st-key-running_status_"] .detection-job-label {
+            overflow-wrap: anywhere;
+            font-weight: 600;
+        }
+        [class*="st-key-running_status_"] .detection-job-state {
+            flex-shrink: 0;
+            padding: 0.2rem 0.55rem;
+            border: 1px solid rgba(147, 197, 253, 0.6);
+            border-radius: 6px;
+            background: rgba(219, 234, 254, 0.6);
+            color: #1e40af;
+            font-size: 0.8125rem;
+            font-weight: 600;
+        }
+        [class*="st-key-running_status_"] .detection-job-state[data-state="Stopping"],
+        [class*="st-key-running_status_"] .detection-job-state[data-state="Queued"] {
+            border-color: rgba(251, 191, 36, 0.5);
+            background: rgba(254, 243, 199, 0.6);
+            color: #92400e;
+        }
+        </style>""",
         unsafe_allow_html=True,
     )
+    with st.container(
+        key=f"running_status_{key}", horizontal=True,
+        vertical_alignment="center", gap="small",
+    ):
+        st.html(
+            '<div class="detection-job-status" role="status" aria-live="polite">'
+            f'<span class="detection-job-label">{escape(str(label))}</span>'
+            f'<span class="detection-job-state" data-state="{escape(str(status), quote=True)}">'
+            f'{escape(str(status))}</span></div>',
+            width="content",
+        )
+        render_force_stop_button(
+            key=key, on_click=on_stop, disabled=disabled,
+            help=help, width="content",
+        )
+
 
 
 
@@ -341,7 +390,9 @@ def _render_ui_lock_styles() -> None:
         :is(
             [data-testid="stMain"], .stMain, section.main,
             section[data-testid="stSidebar"]
-        ) [class*="st-key-force_stop_controls_"] button {
+        ) [class*="st-key-force_stop_controls_"] button,
+        .st-key-history_confirm_body button,
+        [data-testid="stDialog"] button[aria-label="Close"] {
             pointer-events: auto !important;
             opacity: 1 !important;
             filter: none !important;

@@ -8,6 +8,7 @@ PDF/TXT documents for potential copyright infringement.
 import hashlib
 import html
 import textwrap
+from functools import partial
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,7 +33,7 @@ from src.document_analysis import (
 )
 from src.document_checkpoints import CheckpointError
 from src.document_jobs import DOCUMENT_JOBS
-from src.history_ui import HISTORY_STYLES, render_history_details
+from src.history_ui import HISTORY_STYLES, confirm_task_deletion, render_history_details
 from src.job_guard import (
     finish_detection_job, render_force_stop_button, render_run_button, reset_detection_job,
 )
@@ -422,12 +423,43 @@ def _detach_document_job(token) -> None:
         reset_detection_job()
 
 
-def _kill_document_job(token, owner_id) -> None:
+def _kill_document_job(token, owner_id) -> bool:
     try:
+        if st.session_state.get("user_id") != owner_id:
+            raise CheckpointError("The signed-in account changed. Reopen the task before deleting it.")
         DOCUMENT_JOBS.force_kill(token, owner_id=owner_id)
         _detach_document_job(token)
+        return True
     except (CheckpointError, ValueError) as exc:
         st.error(f"Could not kill analysis: {exc}")
+        return False
+
+
+def _confirm_document_kill(token, owner_id, label="Document analysis") -> None:
+    # Bind the selected task now; a rerun must never delete a different History row.
+    confirm_task_deletion(
+        task_id=token, owner_id=owner_id, label=label,
+        on_confirm=partial(_kill_document_job, token, owner_id),
+    )
+
+
+def _stop_document_job(token, owner_id) -> bool:
+    try:
+        if st.session_state.get("user_id") != owner_id:
+            raise CheckpointError("The signed-in account changed. Reopen the task before stopping it.")
+        DOCUMENT_JOBS.force_stop(token, owner_id=owner_id)
+        return True
+    except (CheckpointError, ValueError) as exc:
+        st.error(f"Could not stop analysis: {exc}")
+        return False
+
+
+def _render_document_stop(token, owner_id, *, key, stop_requested=False) -> None:
+    if render_force_stop_button(
+        label="Stop", key=key, width="content", disabled=stop_requested,
+        help="Stop requests and keep saved progress so this analysis can be resumed.",
+    ) and _stop_document_job(token, owner_id):
+        _trigger_pdf_rerun()
 
 
 def _open_saved_document(token, owner_id) -> None:
@@ -473,10 +505,8 @@ def _render_document_recovery_list(active_token=None, *, disabled=False, api_key
     st.markdown(HISTORY_STYLES, unsafe_allow_html=True)
     with st.container(key="document_history_list"):
         with st.expander("History", expanded=True):
-            toolbar, refresh = st.columns([5, 2], gap="small", vertical_alignment="center")
-            with toolbar:
+            with st.container(horizontal=True, gap="small", vertical_alignment="center", key="history_toolbar"):
                 st.caption("Resume continues saved progress. Kill permanently deletes the task and its results.")
-            with refresh:
                 if st.button("Refresh", key="refresh_document_history", width="content"):
                     _trigger_pdf_rerun()
             for item in saved:
@@ -484,7 +514,7 @@ def _render_document_recovery_list(active_token=None, *, disabled=False, api_key
                 settings = item["settings"]
                 complete = item["status"] == "complete"
                 active = bool(item.get("active"))
-                status = "Complete" if complete else "Running" if active else "Paused"
+                status = "Complete" if complete else "Stopping" if active and item.get("stop_requested") else "Running" if active else "Paused"
                 with st.container(border=True, key=f"history_task_{token}"):
                     title, actions = st.columns([5, 3], gap="small", vertical_alignment="center")
                     with title:
@@ -492,6 +522,12 @@ def _render_document_recovery_list(active_token=None, *, disabled=False, api_key
                             filename = settings.get("filename") or "Document Memorization Detection"
                             st.markdown(f"<strong>{html.escape(filename)}</strong>", unsafe_allow_html=True, width="content")
                             st.badge(status, color="green" if complete else "blue" if active else "orange")
+                            if active and not complete:
+                                with st.container(key=f"history_status_{token}"):
+                                    _render_document_stop(
+                                        token, owner_id, key=f"history_stop_document_{token}",
+                                        stop_requested=bool(item.get("stop_requested")),
+                                    )
                     with actions:
                         with st.container(horizontal=True, horizontal_alignment="right", gap="small", key=f"history_actions_{token}"):
                             needs_key = not api_key and settings["provider"] != "Local vLLM"
@@ -503,11 +539,11 @@ def _render_document_recovery_list(active_token=None, *, disabled=False, api_key
                                 help=("View the saved report without making API calls." if complete else
                                       f"Continue remaining chunks with the original settings. Select {settings['provider']} and enter its API key first."),
                             )
-                            render_force_stop_button(
+                            if render_force_stop_button(
                                 label="Kill", key=f"history_kill_document_{token}", width="content",
-                                on_click=lambda task_token=token: _kill_document_job(task_token, owner_id),
                                 help="Stop this task and permanently delete its document, checkpoints and results.",
-                            )
+                            ):
+                                _confirm_document_kill(token, owner_id, filename)
                     summary = (
                         f"API: {settings['provider']} / Model: {settings['model']}"
                         f" · Progress: {item['completed_chunks']:,} / {item['total_chunks']:,} chunks"
@@ -524,6 +560,8 @@ def _render_document_recovery_list(active_token=None, *, disabled=False, api_key
                             _open_saved_document(token, owner_id)
                         else:
                             _resume_saved_document(token, owner_id, api_key, provider)
+    # Do not render a second Stop for the same task below its History card.
+    return any(item["token"] == active_token and item.get("active") for item in saved)
 
 
 def _restore_document_job():
@@ -573,7 +611,7 @@ def _render_saved_pdf_results(state) -> None:
 
 
 @st.fragment(run_every=2)
-def _poll_document_job(token, owner_id) -> None:
+def _poll_document_job(token, owner_id, *, show_stop_button=True) -> None:
     try:
         from src.supabase_document_checkpoints import is_cloud_document_token
         if is_cloud_document_token(token):
@@ -594,21 +632,30 @@ def _poll_document_job(token, owner_id) -> None:
     if not _document_job_is_active(token, owner_id):
         # Remove timed polling after the task ends and render its final report.
         st.rerun()
-    _render_document_task_details(state, token, active=True)
-    completed = len(state["results"])
-    total = state["total_chunks"]
-    st.progress(completed / max(total, 1), text=f"{completed:,} / {total:,} chunks complete")
-    st.caption("Analysis continues in the background if you refresh or switch pages. Progress is saved after each chunk.")
-    if state.get("stop_requested"):
-        st.caption("Stopping... Saved progress is kept. Resume becomes available after active requests finish.")
-    render_force_stop_button(
-        key="stop_pdf_analysis", label="Kill",
-        on_click=lambda: _kill_document_job(token, owner_id),
-        help="Stop this task and permanently delete its document, checkpoints and results.",
-    )
+    st.markdown(HISTORY_STYLES, unsafe_allow_html=True)
+    with st.container(key="document_analysis_controls"):
+        with st.container(horizontal=True, gap="small", vertical_alignment="center", key="document_running_status"):
+            st.badge("Stopping" if state.get("stop_requested") else "Running", color="blue")
+            if show_stop_button:
+                _render_document_stop(
+                    token, owner_id, key="stop_pdf_analysis",
+                    stop_requested=bool(state.get("stop_requested")),
+                )
+            if render_force_stop_button(
+                key="kill_running_pdf_analysis", label="Kill", width="content",
+                help="Stop this task and permanently delete its document, checkpoints and results.",
+            ):
+                _confirm_document_kill(token, owner_id, state["settings"].get("filename") or "Document analysis")
+        _render_document_task_details(state, token, active=True)
+        completed = len(state["results"])
+        total = state["total_chunks"]
+        st.progress(completed / max(total, 1), text=f"{completed:,} / {total:,} chunks complete")
+        st.caption("Analysis continues in the background if you refresh or switch pages. Progress is saved after each chunk.")
+        if state.get("stop_requested"):
+            st.caption("Stopping... Saved progress is kept. Resume becomes available after active requests finish.")
 
 
-def _render_document_job(token, api_key, provider, *, show_resume_button=True) -> None:
+def _render_document_job(token, api_key, provider, *, show_resume_button=True, show_stop_button=True) -> None:
     owner_id = st.session_state.get("user_id")
     state = DOCUMENT_JOBS.get(token, owner_id=owner_id)
     if state is None:
@@ -623,7 +670,7 @@ def _render_document_job(token, api_key, provider, *, show_resume_button=True) -
     st.markdown(f"**Analysis: {settings['filename']}**")
     st.caption("Bookmark this page to restore this analysis after reconnecting. The recovery link provides access to this document; keep it private.")
     if state["status"] != "complete" and _document_job_is_active(token, owner_id):
-        _poll_document_job(token, owner_id)
+        _poll_document_job(token, owner_id, show_stop_button=show_stop_button)
         return
     if state["status"] == "running":
         # The worker may have finished between the snapshot and active check.
@@ -637,7 +684,8 @@ def _render_document_job(token, api_key, provider, *, show_resume_button=True) -
     if state["status"] != "complete":
         if provider != settings["provider"]:
             st.info(f"Select {settings['provider']} in the sidebar to resume this saved analysis.")
-        with st.container(border=True):
+        st.markdown(HISTORY_STYLES, unsafe_allow_html=True)
+        with st.container(border=True, key="document_analysis_controls"):
             _render_document_task_details(state, token)
             completed = len(state["results"])
             total = state["total_chunks"]
@@ -648,16 +696,16 @@ def _render_document_job(token, api_key, provider, *, show_resume_button=True) -
             if show_resume_button:
                 with columns[1]:
                     resume_clicked = st.button(
-                        "Resume", key="resume_saved_pdf_analysis", width="stretch",
+                        "Resume", key="resume_saved_pdf_analysis", width="content",
                         disabled=(not api_key and settings["provider"] != "Local vLLM") or provider != settings["provider"],
                         help="Continue with this document's saved settings.",
                     )
             with columns[-1]:
-                render_force_stop_button(
-                    label="Kill", key="kill_saved_pdf_analysis", width="stretch",
-                    on_click=lambda: _kill_document_job(token, owner_id),
+                if render_force_stop_button(
+                    label="Kill", key="kill_saved_pdf_analysis", width="content",
                     help="Stop this task and permanently delete its document, checkpoints and results.",
-                )
+                ):
+                    _confirm_document_kill(token, owner_id, settings.get("filename") or "Document analysis")
             if resume_clicked:
                 try:
                     DOCUMENT_JOBS.submit(token, api_key, owner_id=owner_id)
@@ -665,15 +713,17 @@ def _render_document_job(token, api_key, provider, *, show_resume_button=True) -
                 except (CheckpointError, ValueError) as exc:
                     st.error(f"Could not resume analysis: {exc}")
     else:
-        details, action = st.columns([5, 1], vertical_alignment="center")
-        with details:
-            _render_document_task_details(state, token)
-        with action:
-            render_force_stop_button(
-                label="Kill", key="kill_complete_pdf_analysis", width="stretch",
-                on_click=lambda: _kill_document_job(token, owner_id),
-                help="Permanently delete this task, its document and final results.",
-            )
+        st.markdown(HISTORY_STYLES, unsafe_allow_html=True)
+        with st.container(key="document_analysis_controls"):
+            details, action = st.columns([5, 1], vertical_alignment="center")
+            with details:
+                _render_document_task_details(state, token)
+            with action:
+                if render_force_stop_button(
+                    label="Kill", key="kill_complete_pdf_analysis", width="content",
+                    help="Permanently delete this task, its document and final results.",
+                ):
+                    _confirm_document_kill(token, owner_id, settings.get("filename") or "Document analysis")
     _render_saved_pdf_results(state)
 
 
@@ -744,7 +794,9 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         st.caption("Document progress is saved to your account. Open an unfinished analysis below without uploading the document again.")
     else:
         st.info("Cloud recovery is unavailable for this session. Document progress uses local server storage and may be lost after redeployment.")
-    _render_document_recovery_list(token, disabled=job_running, api_key=api_key, provider=provider)
+    history_has_active_controls = bool(_render_document_recovery_list(
+        token, disabled=job_running, api_key=api_key, provider=provider,
+    ))
 
     # Initialize variables to avoid UnboundLocalError
     score_type = None
@@ -996,7 +1048,10 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
 
     if token:
         try:
-            _render_document_job(token, api_key, provider, show_resume_button=not resume_analysis)
+            _render_document_job(
+                token, api_key, provider, show_resume_button=not resume_analysis,
+                show_stop_button=not history_has_active_controls,
+            )
         except (CheckpointError, ValueError) as exc:
             st.error(f"Could not read the saved analysis: {exc}")
     elif st.session_state.get("pdf_analysis_results"):
