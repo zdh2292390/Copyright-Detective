@@ -76,13 +76,25 @@ def _cancel_sdk_retries(invoke):
                 _HOOKS.pop(client, None)
 
 
+def _check_live_provider_allowed():
+    # Import at invocation time to avoid cycles while page/provider modules load.
+    # Supabase/auth reads do not use this provider SDK boundary.
+    from src.resumable_analysis import AnalysisCheckpointError, is_viewing_saved_results
+    if is_viewing_saved_results():
+        raise AnalysisCheckpointError(
+            "Viewing saved results cannot call a live model. The saved response is unavailable; no API call was started."
+        )
+
+
 def provider_call(invoke, *args, **kwargs):
     """Interrupt network waits and stop retries inside synchronous provider SDKs."""
+    _check_live_provider_allowed()
     if current_cancellation_token() is None:
         return invoke(*args, **kwargs)
 
     def call():
         check_cancellation()
+        _check_live_provider_allowed()
         with _cancel_sdk_retries(invoke):
             return invoke(*args, **kwargs)
 

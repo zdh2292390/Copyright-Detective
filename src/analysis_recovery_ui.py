@@ -8,8 +8,9 @@ import streamlit as st
 
 from src.analysis_checkpoints import OFFICIAL_GAME_PAGE_KEYS, classify_checkpoint_error
 from src.analysis_work_progress import format_work_progress
+from src.analysis_result_restore import completed_result_snapshot
 from src.resumable_analysis import (
-    AnalysisCheckpointError, PENDING_RESTORE, RESUME_TASK,
+    AnalysisCheckpointError, PENDING_RESTORE, RESUME_TASK, VIEW_TASK, VIEW_PAGE,
     canonical_page_key, decode, get_cloud_store_for_current_user, is_safe_state_key, key_belongs_to_page,
     page_supports_analysis_recovery, unpack_snapshot,
 )
@@ -85,32 +86,10 @@ def apply_pending_analysis_restore():
     initial = unpack_snapshot(source.get("initial_session") or {})
     if not isinstance(initial, dict) or not isinstance(source.get("trigger_key"), str):
         raise AnalysisCheckpointError("This task cannot be restored by this page.")
-    final = unpack_snapshot((task.get("metadata") or {}).get("final_session") or {})
-    result_keys = {
-        "run_snippet_analysis_button": ("text_analysis_results",),
-        "generate_qa_button": ("qa_generated_qa_pairs",),
-        "run_knowledge_eval_button": ("qa_evaluation_results",),
-        "run_sleek_eval_button": ("qa_sleek_results",),
-        "run_sleek_button": ("sleek_evaluation_results",),
-        "sc_generate_mcq_button": ("sc_generated_mcqs",),
-        "sc_run_eval_button": ("sc_evaluation_results",),
-        "qa_run_knowmem_eval": (),
-        "run_generation": ("generated_persuasion_mutations",),
-        "run_probe_button": ("persuasion_probe_results",),
-        "unlearn_rep_submit_run": ("unlearn_last_result",),
-        "text_generate_report_narrative": ("text_analysis_results",),
-    }.get(source["trigger_key"], ("text_analysis_results", "qa_evaluation_results", "sc_evaluation_results"))
-    if source["trigger_key"] == "run_min_k_prob_analysis_button":
-        result_keys = tuple(key for key in final if key.startswith("min_k_") and key.endswith(("_batch_results", "_last_result")))
-    restore_results = task.get("status") == "complete" and isinstance(final, dict) and any(final.get(key) for key in result_keys)
-    if source["trigger_key"] == "text_generate_report_narrative":
-        results = decode(final.get("text_analysis_results"))
-        restore_results = bool(restore_results and isinstance(results, dict) and results.get("report_narrative"))
-    elif source["trigger_key"] == "unlearn_rep_submit_run":
-        results = decode(final.get("unlearn_last_result"))
-        restore_results = bool(restore_results and isinstance(results, dict)
-                               and results.get("__representational_result__") == 1
-                               and (results.get("inline_artifacts") or results.get("error")))
+    completed = task.get("status") == "complete"
+    final = completed_result_snapshot(task, store=store) if completed else None
+    restore_results = final is not None
+    final = final or {}
     restored = {**initial, **final} if restore_results else initial
     page_key = canonical_page_key(str(task.get("page_key") or ""))
     for key in list(st.session_state):
@@ -134,10 +113,16 @@ def apply_pending_analysis_restore():
                 and isinstance(saved_title, str) and saved_title):
             st.session_state["_analysis_restored_qa_bank"] = {"title": saved_title}
     st.session_state.pop(RESUME_TASK, None)
+    st.session_state.pop(VIEW_TASK, None)
+    st.session_state.pop(VIEW_PAGE, None)
+    st.session_state.pop("_analysis_current_task_id", None)
+    if completed:
+        st.session_state[VIEW_TASK] = str(task["id"])
+        st.session_state[VIEW_PAGE] = page_key
     if not restore_results:
         st.session_state[RESUME_TASK] = str(task["id"])
     st.session_state.pop("_analysis_resume_background_key", None)
-    if source.get("background_key"):
+    if source.get("background_key") and not completed:
         st.session_state["_analysis_resume_background_key"] = source["background_key"]
     st.session_state["_analysis_restored_inputs"] = True
     trigger = source["trigger_key"]
@@ -150,7 +135,8 @@ def apply_pending_analysis_restore():
     st.session_state.pop("detection_run_armed", None)
     st.session_state[_RESTORE_FEEDBACK] = {
         "task_id": str(task["id"]), "page_key": page_key, "trigger_key": trigger,
-        "action": "results" if restore_results else "resume", "status": "restored",
+        "action": "results" if completed else "resume", "replay": completed and not restore_results,
+        "status": "restored",
     }
 
 
@@ -207,7 +193,10 @@ def render_analysis_restore_feedback(page_key):
     if notice.get("status") in {"blocked", "error"}:
         slot.warning(notice["message"])
     elif notice.get("action") == "results":
-        slot.success("Saved analysis results restored.")
+        if notice.get("replay"):
+            slot.info("Rebuilding final results from saved calls.")
+        else:
+            slot.success("Saved analysis results restored.")
     else:
         slot.info("Saved inputs restored. Resuming the original task and reusing its successful calls.")
     return slot
@@ -219,7 +208,9 @@ def finish_analysis_restore_feedback(page_key, slot, *, failed=False):
         return
     task_id = notice.get("task_id")
     if failed:
-        message = "The saved task could not finish resuming. Review the error below and retry Resume. Saved progress is preserved."
+        message = ("Saved results could not be displayed. Retry View results; saved calls remain unchanged."
+                   if notice.get("action") == "results" else
+                   "The saved task could not finish resuming. Review the error below and retry Resume. Saved progress is preserved.")
         notice.update(status="error", message=message)
         slot.warning(message)
     elif st.session_state.get(RESUME_TASK) == task_id:
@@ -231,6 +222,8 @@ def finish_analysis_restore_feedback(page_key, slot, *, failed=False):
             "The saved task has not restarted. Complete the required API settings or inputs shown below, "
             "then retry Resume. Saved progress is preserved."
         )
+        if notice.get("action") == "results":
+            message = "The saved result view has not finished. Retry View results; no new API calls will be made."
         notice.update(status="blocked", message=message)
         slot.warning(message)
     else:
@@ -333,18 +326,18 @@ def _step_description(task, display):
     return "Current / " + name
 
 
-def _kill_saved_task(store, task_id):
-    """Signal only this owner's task, retaining its fenced recovery checkpoints."""
-    from src.run_cancellation import cancel_task
-    cancel_task(store.owner_id, str(task_id))
+def _kill_saved_task(store, task_id, *, task_completed=False):
+    """Archive completed results or terminate this owner's unfinished task."""
+    if not task_completed:
+        from src.run_cancellation import cancel_task
+        cancel_task(store.owner_id, str(task_id))
     error_key = f"_analysis_kill_error:{task_id}"
     try:
         killed = store.kill_task(str(task_id))
         if killed.get("status") == "complete" and not killed.get("kill_requested"):
-            # Completion won the database row lock; keep its result available.
-            st.session_state.pop(error_key, None)
-            return False
-        if not killed.get("kill_requested") and killed.get("status") not in {"stopping", "killed"}:
+            if not killed.get("archived_at"):
+                raise AnalysisCheckpointError("Apply supabase/analysis_completed_archive.sql before archiving completed results.", kind="schema")
+        elif not killed.get("kill_requested") and killed.get("status") not in {"stopping", "killed"}:
             raise AnalysisCheckpointError("The cloud task did not acknowledge Kill.")
     except Exception as exc:
         diagnostic = classify_checkpoint_error(exc)
@@ -356,6 +349,9 @@ def _kill_saved_task(store, task_id):
     st.session_state.pop(error_key, None)
     if st.session_state.get(RESUME_TASK) == str(task_id):
         st.session_state.pop(RESUME_TASK, None)
+    if st.session_state.get(VIEW_TASK) == str(task_id):
+        st.session_state.pop(VIEW_TASK, None)
+        st.session_state.pop(VIEW_PAGE, None)
     pending = st.session_state.get(PENDING_RESTORE)
     if isinstance(pending, dict) and pending.get("task_id") == str(task_id):
         st.session_state.pop(PENDING_RESTORE, None)
@@ -366,47 +362,99 @@ def _kill_saved_task(store, task_id):
 
 
 _SAVED_ANALYSIS_STYLES = """<style>
-/* Styles scoped to Saved analyses task cards. */
-[class*="st-key-analysis_saved_task_"] [data-testid="stButton"] button {
-    width: 7rem !important;
-    min-width: 7rem !important;
-    height: 2.5rem !important;
-    min-height: 2.5rem !important;
-    padding: 0.4rem 0.85rem !important;
-    line-height: 1.2 !important;
-    border-radius: 8px !important;
+/* Scoped to task lists; existing Run controls are unaffected. */
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [data-testid="stExpander"],
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [data-testid="stExpander"] > details {
+    border-radius: 6px !important;
     box-shadow: none !important;
 }
-[class*="st-key-analysis_saved_task_"] [class*="st-key-force_stop_controls_"]
-[data-testid="stButton"] button:not(:disabled) {
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [data-testid="stExpander"] summary {
+    min-height: 2.25rem;
+    padding: 0.5rem 0.75rem !important;
+}
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [data-testid="stExpander"] summary p {
+    font-size: 0.875rem;
+    line-height: 1.25;
+}
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [data-testid="stExpanderDetails"] {
+    padding: 0.625rem 0.75rem !important;
+}
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [data-testid="stExpanderDetails"] > [data-testid="stVerticalBlock"] {
+    gap: 0.5rem !important;
+}
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [data-testid="stButton"] button {
+    height: 2.125rem !important;
+    min-height: 2.125rem !important;
+    padding: 0.3rem 0.65rem !important;
+    border-width: 1px !important;
+    border-radius: 4px !important;
+    box-shadow: none !important;
+    transform: none !important;
+}
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [data-testid="stButton"] button p {
+    font-size: 0.8125rem !important;
+    line-height: 1.2 !important;
+}
+.st-key-analysis_saved_list .st-key-analysis_saved_toolbar {
+    gap: 0.375rem 0.75rem !important;
+}
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [class*="st-key-analysis_saved_info_"] [data-testid="stHorizontalBlock"] {
+    gap: 0.125rem 0.75rem !important;
+}
+.st-key-analysis_saved_list .st-key-analysis_saved_toolbar [data-testid="stCaptionContainer"] p {
+    font-size: 0.8125rem;
+    line-height: 1.35;
+}
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [class*="st-key-analysis_saved_task_"] {
+    padding: 0.625rem 0.75rem !important;
+    gap: 0.5rem !important;
+    border-radius: 6px !important;
+}
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [class*="st-key-analysis_saved_info_"] p {
+    font-size: 0.875rem;
+    line-height: 1.4;
+}
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [class*="st-key-analysis_saved_info_"] [data-testid="stCaptionContainer"] p {
+    font-size: 0.8125rem;
+}
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [class*="st-key-analysis_saved_task_"] [data-testid="stButton"] button {
+    width: 6rem !important;
+    min-width: 6rem !important;
+}
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [class*="st-key-analysis_saved_actions_"] {
+    gap: 0.5rem !important;
+}
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [class*="st-key-analysis_saved_actions_"] > [data-testid="stLayoutWrapper"]:has(> [class*="st-key-analysis_saved_details_"]) {
+    flex: 1 1 10rem !important;
+    min-width: 10rem;
+}
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [class*="st-key-force_stop_controls_"] [data-testid="stButton"] button:not(:disabled) {
     background: #fff7f7 !important;
     border-color: #fca5a5 !important;
     color: #b91c1c !important;
 }
-[class*="st-key-analysis_saved_task_"] [class*="st-key-force_stop_controls_"]
-[data-testid="stButton"] button:not(:disabled) [data-testid="stMarkdownContainer"],
-[class*="st-key-analysis_saved_task_"] [class*="st-key-force_stop_controls_"]
-[data-testid="stButton"] button:not(:disabled) p {
-    color: #b91c1c !important;
-}
-[class*="st-key-analysis_saved_task_"] [class*="st-key-force_stop_controls_"]
-[data-testid="stButton"] button:not(:disabled):hover {
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [class*="st-key-force_stop_controls_"] [data-testid="stButton"] button:not(:disabled):hover {
     background: #fee2e2 !important;
     border-color: #ef4444 !important;
 }
-[class*="st-key-analysis_saved_task_"] [data-testid="stExpander"],
-[class*="st-key-analysis_saved_task_"] [data-testid="stExpander"] > details {
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [class*="st-key-force_stop_controls_"] [data-testid="stButton"] button:not(:disabled) p {
+    color: #b91c1c !important;
+}
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [class*="st-key-analysis_saved_details_"] [data-testid="stExpander"],
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [class*="st-key-analysis_saved_details_"] [data-testid="stExpander"] > details {
     border: none !important;
-    box-shadow: none !important;
     background: transparent !important;
 }
-[class*="st-key-analysis_saved_task_"] [data-testid="stExpander"] summary {
-    min-height: 2.5rem;
-    padding: 0.35rem 0 !important;
-    font-size: 0.875rem;
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [class*="st-key-analysis_saved_details_"] [data-testid="stExpander"] summary {
+    min-height: 2.125rem;
+    padding: 0.3rem 0.5rem !important;
+    border-radius: 4px !important;
 }
-[class*="st-key-analysis_saved_task_"] [data-testid="stExpanderDetails"] {
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [class*="st-key-analysis_saved_details_"] [data-testid="stExpanderDetails"] {
     padding: 0.5rem 0 !important;
+}
+:is(.st-key-analysis_saved_list, .st-key-analysis_archived_list) [class*="st-key-analysis_saved_details_"] [data-testid="stExpanderDetails"] [data-testid="stVerticalBlock"] {
+    gap: 0.375rem !important;
 }
 </style>"""
 
@@ -421,7 +469,7 @@ def render_analysis_recovery(page_key: str):
         limit_key = f"_analysis_task_list_limit:{page_key}"
         limit = int(st.session_state.get(limit_key, 50))
         tasks = store.list_tasks(
-            page_key=page_key, limit=limit, summary_only=True, exclude_killed=True,
+            page_key=page_key, limit=limit, summary_only=True, exclude_killed=True, exclude_archived=True,
             statuses=["creating", "queued", "running", "incomplete", "complete"],
         )
     except Exception as exc:
@@ -439,72 +487,85 @@ def render_analysis_recovery(page_key: str):
         return
     has_more = len(tasks) >= limit
     tasks = [task for task in tasks if task.get("dynamic_items")
-             and not task.get("kill_requested") and task.get("status") not in {"stopping", "killed"}]
-    if not tasks:
-        return
+             and not task.get("kill_requested") and not task.get("archived_at")
+             and task.get("status") not in {"stopping", "killed"}]
     st.html(_SAVED_ANALYSIS_STYLES)
-    with st.expander("Saved analyses", expanded=any(t.get("status") != "complete" for t in tasks)):
-        with st.container(horizontal=True, vertical_alignment="center", gap="small"):
-            st.caption("Resume reuses saved progress. Kill removes the task from this list.")
-            if st.button("Refresh status", key=f"_analysis_refresh:{page_key}", width="content"):
-                st.rerun()
-        for task in tasks:
-            label = (task.get("settings") or {}).get("label", "Analysis")
-            status = str(task.get("status") or "incomplete")
-            active = _lease_active(task)
-            stop_requested = bool(task.get("stop_requested"))
-            stopping = stop_requested and active
-            display_status = "Stopping" if stopping else "Stopped" if stop_requested and status != "complete" else {
-                "creating": "Preparing", "queued": "Queued", "running": "Running" if active else "Paused",
-                "incomplete": "Paused", "complete": "Complete",
-            }.get(status, status.capitalize())
-            status_color = {"Running": "blue", "Complete": "green", "Stopping": "orange",
-                            "Paused": "orange", "Stopped": "gray"}.get(display_status, "gray")
-            display = _task_display(task)
-            apis = [api for api in display.get("apis") or [] if isinstance(api, dict)]
-            with st.container(border=True, key=f"analysis_saved_task_{task['id']}", gap="small"):
-                with st.container(gap=None):
-                    with st.container(horizontal=True, horizontal_alignment="distribute",
-                                      vertical_alignment="center", gap="small"):
-                        st.markdown(f"**{label}**", width="content")
-                        st.badge(display_status, color=status_color)
-                    with st.container(horizontal=True, horizontal_alignment="distribute",
-                                      vertical_alignment="center", gap=None):
-                        if apis:
-                            api = apis[0]
-                            provider = api.get("provider") or "Custom API"
-                            model = api.get("model") or "Not recorded"
-                            extra = f" · +{len(apis) - 1} in Task details" if len(apis) > 1 else ""
-                            st.caption(f"API: {provider} / Model: {model}{extra}", width="content")
-                        else:
-                            st.caption("API / Model: not recorded yet", width="content")
-                        st.caption(format_work_progress(task), width="content")
-                    st.markdown(_step_description(task, display))
-                with st.container(horizontal=True, vertical_alignment="center", gap="small"):
-                    st.button(
-                        "View results" if status == "complete" else "Resume",
-                        key=f"_analysis_resume:{task['id']}", disabled=active, width="content",
-                        on_click=_queue_analysis_restore, args=(str(task["id"]),),
-                        help=("This task is active. After a server restart, Resume becomes available within 3 minutes."
-                              if active else "Restore the original inputs and reuse saved results."),
-                    )
-                    # Keep the force-stop wrapper while avoiding a stretched
-                    # column that separates the two task actions.
-                    with st.container(width="content"):
-                        from src.job_guard import render_force_stop_button
-                        if render_force_stop_button(
-                            label="Kill", key=f"_analysis_kill:{task['id']}",
-                            on_click=lambda task_id=str(task["id"]): _kill_saved_task(store, task_id),
-                            disabled=status == "complete", width="content",
-                            help="Terminate this task and remove it from Saved analyses. Its run record and saved results remain in the database.",
-                        ):
-                            st.rerun()
-                    if active:
-                        st.caption("Finishing current requests…" if stopping else
-                                   "Active task · Resume is temporarily unavailable.")
-                error = st.session_state.get(f"_analysis_kill_error:{task['id']}")
-                if error:
-                    st.warning(error)
+    if tasks:
+        with st.container(key="analysis_saved_list", gap=None):
+            with st.expander("Saved analyses", expanded=any(t.get("status") != "complete" for t in tasks)):
+                with st.container(horizontal=True, vertical_alignment="center", gap="small",
+                                  key="analysis_saved_toolbar"):
+                    st.caption("Resume reuses saved progress. Kill removes the task from this list.")
+                    if st.button("Refresh", key=f"_analysis_refresh:{page_key}", width="content"):
+                        st.rerun()
+                for task in tasks:
+                    _render_saved_analysis_card(task, store, page_key)
+                if has_more and limit < 1000 and st.button("Show more", key=f"_analysis_show_older:{page_key}"):
+                    st.session_state[limit_key] = min(1000, limit + 50)
+                    st.rerun()
+
+    _render_archived_analysis_results(store, page_key)
+
+
+def _render_saved_analysis_card(task, store, page_key, *, archived=False):
+    label = (task.get("settings") or {}).get("label", "Analysis")
+    status = str(task.get("status") or "incomplete")
+    active = _lease_active(task)
+    stop_requested = bool(task.get("stop_requested"))
+    stopping = stop_requested and active
+    display_status = "Stopping" if stopping else "Stopped" if stop_requested and status != "complete" else {
+        "creating": "Preparing", "queued": "Queued", "running": "Running" if active else "Paused",
+        "incomplete": "Paused", "complete": "Complete",
+    }.get(status, status.capitalize())
+    if archived:
+        display_status = "Archived"
+    status_color = {"Running": "blue", "Complete": "green", "Stopping": "orange",
+                    "Paused": "orange", "Stopped": "gray"}.get(display_status, "gray")
+    display = _task_display(task)
+    apis = [api for api in display.get("apis") or [] if isinstance(api, dict)]
+    with st.container(border=True, key=f"analysis_saved_task_{task['id']}", gap="small"):
+        with st.container(gap=None, key=f"analysis_saved_info_{task['id']}"):
+            with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+                st.markdown(f"**{label}**", width="content")
+                st.badge(display_status, color=status_color)
+            with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+                if apis:
+                    api = apis[0]
+                    provider = api.get("provider") or "Custom API"
+                    model = api.get("model") or "Not recorded"
+                    extra = f" · +{len(apis) - 1} in Task details" if len(apis) > 1 else ""
+                    st.caption(f"API: {provider} / Model: {model}{extra}", width="content")
+                else:
+                    st.caption("API / Model: not recorded yet", width="content")
+                st.caption(format_work_progress(task), width="content")
+            st.markdown(_step_description(task, display))
+            if active and status != "complete":
+                st.caption("Finishing current requests…" if stopping else
+                           "Active task · Resume is temporarily unavailable.")
+        with st.container(horizontal=True, vertical_alignment="top", gap="small",
+                          key=f"analysis_saved_actions_{task['id']}"):
+            st.button(
+                "View results" if status == "complete" else "Resume",
+                key=f"_analysis_resume:{task['id']}", disabled=active and status != "complete", width="content",
+                on_click=_queue_analysis_restore, args=(str(task["id"]),),
+                help=("This task is active. After a server restart, Resume becomes available within 3 minutes."
+                      if active and status != "complete" else "Restore the original inputs and view saved results."),
+            )
+            if not archived:
+                # Keep the force-stop wrapper while avoiding a stretched
+                # column that separates the two task actions.
+                with st.container(width="content"):
+                    from src.job_guard import render_force_stop_button
+                    if render_force_stop_button(
+                        label="Kill", key=f"_analysis_kill:{task['id']}",
+                        on_click=lambda task_id=str(task["id"]): _kill_saved_task(store, task_id, task_completed=status == "complete"),
+                        disabled=False, width="content",
+                        help=("Archive this completed task; its final results remain in Archived results."
+                          if status == "complete" else
+                          "Terminate this task and remove it from Saved analyses. Its run record and saved results remain in the database."),
+                    ):
+                        st.rerun()
+            with st.container(key=f"analysis_saved_details_{task['id']}", gap=None):
                 with st.expander("Task details", expanded=False):
                     identity, timestamps = st.columns(2, gap="medium")
                     with identity:
@@ -519,7 +580,7 @@ def render_analysis_recovery(page_key: str):
                             if phase:
                                 st.caption(f"Checkpoint state: {phase}")
                     with timestamps:
-                        for field, title in (("created_at", "Created"), ("started_at", "Started"), ("updated_at", "Last updated"), ("completed_at", "Completed")):
+                        for field, title in (("created_at", "Created"), ("started_at", "Started"), ("updated_at", "Last updated"), ("completed_at", "Completed"), ("archived_at", "Archived")):
                             value = task.get(field)
                             if value:
                                 try:
@@ -536,12 +597,37 @@ def render_analysis_recovery(page_key: str):
                     st.caption("Kill retains the task record and saved results in the database.")
                     if not task.get("display") and apis:
                         st.caption("This older task shows APIs from recent checkpoints and the latest saved step.")
-                    if active:
+                    if active and status != "complete":
                         st.caption(
                             "Stop requested. Resume is available after current requests finish."
                             if stopping else
                             "This task is active. After a server restart, Resume becomes available within 3 minutes."
                         )
-        if has_more and limit < 1000 and st.button("Show more", key=f"_analysis_show_older:{page_key}"):
-            st.session_state[limit_key] = min(1000, limit + 50)
-            st.rerun()
+        error = st.session_state.get(f"_analysis_kill_error:{task['id']}")
+        if error:
+            st.warning(error)
+
+
+def _render_archived_analysis_results(store, page_key):
+    with st.container(key="analysis_archived_list", gap=None):
+        with st.expander("Archived results", expanded=False):
+            if not st.checkbox("Show archived analyses", key=f"_analysis_show_archived:{page_key}"):
+                return
+            limit_key = f"_analysis_archived_list_limit:{page_key}"
+            limit = int(st.session_state.get(limit_key, 50))
+            try:
+                tasks = store.list_tasks(page_key=page_key, statuses=["complete"], limit=limit,
+                                         summary_only=True, exclude_killed=True, archived_only=True)
+            except Exception as exc:
+                st.warning(f"Archived results are unavailable. {classify_checkpoint_error(exc, operation='read')}")
+                return
+            has_more = len(tasks) >= limit
+            tasks = [task for task in tasks if task.get("dynamic_items") and task.get("archived_at")
+                     and task.get("status") == "complete" and not task.get("kill_requested")]
+            if not tasks:
+                st.caption("No archived results on this page.")
+            for task in tasks:
+                _render_saved_analysis_card(task, store, page_key, archived=True)
+            if has_more and limit < 1000 and st.button("Show more", key=f"_analysis_archived_show_more:{page_key}"):
+                st.session_state[limit_key] = min(1000, limit + 50)
+                st.rerun()

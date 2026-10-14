@@ -238,6 +238,10 @@ def submit_background_job(key: str, label: str, runner: JobRunner) -> bool:
                 saved_result = deepcopy(result)
                 token.check()
                 if journal is not None:
+                    from src.analysis_result_restore import encode_background_result
+                    final_result = encode_background_result(saved_result, journal.task)
+                    if final_result is not None:
+                        journal.metadata["background_result"] = final_result
                     journal.finish(True)
                 with _LOCK:
                     token.check()

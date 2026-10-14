@@ -3,6 +3,8 @@
 -- Functional checks below should be true. If a column/RPC/FK is missing or wrong,
 -- rerun analysis_checkpoints.sql (or the incremental analysis_task_lifecycle.sql),
 -- then apply analysis_saved_details.sql if the recent-item index is missing.
+-- Completed-analysis archives require analysis_completed_archive.sql (included
+-- in the latest base/lifecycle migration); the new checks below identify upgrades.
 
 -- Both tables need RLS and SELECT for browser reads and service-role workers.
 -- The policy expression is included for review: it should scope auth.uid() to owner_id.
@@ -50,6 +52,7 @@ with expected(table_name, column_name, expected_type, expected_not_null) as (val
     ('analysis_tasks', 'killed_at', 'timestamp with time zone', false),
     ('analysis_tasks', 'started_at', 'timestamp with time zone', false),
     ('analysis_tasks', 'completed_at', 'timestamp with time zone', false),
+    ('analysis_tasks', 'archived_at', 'timestamp with time zone', false),
     ('analysis_tasks', 'lease_token', 'uuid', false),
     ('analysis_tasks', 'lease_generation', 'bigint', true),
     ('analysis_tasks', 'lease_expires_at', 'timestamp with time zone', false),
@@ -235,3 +238,33 @@ from expected
 cross join roles
 left join pg_proc p on p.oid = to_regprocedure(expected.signature)
 order by expected.name;
+
+-- Archives retain status=complete and never inherit a terminal Kill. Clearing
+-- their lease fences late API writes; View reads the existing saved results.
+with expected as (
+    select to_regclass('public.analysis_tasks') as task_table
+), actual as (
+    select c.oid, c.convalidated, pg_get_expr(c.conbin, c.conrelid) as expression
+    from pg_constraint c
+    where c.conrelid = to_regclass('public.analysis_tasks')
+      and c.conname = 'analysis_tasks_archive_lifecycle_check' and c.contype = 'c'
+)
+select actual.oid is not null as archive_lifecycle_constraint_exists,
+       coalesce(actual.convalidated
+           and actual.expression like '%archived_at IS NULL%'
+           and actual.expression like '%''complete''::text%'
+           and actual.expression like '%NOT kill_requested%'
+           and actual.expression like '%lease_token IS NULL%'
+           and actual.expression like '%lease_expires_at IS NULL%', false) as archive_lifecycle_constraint_ready,
+       actual.expression as archive_lifecycle_constraint_expression
+from expected left join actual on true;
+
+-- Review only RPC definitions, never user result data. Both fresh installs and
+-- upgrades must preserve the completed Kill archive and read-only release branch.
+select coalesce(pg_get_functiondef(to_regprocedure('public.analysis_kill_task(uuid,uuid)'))
+           like '%set archived_at = clock_timestamp()%'
+           and pg_get_functiondef(to_regprocedure('public.analysis_kill_task(uuid,uuid)'))
+           like '%task.archived_at is not null%', false) as completed_kill_archives_results,
+       coalesce(pg_get_functiondef(to_regprocedure('public.analysis_release(uuid,uuid,uuid,text,jsonb)'))
+           like '%task.archived_at is not null and task.status = ''complete''%', false)
+           as archived_release_is_read_only;

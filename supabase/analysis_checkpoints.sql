@@ -56,6 +56,19 @@ alter table public.analysis_tasks add column if not exists kill_requested_at tim
 alter table public.analysis_tasks add column if not exists killed_at timestamptz;
 alter table public.analysis_tasks add column if not exists started_at timestamptz;
 alter table public.analysis_tasks add column if not exists completed_at timestamptz;
+-- Archive completed analyses without changing results or terminal Kill flags.
+-- Historical records stay visible until their owner explicitly archives them.
+alter table public.analysis_tasks add column if not exists archived_at timestamptz;
+alter table public.analysis_tasks drop constraint if exists analysis_tasks_archive_lifecycle_check;
+alter table public.analysis_tasks add constraint analysis_tasks_archive_lifecycle_check
+    check (archived_at is null or (
+        status = 'complete' and not kill_requested
+        and lease_token is null and lease_expires_at is null
+    ));
+create index if not exists analysis_tasks_owner_archive_updated_idx
+    on public.analysis_tasks(owner_id, updated_at desc, id)
+    where archived_at is not null;
+
 alter table public.analysis_tasks drop constraint if exists analysis_tasks_status_check;
 alter table public.analysis_tasks add constraint analysis_tasks_status_check
     check (status in ('creating', 'queued', 'running', 'incomplete', 'complete', 'stopping', 'killed'));
@@ -510,6 +523,13 @@ create or replace function public.analysis_release(
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare task public.analysis_tasks%rowtype;
 begin
+    -- Completion can win the lock immediately before the owner archives it.
+    -- This stale worker may close its run, but must not rewrite the saved result.
+    task := public.analysis_locked_task(p_owner_id, p_task_id, null, false);
+    if task.archived_at is not null and task.status = 'complete'
+        and p_status in ('incomplete', 'complete') then
+        return to_jsonb(task);
+    end if;
     task := public.analysis_locked_task(p_owner_id, p_task_id, p_lease_token);
     if p_status is null or p_status not in ('incomplete', 'complete', 'killed')
         or (p_status = 'killed' and not task.kill_requested) then
@@ -557,7 +577,19 @@ declare
     transition_time timestamptz := clock_timestamp();
 begin
     task := public.analysis_locked_task(p_owner_id, p_task_id, null, false);
-    if task.status in ('complete', 'killed') then
+    if task.status = 'complete' then
+        if task.archived_at is not null then
+            return to_jsonb(task);
+        end if;
+        -- Preserve the final snapshot and the immutable API journal. Clearing
+        -- the lease fences any late writer while View remains a read-only action.
+        update public.analysis_tasks set archived_at = clock_timestamp(),
+            lease_token = null, lease_expires_at = null,
+            revision = revision + 1, updated_at = clock_timestamp()
+            where id = p_task_id and owner_id = p_owner_id returning * into task;
+        return to_jsonb(task);
+    end if;
+    if task.status = 'killed' then
         return to_jsonb(task);
     end if;
     active_lease := task.lease_token is not null and task.lease_expires_at > transition_time;

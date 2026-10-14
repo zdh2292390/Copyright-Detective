@@ -392,8 +392,9 @@ def _document_job_hidden(state) -> bool:
 
 def _detach_document_job(token) -> None:
     # Worker cleanup continues independently after the card is removed.
-    if st.session_state.get("pdf_cloud_recovery_selection") == token:
-        st.session_state.pop("pdf_cloud_recovery_selection", None)
+    for key in ("pdf_cloud_recovery_selection", "pdf_cloud_archive_selection"):
+        if st.session_state.get(key) == token:
+            st.session_state.pop(key, None)
     current = st.session_state.get(PDF_JOB_TOKEN_KEY)
     if current in (None, token) or st.query_params.get(PDF_JOB_QUERY_KEY) == token:
         st.session_state.pop(PDF_JOB_TOKEN_KEY, None)
@@ -417,27 +418,80 @@ def _kill_document_job(token, owner_id) -> None:
         st.error(f"Could not kill analysis: {exc}")
 
 
+def _open_saved_document(token, owner_id) -> None:
+    """Restore saved comparisons for display without claiming or running a worker."""
+    try:
+        state = DOCUMENT_JOBS.get(token, owner_id=owner_id)
+        if state is None:
+            raise CheckpointError("The saved document analysis is no longer available.")
+        st.session_state[PDF_JOB_TOKEN_KEY] = token
+        st.query_params[PDF_JOB_QUERY_KEY] = token
+        st.session_state.pop("pdf_report_bytes", None)
+        st.session_state.pop("pdf_report_fingerprint", None)
+        _sync_document_job(state)
+        _trigger_pdf_rerun()
+    except (CheckpointError, ValueError) as exc:
+        st.error(f"Could not open the saved analysis: {exc}")
+
+
+def _render_document_archive_list(archived, active_token, owner_id, *, disabled=False):
+    if not archived:
+        st.session_state.pop("pdf_cloud_archive_selection", None)
+        return
+    with st.expander("Archived results"):
+        entries = {item["token"]: item for item in archived}
+        options = [None, *entries]
+        key = "pdf_cloud_archive_selection"
+        if st.session_state.get(key) not in options:
+            st.session_state.pop(key, None)
+
+        def label(token):
+            if token is None:
+                return "Choose a completed analysis"
+            item = entries[token]
+            return f"{item['settings']['filename']} / {item['completed_chunks']:,}/{item['total_chunks']:,} chunks"
+
+        selection, action = st.columns([5, 1], vertical_alignment="center")
+        with selection:
+            selected = st.selectbox(
+                "Archived document analysis", options, format_func=label,
+                key=key, label_visibility="collapsed",
+            )
+        with action:
+            view = st.button(
+                "View results", key="view_archived_pdf_analysis", width="stretch",
+                disabled=disabled or not selected or selected == active_token,
+                help="Display the saved final report without making API calls.",
+            )
+        if view:
+            _open_saved_document(selected, owner_id)
+
+
 def _render_document_recovery_list(active_token=None, *, disabled=False):
     owner_id = st.session_state.get("user_id")
     if not owner_id or st.session_state.get("_pdf_verified_cloud_owner") != owner_id or not DOCUMENT_JOBS.cloud_enabled_for(owner_id):
         return
     try:
         saved = [item for item in DOCUMENT_JOBS.list_saved(owner_id=owner_id) if not _document_job_hidden(item)]
+        archived = DOCUMENT_JOBS.list_saved(owner_id=owner_id, archived_only=True)
     except (CheckpointError, ValueError) as exc:
         st.error(f"Could not list saved document analyses: {exc}")
         return
     if not saved:
         st.session_state.pop("pdf_cloud_recovery_selection", None)
+        _render_document_archive_list(archived, active_token, owner_id, disabled=disabled)
         return
     st.markdown("**Saved analyses**")
     entries = {item["token"]: item for item in saved}
+
     def label(token):
         if token is None:
             return "Choose a saved analysis"
         item = entries[token]
         progress = f"{item['completed_chunks']:,}/{item['total_chunks']:,} chunks"
-        activity = "Active" if item.get("active") else "Paused"
-        return f"{item['settings']['filename']} · {progress} · {activity}"
+        activity = "Complete" if item["status"] == "complete" else "Active" if item.get("active") else "Paused"
+        return f"{item['settings']['filename']} / {progress} / {activity}"
+
     options = [None, *entries]
     selection_key = "pdf_cloud_recovery_selection"
     if st.session_state.get(selection_key) not in options:
@@ -449,8 +503,9 @@ def _render_document_recovery_list(active_token=None, *, disabled=False):
             key=selection_key, label_visibility="collapsed",
         )
     with open_col:
+        complete = bool(selected and entries[selected]["status"] == "complete")
         open_saved = st.button(
-            "Open", key="open_saved_pdf_analysis", width="stretch",
+            "View results" if complete else "Open", key="open_saved_pdf_analysis", width="stretch",
             disabled=disabled or not selected or selected == active_token,
         )
     selected_state = None
@@ -467,24 +522,14 @@ def _render_document_recovery_list(active_token=None, *, disabled=False):
         render_force_stop_button(
             label="Kill", key="kill_selected_saved_pdf_analysis", width="stretch",
             on_click=lambda: _kill_document_job(selected, owner_id),
-            disabled=not selected_state or selected_state.get("status") == "complete" or (
+            disabled=not selected_state or (
                 bool(entries[selected].get("active")) and bool(selected_state.get("stop_requested"))
             ),
-            help="End this task and remove it from Saved analyses. Its source and results remain stored.",
+            help="Archive completed results; stop unfinished tasks and remove them from this list.",
         )
     if open_saved:
-        try:
-            state = DOCUMENT_JOBS.get(selected, owner_id=owner_id)
-            if state is None:
-                raise CheckpointError("The saved document analysis is no longer available.")
-            st.session_state[PDF_JOB_TOKEN_KEY] = selected
-            st.query_params[PDF_JOB_QUERY_KEY] = selected
-            st.session_state.pop("pdf_report_bytes", None)
-            st.session_state.pop("pdf_report_fingerprint", None)
-            _sync_document_job(state)
-            _trigger_pdf_rerun()
-        except (CheckpointError, ValueError) as exc:
-            st.error(f"Could not open the saved analysis: {exc}")
+        _open_saved_document(selected, owner_id)
+    _render_document_archive_list(archived, active_token, owner_id, disabled=disabled)
 
 
 def _restore_document_job():
@@ -577,7 +622,7 @@ def _render_document_job(token, api_key, provider, *, show_resume_button=True) -
     st.markdown("---")
     st.markdown(f"**Saved analysis: {settings['filename']}**")
     st.caption("Bookmark this page to restore this analysis after reconnecting. The recovery link provides access to this document; keep it private.")
-    if _document_job_is_active(token, owner_id):
+    if state["status"] != "complete" and _document_job_is_active(token, owner_id):
         _poll_document_job(token, owner_id)
         return
     if state["status"] == "running":
@@ -620,7 +665,19 @@ def _render_document_job(token, api_key, provider, *, show_resume_button=True) -
                 except (CheckpointError, ValueError) as exc:
                     st.error(f"Could not resume analysis: {exc}")
     else:
-        _render_document_task_details(state, token)
+        if state.get("archived_at"):
+            st.caption("Archived result. Viewing uses saved results and makes no API calls.")
+            _render_document_task_details(state, token)
+        else:
+            details, action = st.columns([5, 1], vertical_alignment="center")
+            with details:
+                _render_document_task_details(state, token)
+            with action:
+                render_force_stop_button(
+                    label="Kill", key="kill_complete_pdf_analysis", width="stretch",
+                    on_click=lambda: _kill_document_job(token, owner_id),
+                    help="Move this completed analysis to Archived results. Its final report remains available.",
+                )
     _render_saved_pdf_results(state)
 
 

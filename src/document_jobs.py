@@ -174,10 +174,11 @@ class DocumentAnalysisJobs:
             raise CheckpointError("Sign in to the account that created this cloud analysis to restore it.")
         return cloud or self.store
 
-    def list_saved(self, *, owner_id=None):
+    def list_saved(self, *, owner_id=None, archived_only=False):
         with self._lock:
             store = self._cloud_stores.get(owner_id) if owner_id else None
-        return store.list_for_owner() if store is not None else []
+        return (store.list_for_owner(archived_only=archived_only) if store is not None
+                else self.store.list_for_owner(owner_id, archived_only=archived_only))
 
     def is_active(self, token, *, owner_id=None):
         with self._lock:
@@ -575,7 +576,7 @@ class DocumentAnalysisJobs:
         return self.stop(token, owner_id=owner_id, force=True)
 
     def force_kill(self, token, *, owner_id=None):
-        """Terminally kill a task, retain its journal, and prevent Resume."""
+        """Archive a completed result, or terminally stop unfinished work."""
         with self._lock:
             job = self._jobs.get(token)
             active = bool(job is not None and not job.get("finished"))
@@ -588,6 +589,17 @@ class DocumentAnalysisJobs:
                     return False
                 self._check_owner(saved[0], owner_id)
             killed = store.request_kill(token, active=active)
+            if killed and killed.get("status") == "complete" and killed.get("archived_at"):
+                if job is not None:
+                    # Completion may have committed just before its worker
+                    # publishes the final snapshot. View must get every saved
+                    # result, even during that narrow cleanup window.
+                    saved = store.load(token)
+                    if saved is None:
+                        raise CheckpointError("The archived analysis is no longer available.")
+                    self._check_owner(saved[0], owner_id)
+                    job["state"] = _snapshot(saved[0])
+                return True
             if not killed or not (killed.get("kill_requested") or killed.get("status") in {"stopping", "killed"}):
                 return False
             if job is not None:

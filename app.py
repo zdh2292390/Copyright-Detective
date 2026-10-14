@@ -27,7 +27,10 @@ from src.analysis_recovery_ui import (
     apply_pending_analysis_restore, render_analysis_recovery,
     render_analysis_restore_feedback, finish_analysis_restore_feedback,
 )
-from src.resumable_analysis import AnalysisCheckpointError, page_analysis_scope, page_supports_analysis_recovery
+from src.resumable_analysis import (
+    AnalysisCheckpointError, page_analysis_scope, page_supports_analysis_recovery,
+    saved_view_api_key,
+)
 from src.run_cancellation import AnalysisCancelled
 from src.job_guard import (
     finish_detection_job,
@@ -111,6 +114,7 @@ try:
     with page_analysis_scope(page, st.session_state):
         _restore_feedback_slot = render_analysis_restore_feedback(page)
         render_analysis_recovery(page)
+        api_key = saved_view_api_key(api_key)
         if page == "Content Recall Detection":
             render_snippet_to_document_page(api_key, model_choice, provider)
         elif page == "Knowledge Memorization Detection":

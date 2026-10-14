@@ -34,6 +34,8 @@ _CALL_SCOPE: ContextVar[tuple] = ContextVar("analysis_work_item_scope", default=
 PAGE_KEY = "_analysis_page_key"
 PENDING_RESTORE = "_analysis_pending_restore"
 RESUME_TASK = "_analysis_resume_task"
+VIEW_TASK = "_analysis_view_task"
+VIEW_PAGE = "_analysis_view_page"
 RUN_TRIGGER = "_analysis_run_trigger"
 RUN_LABEL = "_analysis_run_label"
 LEASE_TTL = 180
@@ -557,6 +559,8 @@ class CallJournal:
                     if item.get("status") == "complete":
                         self._last_api_was_cached = True
                         return decode(item["result"])
+                    if self.read_only:
+                        raise AnalysisResumeMismatch("This completed task has an unfinished saved response. Viewing results cannot retry API calls.")
                 else:
                     if self.read_only:
                         raise AnalysisResumeMismatch("This completed task has no saved response for the requested call.")
@@ -639,6 +643,9 @@ class CallJournal:
             if self.read_only:
                 self.stop_event.set()
                 self._unbind_cancellation()
+                if success and (self.failed or self.broken or len(self.visited_items) != len(self.items)):
+                    self.failed = self.broken = True
+                    raise AnalysisResumeMismatch("The saved report could not be fully reconstructed because some saved calls were not replayed. Viewing results cannot create missing API calls.")
                 return
             success = success and not (self.cancellation_token is not None and self.cancellation_token.cancelled)
             complete = success and not self.failed and not self.broken and (len(self.visited_items) == len(self.items) or self.verified_complete)
@@ -706,6 +713,25 @@ class PageRun:
         self.label = None
         self.trigger = None
         self.broken = False
+        # Capture the selection before widgets or a replay can consume its marker.
+        self.view_task_id = str(state.get(VIEW_TASK) or "") or None
+        selected_page = state.get(VIEW_PAGE)
+        if not isinstance(selected_page, str) or not selected_page.strip():
+            # Existing sessions already bind feedback to the verified task/page.
+            # Orphaned legacy markers without that binding remain conservative.
+            feedback = state.get("_analysis_restore_feedback")
+            if (isinstance(feedback, dict)
+                    and str(feedback.get("task_id") or "") == self.view_task_id):
+                selected_page = feedback.get("page_key")
+        if (self.view_task_id and isinstance(selected_page, str) and selected_page.strip()
+                and canonical_page_key(selected_page) != canonical_page_key(page_key)):
+            previous_view = self.view_task_id
+            self.view_task_id = None
+            if str(state.get(VIEW_TASK) or "") == previous_view:
+                state.pop(VIEW_TASK, None)
+                state.pop(VIEW_PAGE, None)
+            if str(state.get(RESUME_TASK) or "") == previous_view:
+                state.pop(RESUME_TASK, None)
 
     def ensure_journal(self):
         if not page_supports_analysis_recovery(self.page_key):
@@ -715,7 +741,7 @@ class PageRun:
         if self.journal is not None:
             return self.journal
         if not self.trigger:
-            if self.state.get("access_token"):
+            if self.view_task_id or self.state.get("access_token"):
                 self.broken = True
                 raise AnalysisCheckpointError(
                     "Use this page's Run action before making an API request. "
@@ -730,13 +756,17 @@ class PageRun:
                 self.broken = True
                 raise
         if self.store is None:
+            if self.view_task_id:
+                raise AnalysisCheckpointError("Sign in before viewing this task's saved results. No API call was started.", kind="auth")
             return None
         try:
-            resume_id = self.state.get(RESUME_TASK)
+            resume_id = self.view_task_id or self.state.get(RESUME_TASK)
             if resume_id:
                 task = self.store.get_task(resume_id)
                 if not task or canonical_page_key(task.get("page_key")) != canonical_page_key(self.page_key):
                     raise AnalysisCheckpointError("The saved task is not available on this page for your account.")
+                if self.view_task_id and task.get("status") != "complete":
+                    raise AnalysisCheckpointError("Only completed tasks can be viewed without running an analysis.")
                 source = task.get("source") or {}
                 if source.get("trigger_key") != self.trigger:
                     raise AnalysisResumeMismatch("Use the original run action to resume this task.")
@@ -759,7 +789,7 @@ class PageRun:
             self.journal = CallJournal(self.store, task)
             # Failed validation or lease startup must retain the task selected
             # for Resume; the next Run must not silently create a new task.
-            if resume_id and self.state.get(RESUME_TASK) == resume_id:
+            if not self.view_task_id and resume_id and self.state.get(RESUME_TASK) == resume_id:
                 self.state.pop(RESUME_TASK, None)
             self.state["_analysis_current_task_id"] = self.journal.task_id
             return self.journal
@@ -773,7 +803,7 @@ class PageRun:
     def finish(self, success: bool):
         if self.journal is not None and not self.journal.closed:
             final_snapshot = None
-            if success:
+            if success and not self.journal.read_only:
                 try:
                     final_snapshot = pack_snapshot(snapshot_session(self.state, self.page_key, max_bytes=8 * 1024 * 1024))
                 except Exception:
@@ -782,6 +812,38 @@ class PageRun:
                     # heartbeat running forever; rebuild from saved calls.
                     final_snapshot = None
             self.journal.finish(success, final_snapshot)
+            if success and self.view_task_id and not self.journal.failed and not self.journal.broken:
+                if self.state.get(VIEW_TASK) == self.view_task_id:
+                    self.state.pop(VIEW_TASK, None)
+                    self.state.pop(VIEW_PAGE, None)
+                if self.state.get(RESUME_TASK) == self.view_task_id:
+                    self.state.pop(RESUME_TASK, None)
+        elif success and self.journal is None and self.view_task_id and self.state.get(RESUME_TASK) != self.view_task_id:
+            # Direct final snapshots have no journal to close. Release their
+            # per-render safety marker so a later explicit Run creates new work.
+            if self.state.get(VIEW_TASK) == self.view_task_id:
+                self.state.pop(VIEW_TASK, None)
+                self.state.pop(VIEW_PAGE, None)
+
+
+def is_viewing_saved_results() -> bool:
+    """Identify both cached UI replay and direct readonly journal consumers."""
+    scope = _CURRENT.get()
+    return bool((isinstance(scope, PageRun) and scope.view_task_id)
+                or (isinstance(scope, CallJournal) and scope.read_only))
+
+
+def saved_view_api_key(api_key):
+    """Let cached-only replay pass old input guards without saving a credential.
+
+    Provider keys are absent from request fingerprints. The selected completed
+    task still authorizes every exact cached request, and a missing response or
+    invalid login is rejected before its live provider callback can execute.
+    """
+    scope = _CURRENT.get()
+    if isinstance(scope, PageRun) and scope.view_task_id and not str(api_key or "").strip():
+        return "saved-response-only"
+    return api_key
 
 
 def register_ui_run(label: str, trigger_key: str):
@@ -900,6 +962,8 @@ def prepare_background_journal(key: str, label: str):
         return None
     if scope.broken:
         raise AnalysisCheckpointError("Cloud checkpoints are unavailable. Resume this task before making more calls.")
+    if scope.view_task_id:
+        raise AnalysisCheckpointError("Completed background results must be restored locally. Viewing results cannot start a worker.")
     try:
         if not scope.checked_store:
             scope.checked_store = True

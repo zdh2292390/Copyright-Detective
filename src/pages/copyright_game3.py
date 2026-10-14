@@ -47,7 +47,8 @@ def render_copyright_game3_page(model_choice: str = "gpt-4o-mini") -> None:
         st.info("Use **Sign in with GitHub** in the sidebar to continue.")
         return
 
-    api_key = get_shared_api_key()
+    from src.resumable_analysis import is_viewing_saved_results, saved_view_api_key
+    api_key = saved_view_api_key(None) if is_viewing_saved_results() else get_shared_api_key()
     if not api_key:
         st.error("Game 3 is unavailable because the shared GPT API key is not configured.")
         st.caption("Configure `COPYRIGHT_GAME_OPENAI_API_KEY` to enable this workspace.")

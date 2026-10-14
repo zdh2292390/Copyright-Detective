@@ -14,7 +14,7 @@ import json
 import re
 import time
 import tempfile
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 from urllib.parse import parse_qsl, urlsplit
 from uuid import UUID, uuid4
 
@@ -175,12 +175,12 @@ _MAX_BATCH_BYTES = 4 * 1024 * 1024
 _TASK_COLUMNS = (
     "id,owner_id,page_key,fingerprint,settings,source,metadata,dynamic_items,server_managed,"
     "total_items,status,completed_items,failed_items,stop_requested,kill_requested,"
-    "lease_token,lease_generation,lease_expires_at,revision,created_at,updated_at,started_at,completed_at,kill_requested_at,killed_at"
+    "lease_token,lease_generation,lease_expires_at,revision,created_at,updated_at,started_at,completed_at,kill_requested_at,killed_at,archived_at"
 )
 _SUMMARY_COLUMNS = (
     "id,owner_id,page_key,settings,dynamic_items,server_managed,total_items,status,completed_items,"
     "failed_items,stop_requested,kill_requested,lease_expires_at,revision,created_at,updated_at,"
-    "started_at,completed_at,kill_requested_at,killed_at,display:metadata->display,work_progress:metadata->work_progress,"
+    "started_at,completed_at,kill_requested_at,killed_at,archived_at,display:metadata->display,work_progress:metadata->work_progress,"
     "latest_items:analysis_items(item_index,status,updated_at,operation:input->>operation,scope:input->scope,"
     "provider:input->request->>provider,model:input->request->>model,model_name:input->request->>model_name,"
     "endpoint:input->request->>endpoint,base_url:input->request->>base_url,"
@@ -196,6 +196,33 @@ _RETRYABLE_RPCS = frozenset({
 })
 _CHECKPOINT_ATTEMPTS = 2
 _CHECKPOINT_RETRY_DELAY = 0.25
+
+
+def _missing_archive_column(exc: Exception) -> bool:
+    """Only a named missing-column error enables the older projection fallback."""
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    for _ in range(4):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        code = getattr(current, "code", None)
+        message = getattr(current, "message", None)
+        if not isinstance(message, str):
+            message = str(current)
+        if code in {"42703", "PGRST204"} and re.search(r"\barchived_at\b", message, re.I) and any(
+            marker in message.lower() for marker in ("does not exist", "could not find", "not found")
+        ):
+            return True
+        current = current.__cause__
+    return False
+
+
+def _archive_migration_error() -> AnalysisCheckpointError:
+    return AnalysisCheckpointError(
+        "Completed-analysis archives are unavailable. Run supabase/analysis_completed_archive.sql "
+        "in the app's Supabase project, then refresh Saved analyses.", kind="schema",
+    )
 
 
 def _uuid(value: str, name: str) -> str:
@@ -398,41 +425,69 @@ class SupabaseAnalysisCheckpointStore:
                 self._rpc("put_items", p_task_id=identity, p_items=batch)
             return self._rpc("finalize_task", p_task_id=identity)
 
+    def _archive_query(self, build_query: Callable[[bool], Any], *, require_archive: bool = False) -> list[dict[str, Any]]:
+        """Keep ordinary reads working before the optional archive upgrade is applied."""
+        try:
+            return self._query(build_query(True))
+        except AnalysisCheckpointError as exc:
+            if not _missing_archive_column(exc):
+                raise
+            if require_archive:
+                raise _archive_migration_error() from exc
+            return self._query(build_query(False))
+
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         task_id = _uuid(task_id, "task_id")
         self.reconcile_killed_tasks()
-        rows = self._query(self.client.table("analysis_tasks").select(_TASK_COLUMNS)
-                           .eq("owner_id", self.owner_id).eq("id", task_id).limit(1))
+        def build_query(has_archive: bool):
+            columns = _TASK_COLUMNS if has_archive else _TASK_COLUMNS.replace(",archived_at", "")
+            return (self.client.table("analysis_tasks").select(columns)
+                    .eq("owner_id", self.owner_id).eq("id", task_id).limit(1))
+        rows = self._archive_query(build_query)
         return rows[0] if rows else None
 
     def list_tasks(self, *, page_key: str | None = None, statuses: Iterable[str] | None = None,
                    offset: int = 0, limit: int = 50, summary_only: bool = False,
-                   exclude_killed: bool = False) -> list[dict[str, Any]]:
+                   exclude_killed: bool = False, exclude_archived: bool = False,
+                   archived_only: bool = False) -> list[dict[str, Any]]:
         offset = _integer(offset, "offset")
         limit = _integer(limit, "limit", 1, 1000)
-        if not isinstance(summary_only, bool) or not isinstance(exclude_killed, bool):
-            raise AnalysisCheckpointError("summary_only and exclude_killed must be booleans.")
-        columns = _SUMMARY_COLUMNS if summary_only else _TASK_COLUMNS
-        query = self.client.table("analysis_tasks").select(columns).eq("owner_id", self.owner_id)
-        if exclude_killed:
-            query = query.eq("kill_requested", False)
-        if summary_only:
-            # Recent compact legacy checkpoints, without prompts/results or
-            # large session snapshots. The display metadata tracks newer runs.
-            query = (query.order("updated_at", desc=True, foreign_table="latest_items")
-                     .order("item_index", desc=True, foreign_table="latest_items")
-                     .range(0, 4, foreign_table="latest_items"))
-        if page_key is not None:
-            query = query.eq("page_key", page_key)
-        if statuses is not None:
-            values = list(statuses)
+        if any(not isinstance(value, bool) for value in (
+            summary_only, exclude_killed, exclude_archived, archived_only,
+        )):
+            raise AnalysisCheckpointError("Task-list flags must be booleans.")
+        if exclude_archived and archived_only:
+            raise AnalysisCheckpointError("Cannot exclude archived tasks from an archive-only list.")
+        values = None if statuses is None else list(statuses)
+        if values is not None:
             if any(value not in _TASK_STATUSES for value in values):
                 raise AnalysisCheckpointError("Invalid task status filter.")
             if not values:
                 return []
-            query = query.in_("status", values)
+        def build_query(has_archive: bool):
+            columns = _SUMMARY_COLUMNS if summary_only else _TASK_COLUMNS
+            if not has_archive:
+                columns = columns.replace(",archived_at", "")
+            query = self.client.table("analysis_tasks").select(columns).eq("owner_id", self.owner_id)
+            if exclude_killed:
+                query = query.eq("kill_requested", False)
+            if has_archive and exclude_archived:
+                query = query.is_("archived_at", "null")
+            elif has_archive and archived_only:
+                query = query.not_.is_("archived_at", "null").eq("status", "complete")
+            if summary_only:
+                # Only five recent API/step labels; never pull prompts, results or
+                # final session snapshots into the Saved analyses listing.
+                query = (query.order("updated_at", desc=True, foreign_table="latest_items")
+                         .order("item_index", desc=True, foreign_table="latest_items")
+                         .range(0, 4, foreign_table="latest_items"))
+            if page_key is not None:
+                query = query.eq("page_key", page_key)
+            if values is not None:
+                query = query.in_("status", values)
+            return query.order("updated_at", desc=True).order("id").range(offset, offset + limit - 1)
         self.reconcile_killed_tasks()
-        return self._query(query.order("updated_at", desc=True).order("id").range(offset, offset + limit - 1))
+        return self._archive_query(build_query, require_archive=archived_only)
 
     def load_items(self, task_id: str, *, offset: int = 0, limit: int = 200) -> list[dict[str, Any]]:
         task_id = _uuid(task_id, "task_id")
@@ -517,8 +572,13 @@ class SupabaseAnalysisCheckpointStore:
         return self._rpc("request_stop", p_task_id=_uuid(task_id, "task_id"))
 
     def kill_task(self, task_id: str) -> dict[str, Any]:
-        """Terminal cancellation; retain the task and checkpoint audit record."""
-        return self._rpc("kill_task", p_task_id=_uuid(task_id, "task_id"))
+        """Archive completed results; terminally cancel unfinished tasks without deletion."""
+        task = self._rpc("kill_task", p_task_id=_uuid(task_id, "task_id"))
+        if task.get("status") == "complete" and not task.get("archived_at"):
+            # Older lifecycle RPCs returned a complete task unchanged. Do not
+            # hide it locally or signal cancellation when no archive was written.
+            raise _archive_migration_error()
+        return task
 
     def reconcile_killed_tasks(self) -> int:
         """Finalize abandoned Kill cleanup only after its worker lease expires."""

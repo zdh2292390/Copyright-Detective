@@ -199,7 +199,7 @@ class SupabaseDocumentCheckpointStore:
         state["status"] = "incomplete" if status == "queued" else status
         state["stop_requested"] = bool(task.get("stop_requested"))
         state["kill_requested"] = bool(task.get("kill_requested")) or status in {"stopping", "killed"}
-        for key in ("kill_requested_at", "killed_at", "started_at", "completed_at", "updated_at"):
+        for key in ("kill_requested_at", "killed_at", "archived_at", "started_at", "completed_at", "updated_at"):
             if key in task:
                 state[key] = task[key]
         if state["kill_requested"]:
@@ -519,7 +519,8 @@ class SupabaseDocumentCheckpointStore:
         if not isinstance(task, Mapping):
             raise CheckpointError("The cloud analysis did not acknowledge Kill.")
         state = self._state_metadata(task)
-        if not state.get("kill_requested") and state["status"] not in {"stopping", "killed"}:
+        archived = state["status"] == "complete" and bool(state.get("archived_at"))
+        if not archived and not state.get("kill_requested") and state["status"] not in {"stopping", "killed"}:
             return False
         with self._lock:
             self._remember_revision_locked(token, task.get("revision"))
@@ -530,20 +531,29 @@ class SupabaseDocumentCheckpointStore:
                 self._identities[token] = deepcopy(state)
         return state
 
-    def list_for_owner(self):
-        tasks = self._call(self.store.list_tasks, page_key=DOCUMENT_PAGE_KEY, statuses=["queued", "running", "incomplete"], limit=100)
+    def list_for_owner(self, *, archived_only=False):
+        if not isinstance(archived_only, bool):
+            raise CheckpointError("The document archive filter must be a boolean.")
+        tasks = self._call(
+            self.store.list_tasks, page_key=DOCUMENT_PAGE_KEY,
+            statuses=["complete"] if archived_only else ["queued", "running", "incomplete", "complete"],
+            limit=100, exclude_archived=not archived_only, archived_only=archived_only,
+        )
         result = []
         for task in tasks:
             if not isinstance(task, Mapping) or task.get("owner_id") != self.owner_id or task.get("page_key") != DOCUMENT_PAGE_KEY:
                 raise CheckpointError("The saved document list contains an invalid account scope.")
             if task.get("kill_requested") or task.get("status") in {"stopping", "killed"}:
                 continue
+            if bool(task.get("archived_at")) != archived_only:
+                continue
             metadata = self._state_metadata(task)
             result.append({
                 "token": self._token(task.get("id")), "settings": metadata["settings"],
                 "status": task["status"], "total_chunks": metadata["total_chunks"],
                 "completed_chunks": task["completed_items"], "failed_chunks": task["failed_items"],
-                "updated_at": task.get("updated_at"), "active": _active(task),
+                "updated_at": task.get("updated_at"), "archived_at": task.get("archived_at"),
+                "active": task["status"] != "complete" and _active(task),
             })
         return result
 

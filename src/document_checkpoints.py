@@ -36,7 +36,7 @@ METADATA_KEYS = frozenset({
     "current_chunk", "current_attempt", "retry_in_seconds", "retry_attempt",
     "started_at", "updated_at", "completed_at", "owner_id", "revision", "stop_requested",
     "active_chunks", "concurrency_limit", "effective_concurrency",
-    "kill_requested", "kill_requested_at", "killed_at",
+    "kill_requested", "kill_requested_at", "killed_at", "archived_at",
 })
 TOKEN_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 MAX_CHUNKS = 500_000
@@ -156,7 +156,7 @@ def _metadata(state: Any) -> dict[str, Any]:
     for key in ("concurrency_limit", "effective_concurrency"):
         if key in clean:
             _integer(clean[key], key, minimum=1, maximum=8)
-    for key in ("started_at", "updated_at", "completed_at", "kill_requested_at", "killed_at", "owner_id"):
+    for key in ("started_at", "updated_at", "completed_at", "kill_requested_at", "killed_at", "archived_at", "owner_id"):
         if key in clean:
             _text(clean[key], key, nullable=True, limit=1024)
     for key in ("current_attempt", "retry_attempt", "revision"):
@@ -168,6 +168,8 @@ def _metadata(state: Any) -> dict[str, Any]:
         delay = clean["retry_in_seconds"]
         if not _finite_number(delay) or delay < 0:
             raise CheckpointError("Checkpoint has an invalid retry delay.")
+    if clean.get("archived_at") and clean["status"] != "complete":
+        raise CheckpointError("Only complete document analyses can be archived.")
     _json(clean)
     return clean
 
@@ -424,6 +426,11 @@ class DocumentCheckpointStore:
 
     @staticmethod
     def _preserve_kill(stored, metadata):
+        # A stale worker cannot remove a completed task from the archive.
+        if stored.get("archived_at"):
+            if metadata.get("status") != "complete":
+                raise CheckpointError("An archived analysis cannot be resumed or made incomplete.")
+            metadata = {**metadata, "archived_at": stored["archived_at"]}
         # A checkpoint prepared before Kill cannot revive the durable task.
         if stored.get("kill_requested") or stored.get("status") == "killed":
             metadata = dict(metadata)
@@ -445,9 +452,13 @@ class DocumentCheckpointStore:
             if job is None:
                 return False
             metadata = self._stored_metadata(job)
-            if metadata["status"] == "complete":
-                return False
             now = datetime.now(timezone.utc).isoformat()
+            if metadata["status"] == "complete":
+                if not metadata.get("archived_at"):
+                    metadata.update(archived_at=now, updated_at=now)
+                    data = _json(metadata)
+                    connection.execute("UPDATE jobs SET metadata = ?, metadata_hash = ? WHERE token = ?", (data, _hash(data), token))
+                return metadata
             metadata.update(kill_requested=True, stop_requested=True, updated_at=now,
                             retry_in_seconds=0, retry_attempt=None)
             metadata["kill_requested_at"] = metadata.get("kill_requested_at") or now
@@ -492,6 +503,43 @@ class DocumentCheckpointStore:
                     state["attempts"][index] = row["attempts"]
             _chunk_rows(state, state["total_chunks"])
             return state, pairs
+
+    def list_for_owner(self, owner_id, *, archived_only=False):
+        """List only a signed-in owner's compact records; anonymous tokens stay private."""
+        if not isinstance(archived_only, bool):
+            raise CheckpointError("The document archive filter must be a boolean.")
+        if not owner_id or not self.db_path.exists():
+            return []
+        with self._connection() as connection:
+            # JSON metadata keeps older SQLite installations compatible. Source
+            # and generated text are never loaded to build the recovery list.
+            archive_filter = "is not null" if archived_only else "is null"
+            rows = connection.execute(
+                f"SELECT * FROM jobs WHERE json_extract(metadata, '$.owner_id') = ? "
+                f"AND json_extract(metadata, '$.archived_at') {archive_filter} "
+                "ORDER BY json_extract(metadata, '$.updated_at') DESC, token LIMIT 100",
+                (owner_id,),
+            ).fetchall()
+            result = []
+            for row in rows:
+                state = self._stored_metadata(row)
+                if state.get("owner_id") != owner_id:
+                    raise CheckpointError("The saved document list contains an invalid account scope.")
+                if state.get("kill_requested") or state["status"] in {"stopping", "killed"}:
+                    continue
+                completed, failed = connection.execute(
+                    "SELECT count(*) FILTER (WHERE result_json IS NOT NULL), "
+                    "count(*) FILTER (WHERE failure IS NOT NULL) FROM chunk_state WHERE token = ?",
+                    (row["token"],),
+                ).fetchone()
+                result.append({
+                    "token": row["token"], "settings": state["settings"],
+                    "status": state["status"], "total_chunks": state["total_chunks"],
+                    "completed_chunks": completed, "failed_chunks": failed,
+                    "updated_at": state.get("updated_at"), "archived_at": state.get("archived_at"),
+                    "active": False,
+                })
+            return result
 
     def delete(self, token: str) -> None:
         token = _token(token)

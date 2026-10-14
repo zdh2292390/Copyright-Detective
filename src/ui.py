@@ -611,123 +611,126 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
         progress_bar.progress(1.0, text="Done:All evaluations completed!")
         progress_bar.empty()
         
-        # Get results
-        results = logger
-        
-        # Display results
-        if not logger.entries:
-            st.error('No answers were successfully evaluated. No score is available.')
-            return
-        if len(logger.entries) < len(questions):
-            st.warning(f'Partial evaluation: {len(logger.entries)}/{len(questions)} questions scored.')
-        else:
-            st.success("Done:Knowmem evaluation completed!")
-        
-        # Show summary metrics
-        st.markdown("####  Evaluation Results")
-        
-        # Get the report
-        report = results.report()
-        entries = report.get('entries') or results.entries
-        total_examples = len(entries)
-
-        summary_metrics = [
-            {
-                "label": "Mean F1 Score",
-                "value": f"{report.get('mean_f1', 0.0) * 100:.2f}%",
-                "detail": "Token-level F1 (Fact Recall)",
-            },
-            {
-                "label": "Mean Precision",
-                "value": f"{report.get('mean_precision', 0.0) * 100:.2f}%",
-                "detail": "Correct tokens / predicted tokens",
-            },
-            {
-                "label": "Mean Recall",
-                "value": f"{report.get('mean_recall', 0.0) * 100:.2f}%",
-                "detail": "Correct tokens / ground truth tokens",
-            },
-            {
-                "label": "Evaluated QA Pairs",
-                "value": str(total_examples),
-                "detail": "Questions scored in this run",
-            },
-        ]
-
-        metrics_css = """
-        <style>
-        .knowmem-metrics-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1rem;
-            margin: 0.8rem 0 1.2rem;
-        }
-        .knowmem-metric-card {
-            background: rgba(255, 255, 255, 0.02);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 14px;
-            padding: 1rem 1.2rem;
-            box-shadow: 0 12px 35px rgba(0, 0, 0, 0.08);
-            backdrop-filter: blur(6px);
-        }
-        .knowmem-metric-label {
-            font-size: 0.85rem;
-            letter-spacing: 0.04em;
-            text-transform: uppercase;
-            color: rgba(255, 255, 255, 0.7);
-            margin-bottom: 0.25rem;
-        }
-        .knowmem-metric-value {
-            font-size: 1.8rem;
-            font-weight: 700;
-            color: #42c6ff;
-            margin-bottom: 0.2rem;
-        }
-        .knowmem-metric-detail {
-            font-size: 0.9rem;
-            color: rgba(255, 255, 255, 0.6);
-        }
-        </style>
-        """
-
-        cards_html = "".join(
-            f"""
-            <div class=\"knowmem-metric-card\">
-                <div class=\"knowmem-metric-label\">{metric['label']}</div>
-                <div class=\"knowmem-metric-value\">{metric['value']}</div>
-                <div class=\"knowmem-metric-detail\">{metric['detail']}</div>
-            </div>
-            """
-            for metric in summary_metrics
-        )
-
-        st.markdown("**Summary Metrics:**", unsafe_allow_html=True)
-        st.markdown(metrics_css + f"<div class='knowmem-metrics-grid'>{cards_html}</div>", unsafe_allow_html=True)
-        
-        # Display detailed results for each example
-        st.markdown("**Detailed Results:**")
-        for i, entry in enumerate(results.entries):
-            question = entry.get('question', f'Question {i+1}')
-            with st.expander(f"Example {i+1}: {question[:50]}...", expanded=False):
-                st.markdown("**Question:**")
-                st.write(entry.get('question', 'N/A'))
-                st.markdown("**Expected Answer:**")
-                st.write(entry.get('gt', 'N/A'))
-                st.markdown("**Generated Answer:**")
-                st.write(entry.get('pred', 'N/A'))
-                st.markdown("**Metrics:**")
-                st.json({
-                    'f1': entry.get('f1', 0),
-                    'precision': entry.get('precision', 0),
-                    'recall': entry.get('recall', 0)
-                })
-        
+        _render_knowmem_results(logger, len(questions))
     except Exception as e:
         if isinstance(e, AnalysisCheckpointError):
             raise
         st.error(f"Error: during knowmem evaluation: {str(e)}")
         import traceback
         st.code(traceback.format_exc())
+
+
+def _render_knowmem_results(logger, planned_count: int) -> None:
+    results = logger
+
+    # Display results
+    if not logger.entries:
+        st.error('No answers were successfully evaluated. No score is available.')
+        return
+    if len(logger.entries) < planned_count:
+        st.warning(f'Partial evaluation: {len(logger.entries)}/{planned_count} questions scored.')
+    else:
+        st.success("Done:Knowmem evaluation completed!")
+
+    # Show summary metrics
+    st.markdown("####  Evaluation Results")
+
+    # Get the report
+    report = results.report()
+    entries = report.get('entries') or results.entries
+    total_examples = len(entries)
+
+    summary_metrics = [
+        {
+            "label": "Mean F1 Score",
+            "value": f"{report.get('mean_f1', 0.0) * 100:.2f}%",
+            "detail": "Token-level F1 (Fact Recall)",
+        },
+        {
+            "label": "Mean Precision",
+            "value": f"{report.get('mean_precision', 0.0) * 100:.2f}%",
+            "detail": "Correct tokens / predicted tokens",
+        },
+        {
+            "label": "Mean Recall",
+            "value": f"{report.get('mean_recall', 0.0) * 100:.2f}%",
+            "detail": "Correct tokens / ground truth tokens",
+        },
+        {
+            "label": "Evaluated QA Pairs",
+            "value": str(total_examples),
+            "detail": "Questions scored in this run",
+        },
+    ]
+
+    metrics_css = """
+    <style>
+    .knowmem-metrics-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1rem;
+        margin: 0.8rem 0 1.2rem;
+    }
+    .knowmem-metric-card {
+        background: rgba(255, 255, 255, 0.02);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 14px;
+        padding: 1rem 1.2rem;
+        box-shadow: 0 12px 35px rgba(0, 0, 0, 0.08);
+        backdrop-filter: blur(6px);
+    }
+    .knowmem-metric-label {
+        font-size: 0.85rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.7);
+        margin-bottom: 0.25rem;
+    }
+    .knowmem-metric-value {
+        font-size: 1.8rem;
+        font-weight: 700;
+        color: #42c6ff;
+        margin-bottom: 0.2rem;
+    }
+    .knowmem-metric-detail {
+        font-size: 0.9rem;
+        color: rgba(255, 255, 255, 0.6);
+    }
+    </style>
+    """
+
+    cards_html = "".join(
+        f"""
+        <div class=\"knowmem-metric-card\">
+            <div class=\"knowmem-metric-label\">{metric['label']}</div>
+            <div class=\"knowmem-metric-value\">{metric['value']}</div>
+            <div class=\"knowmem-metric-detail\">{metric['detail']}</div>
+        </div>
+        """
+        for metric in summary_metrics
+    )
+
+    st.markdown("**Summary Metrics:**", unsafe_allow_html=True)
+    st.markdown(metrics_css + f"<div class='knowmem-metrics-grid'>{cards_html}</div>", unsafe_allow_html=True)
+
+    # Display detailed results for each example
+    st.markdown("**Detailed Results:**")
+    for i, entry in enumerate(results.entries):
+        question = entry.get('question', f'Question {i+1}')
+        with st.expander(f"Example {i+1}: {question[:50]}...", expanded=False):
+            st.markdown("**Question:**")
+            st.write(entry.get('question', 'N/A'))
+            st.markdown("**Expected Answer:**")
+            st.write(entry.get('gt', 'N/A'))
+            st.markdown("**Generated Answer:**")
+            st.write(entry.get('pred', 'N/A'))
+            st.markdown("**Metrics:**")
+            st.json({
+                'f1': entry.get('f1', 0),
+                'precision': entry.get('precision', 0),
+                'recall': entry.get('recall', 0)
+            })
+
 
 
 def _generate_report_safely(factory, *args, **kwargs):
@@ -779,6 +782,11 @@ def render_evaluation_queue(api_key, model_choice, provider) -> None:
     ):
         with detection_job("Knowmem Evaluation"):
             run_knowmem_evaluation(api_key, model_choice, provider)
+    elif "qa_knowmem_saved_entries" in st.session_state:
+        # Final snapshots already contain scored answers; viewing them makes no API calls.
+        logger = RougeEvalLogger()
+        logger.entries = list(st.session_state["qa_knowmem_saved_entries"])
+        _render_knowmem_results(logger, len(eval_examples))
     
     if st.button("Clear evaluation batch", key="qa_clear_eval_batch"):
         st.session_state[QA_EVAL_QUEUE_KEY] = []

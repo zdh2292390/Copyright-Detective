@@ -333,6 +333,26 @@ def _active_round_key(provider: str) -> str:
     return _key(f"{slug}_active_round")
 
 
+def _restore_saved_scaling_result() -> None:
+    from src.analysis_result_restore import SCALING_RESULT_KEY, decode_scaling_result
+    payload = st.session_state.get(SCALING_RESULT_KEY)
+    if not isinstance(payload, dict):
+        return
+    owner_id = str(st.session_state.get("user_id") or "")
+    if not owner_id or payload.get("owner_id") != owner_id:
+        from src.analysis_checkpoints import AnalysisCheckpointError
+        raise AnalysisCheckpointError("Sign in to the saved task's account before viewing results.", kind="auth")
+    task_id = str(payload.get("task_id") or "")
+    result = decode_scaling_result(payload, task_id=task_id, owner_id=owner_id)
+    history_key = _history_key(result.provider)
+    history = list(st.session_state.get(history_key, []))
+    # Keep repeated View clicks idempotent without touching another browser's workers.
+    history = [row for row in history if isinstance(row, dict) and row.get("task_id") != task_id]
+    history.append({"task_id": task_id, "completed_at": "Saved analysis", "result": result})
+    st.session_state[history_key] = history
+    st.session_state.pop(SCALING_RESULT_KEY, None)
+
+
 def _round_history() -> List[Dict[str, Any]]:
     value = st.session_state.get(_key("round_history"), [])
     return list(value) if isinstance(value, list) else []
@@ -919,6 +939,7 @@ def _render_unexpected_error() -> None:
 
 def render_copyright_game2_page() -> None:
     """Render the single-stage, no-leaderboard direct-probing duel."""
+    _restore_saved_scaling_result()
     _load_styles()
     header_col, toolbar_col = st.columns([4, 1], vertical_alignment="top")
     with header_col:
