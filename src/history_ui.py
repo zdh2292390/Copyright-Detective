@@ -43,18 +43,7 @@ HISTORY_STYLES = """<style>
     line-height: 1.2 !important;
 }
 
-:is(.st-key-analysis_history_list, .st-key-document_history_list) [data-testid="stButton"] button[kind="primary"]:not(:disabled) {
-    background: #2563eb !important;
-    border-color: #2563eb !important;
-    color: #fff !important;
-}
-:is(.st-key-analysis_history_list, .st-key-document_history_list) [data-testid="stButton"] button[kind="primary"]:not(:disabled) p {
-    color: #fff !important;
-}
-:is(.st-key-analysis_history_list, .st-key-document_history_list) [data-testid="stButton"] button[kind="primary"]:not(:disabled):hover {
-    background: #1d4ed8 !important;
-    border-color: #1d4ed8 !important;
-}
+/* Match the page Clear Cache buttons, at the compact History action size. */
 :is(.st-key-analysis_history_list, .st-key-document_history_list) [class*="st-key-history_actions_"] {
     gap: 0.5rem !important;
     justify-content: flex-end;
@@ -62,17 +51,60 @@ HISTORY_STYLES = """<style>
 :is(.st-key-analysis_history_list, .st-key-document_history_list) [class*="st-key-history_actions_"] [data-testid="stButton"] button {
     width: 6.25rem !important;
     min-width: 6.25rem !important;
+    height: 2.25rem !important;
+    min-height: 2.25rem !important;
+    padding: 0.35rem 0.8rem !important;
+    border: 2px solid rgba(147, 197, 253, 0.6) !important;
+    border-radius: 12px !important;
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(248, 250, 255, 0.9)) !important;
+    color: #1e40af !important;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    box-shadow: 0 4px 14px rgba(147, 197, 253, 0.2), 0 2px 6px rgba(15, 23, 42, 0.06) !important;
+    transition: background 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease, transform 0.25s ease;
 }
-:is(.st-key-analysis_history_list, .st-key-document_history_list) [class*="st-key-force_stop_controls_"] [data-testid="stButton"] button:not(:disabled) {
-    background: transparent !important;
-    color: #dc2626 !important;
-    border-color: #ef4444 !important;
+:is(.st-key-analysis_history_list, .st-key-document_history_list) [class*="st-key-history_actions_"] [data-testid="stButton"] button p {
+    color: inherit !important;
+    font-weight: 700;
 }
-:is(.st-key-analysis_history_list, .st-key-document_history_list) [class*="st-key-force_stop_controls_"] [data-testid="stButton"] button:not(:disabled) p {
-    color: #dc2626 !important;
+:is(.st-key-analysis_history_list, .st-key-document_history_list) [class*="st-key-history_actions_"] [data-testid="stButton"] button:not(:disabled):hover {
+    background: linear-gradient(135deg, rgba(147, 197, 253, 0.15), rgba(165, 180, 252, 0.12)) !important;
+    border-color: #93c5fd !important;
+    transform: translateY(-2px) !important;
+    box-shadow: 0 8px 24px rgba(147, 197, 253, 0.3), 0 4px 12px rgba(15, 23, 42, 0.08) !important;
 }
-:is(.st-key-analysis_history_list, .st-key-document_history_list) [class*="st-key-force_stop_controls_"] [data-testid="stButton"] button:not(:disabled):hover {
-    background: rgba(239, 68, 68, 0.08) !important;
+:is(.st-key-analysis_history_list, .st-key-document_history_list) [class*="st-key-history_actions_"] [data-testid="stButton"] button:not(:disabled):active {
+    transform: translateY(0) !important;
+    box-shadow: 0 2px 8px rgba(147, 197, 253, 0.25) !important;
+}
+:is(.st-key-analysis_history_list, .st-key-document_history_list) [class*="st-key-history_actions_"] [data-testid="stButton"] button:focus-visible {
+    outline: 2px solid #93c5fd;
+    outline-offset: 2px;
+}
+:is(.st-key-analysis_history_list, .st-key-document_history_list) [class*="st-key-history_actions_"] [data-testid="stButton"] button:disabled {
+    opacity: 0.5;
+    transform: none !important;
+    box-shadow: none !important;
+}
+:is(.st-key-analysis_history_list, .st-key-document_history_list) [class*="st-key-history_actions_"] [class*="st-key-force_stop_controls_"] [data-testid="stButton"] button {
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(255, 245, 245, 0.9)) !important;
+    color: #b91c1c !important;
+    border-color: rgba(252, 165, 165, 0.6) !important;
+    box-shadow: 0 4px 14px rgba(252, 165, 165, 0.2), 0 2px 6px rgba(15, 23, 42, 0.06) !important;
+}
+:is(.st-key-analysis_history_list, .st-key-document_history_list) [class*="st-key-history_actions_"] [class*="st-key-force_stop_controls_"] [data-testid="stButton"] button::before {
+    background: linear-gradient(135deg, rgba(252, 165, 165, 0.1), transparent 50%);
+}
+:is(.st-key-analysis_history_list, .st-key-document_history_list) [class*="st-key-history_actions_"] [class*="st-key-force_stop_controls_"] [data-testid="stButton"] button:not(:disabled):hover {
+    background: linear-gradient(135deg, rgba(252, 165, 165, 0.15), rgba(254, 202, 202, 0.12)) !important;
+    border-color: #fca5a5 !important;
+    box-shadow: 0 8px 24px rgba(252, 165, 165, 0.3), 0 4px 12px rgba(15, 23, 42, 0.08) !important;
+}
+:is(.st-key-analysis_history_list, .st-key-document_history_list) [class*="st-key-history_actions_"] [class*="st-key-force_stop_controls_"] [data-testid="stButton"] button:not(:disabled):active {
+    box-shadow: 0 2px 8px rgba(252, 165, 165, 0.25) !important;
+}
+:is(.st-key-analysis_history_list, .st-key-document_history_list) [class*="st-key-history_actions_"] [class*="st-key-force_stop_controls_"] [data-testid="stButton"] button:focus-visible {
+    outline-color: #fca5a5;
 }
 :is(.st-key-analysis_history_list, .st-key-document_history_list) [data-testid="stCaptionContainer"] p {
     font-size: 0.8125rem !important;
