@@ -19,6 +19,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from src.api_concurrency import ApiConcurrencyTimeout, limit_api_concurrency
+from src.asu_rc import ASU_BASE_URL, ASU_PROVIDER
 from src.provider_cancellation import provider_call
 from src.run_cancellation import check_cancellation
 from src.common.metrics.logger import is_api_error_response
@@ -160,10 +161,13 @@ def _is_logprobs_error(exc: Exception) -> bool:
 
 def create_openai_chat_completion(
     client, request_kwargs: Dict[str, Any], *, short_answer: bool = False,
+    apply_model_compat: bool = True,
 ):
     """Call OpenAI chat completions with compatibility retries."""
     compat = apply_openai_short_answer_compat if short_answer else apply_openai_request_compat
-    kwargs = compat(dict(request_kwargs))
+    # Institutional endpoints may serve models with cloud-provider-like names.
+    # Use their own contract, while keeping response-driven compatibility retries.
+    kwargs = compat(dict(request_kwargs)) if apply_model_compat else dict(request_kwargs)
     last_exc: Optional[Exception] = None
     for _ in range(5):
         check_cancellation()
@@ -511,7 +515,13 @@ def get_llm_completion(
     short_answer: bool = False,
 ) -> Any:
     from src.resumable_analysis import checkpoint_call
+    if provider == ASU_PROVIDER and isinstance(model_name, str) and not model_name.strip():
+        message = "Error: Enter an ASU model ID or select a model from the catalog before starting analysis."
+        return (message, None) if return_logprobs else message
     resolved_model = model_name or DEFAULT_MODELS.get(provider)
+    if provider == ASU_PROVIDER:
+        # Record the actual endpoint so resumes cannot drift to another service.
+        base_url = ASU_BASE_URL
     payload = {
         "prompt": prompt, "provider": provider, "model_name": resolved_model,
         "temperature": temperature, "top_p": top_p, "base_url": base_url,
@@ -555,7 +565,7 @@ def _get_llm_completion_uncheckpointed(
         prompt: The prompt to send to the LLM.
         api_key: API key for the provider.
         model_name: Name of the model to use.
-    provider: LLM provider ("OpenAI", "OpenRouter", "Anthropic", "Google Gemini", "Kimi", "Local vLLM").
+    provider: LLM provider, including ASU Research Computing API.
         temperature: Sampling temperature.
         top_p: Top-p sampling parameter.
         base_url: Optional base URL for OpenAI-compatible endpoints (used for Local vLLM).
@@ -730,6 +740,36 @@ def _execute_llm_completion(
                 if return_logprobs:
                     logprobs_data = _extract_logprobs_from_response(response)
 
+            elif provider == ASU_PROVIDER:
+                # ASU's managed gateway uses user-issued keys and exact model IDs.
+                # Never fall back to a public/paid endpoint or its model defaults.
+                client = resources.enter_context(openai.OpenAI(
+                    api_key=str(api_key).strip(),
+                    base_url=ASU_BASE_URL,
+                    **sdk_request_options,
+                ))
+                request_kwargs = {
+                    "model": model_name,
+                    "messages": _build_messages_for_model(
+                        model_name, "You are a helpful assistant.", prompt,
+                    ),
+                    "temperature": temperature,
+                    "top_p": top_p,
+                }
+                if max_output_tokens is not None:
+                    request_kwargs["max_tokens"] = max_output_tokens
+                if stop_sequences:
+                    request_kwargs["stop"] = stop_sequences
+                if return_logprobs:
+                    request_kwargs["logprobs"] = True
+                    request_kwargs["top_logprobs"] = 5
+                response = create_openai_chat_completion(
+                    client, request_kwargs, apply_model_compat=False,
+                )
+                result_text = _extract_chat_message_text(response)
+                if return_logprobs:
+                    logprobs_data = _extract_logprobs_from_response(response)
+
             elif provider == "Anthropic":
                 client = resources.enter_context(
                     anthropic.Anthropic(api_key=api_key, **sdk_request_options)
@@ -890,7 +930,10 @@ def _execute_llm_completion(
             success=False,
             linger=0.6,
         )
-        error_msg = f"Error calling API: {type(e).__name__}: {e}"
+        detail = str(e)
+        if provider == ASU_PROVIDER and str(api_key or "").strip():
+            detail = detail.replace(str(api_key).strip(), "[redacted]")
+        error_msg = f"Error calling API: {type(e).__name__}: {detail}"
         if return_logprobs:
             return error_msg, None
         return error_msg

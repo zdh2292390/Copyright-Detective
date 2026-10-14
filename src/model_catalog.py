@@ -4,6 +4,8 @@ Availability is a catalog check, not a guarantee of access for every account.
 Never remap an inference request: saved results must retain their model identity.
 """
 
+from src.asu_rc import ASU_PROVIDER, ASU_MODEL_IDS, ASU_DEFAULT_MODEL
+
 CATALOG_CHECKED_ON = "2026-10-07"
 CATALOG_SOURCES = {
     "OpenAI": "https://developers.openai.com/api/docs/models/all",
@@ -11,6 +13,7 @@ CATALOG_SOURCES = {
     "Anthropic": "https://platform.claude.com/docs/en/models/overview",
     "Google Gemini": "https://ai.google.dev/gemini-api/docs/models",
     "Kimi": "https://platform.kimi.ai/docs/models",
+    ASU_PROVIDER: "https://openai.rc.asu.edu/v1/models",
 }
 
 DEFAULT_MODELS = {
@@ -19,6 +22,7 @@ DEFAULT_MODELS = {
     "Anthropic": "claude-sonnet-5-5",
     "Google Gemini": "gemini-3.8-flash",
     "Kimi": "kimi-k2.6",
+    ASU_PROVIDER: ASU_DEFAULT_MODEL,
 }
 
 
@@ -32,6 +36,11 @@ def _config(provider, models, key, help_text):
 
 
 MODEL_CONFIG = {
+    ASU_PROVIDER: _config(ASU_PROVIDER, list(ASU_MODEL_IDS),
+        "sidebar_asu_rc_model_selectbox",
+        "ASU-hosted Research Computing models. Enter your ASU API key to load the current "
+        "model catalog. Availability and limits depend on your ASU access. "
+        "Custom model requests use the same ASU endpoint."),
     "OpenAI": _config("OpenAI", [
         "gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna",
         "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano",

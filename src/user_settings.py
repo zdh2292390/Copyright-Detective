@@ -10,6 +10,7 @@ import streamlit as st
 from cryptography.fernet import Fernet, InvalidToken
 
 from src.supabase_client import get_authenticated_client, get_fernet_key
+from src.asu_rc import ASU_PROVIDER, ASU_MODEL_IDS
 
 PROVIDER_KEY_MAP = {
     "OpenAI": "openai_api_key",
@@ -17,6 +18,7 @@ PROVIDER_KEY_MAP = {
     "Anthropic": "anthropic_api_key",
     "Google Gemini": "google_api_key",
     "Kimi": "kimi_api_key",
+    ASU_PROVIDER: "asu_rc_api_key",
     "Local vLLM": "local_vllm_api_key",
 }
 
@@ -26,6 +28,9 @@ SIDEBAR_STORAGE_KEYS = [
     "sidebar_anthropic_api_key",
     "sidebar_google_api_key",
     "sidebar_kimi_api_key",
+    "sidebar_asu_rc_api_key",
+    "sidebar_asu_rc_model_selectbox",
+    "sidebar_asu_rc_custom_model",
     "sidebar_local_vllm_base_url",
     "sidebar_local_vllm_api_key",
     "sidebar_local_vllm_model",
@@ -43,6 +48,7 @@ def schedule_fill_api_key_inputs(payload: Dict[str, Any]) -> None:
         "api_keys": dict(payload.get("api_keys") or {}),
         "extra_config": dict(payload.get("extra_config") or {}),
         "provider": str(payload.get("provider") or ""),
+        "model_name": str(payload.get("model_name") or ""),
     }
 
 
@@ -71,6 +77,8 @@ def apply_pending_sidebar_widget_resets() -> None:
             if value:
                 st.session_state[session_key] = value
 
+        _restore_asu_model_widgets(pending)
+
     if st.session_state.pop(PENDING_RESET_SIDEBAR_SETTINGS, False):
         for session_key in SIDEBAR_STORAGE_KEYS:
             if session_key.endswith("_api_key") or session_key == "sidebar_local_vllm_api_key":
@@ -79,6 +87,8 @@ def apply_pending_sidebar_widget_resets() -> None:
                 st.session_state[session_key] = "http://localhost:8000/v1"
             elif session_key == "sidebar_provider_selectbox":
                 st.session_state[session_key] = "Kimi"
+            elif session_key in ("sidebar_asu_rc_model_selectbox", "sidebar_asu_rc_custom_model"):
+                st.session_state.pop(session_key, None)
             elif session_key == "sidebar_local_vllm_model":
                 st.session_state[session_key] = ""
 
@@ -109,6 +119,8 @@ def _sidebar_key_to_storage() -> Dict[str, str]:
         "anthropic_api_key": "sidebar_anthropic_api_key",
         "google_api_key": "sidebar_google_api_key",
         "kimi_api_key": "sidebar_kimi_api_key",
+        "asu_rc_api_key": "sidebar_asu_rc_api_key",
+        "asu_rc_custom_model": "sidebar_asu_rc_custom_model",
         "local_vllm_base_url": "sidebar_local_vllm_base_url",
         "local_vllm_api_key": "sidebar_local_vllm_api_key",
         "local_vllm_model": "sidebar_local_vllm_model",
@@ -144,7 +156,7 @@ def collect_settings_payload(
         if is_secret:
             # Widget value is authoritative so clearing + Keep removes the key.
             payload["api_keys"][storage_key] = typed
-        elif storage_key in ("local_vllm_base_url", "local_vllm_model"):
+        elif storage_key in ("local_vllm_base_url", "local_vllm_model", "asu_rc_custom_model"):
             saved = str(secure.get(storage_key, "") or "").strip()
             payload["extra_config"][storage_key] = typed or saved
     return payload
@@ -175,6 +187,20 @@ def _decrypt_payload(encrypted: str) -> Dict[str, Any]:
     return data
 
 
+def _restore_asu_model_widgets(payload: Dict[str, Any]) -> None:
+    """Restore the saved ASU choice, including model IDs outside the seed catalog."""
+    if payload.get("provider") != ASU_PROVIDER:
+        return
+    model = str(payload.get("model_name") or "").strip()
+    if not model:
+        return
+    if model in ASU_MODEL_IDS:
+        st.session_state["sidebar_asu_rc_model_selectbox"] = model
+    else:
+        st.session_state["sidebar_asu_rc_model_selectbox"] = "Custom model"
+        st.session_state["sidebar_asu_rc_custom_model"] = model
+
+
 def apply_settings_to_session(payload: Dict[str, Any], *, update_widgets: bool = True) -> None:
     secure: Dict[str, str] = {}
     api_keys = payload.get("api_keys") or {}
@@ -200,6 +226,8 @@ def apply_settings_to_session(payload: Dict[str, Any], *, update_widgets: bool =
         elif value and update_widgets:
             st.session_state[session_key] = value
 
+    if update_widgets:
+        _restore_asu_model_widgets(payload)
     st.session_state[SECURE_KEYS_SESSION] = secure
     st.session_state["_saved_provider"] = str(payload.get("provider") or "")
     st.session_state["_saved_model_name"] = str(payload.get("model_name") or "")

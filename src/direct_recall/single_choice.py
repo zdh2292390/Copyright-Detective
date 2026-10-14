@@ -16,6 +16,7 @@ from openai import OpenAI
 from anthropic import Anthropic
 
 from src.direct_recall.comparison import get_llm_completion
+from src.asu_rc import ASU_BASE_URL, ASU_PROVIDER
 from src.common.metrics.logger import is_api_error_response
 from src.api_concurrency import limit_api_concurrency
 from src.resumable_analysis import report_analysis_progress
@@ -882,6 +883,7 @@ def evaluate_single_choice_question(
         "OpenRouter": "https://openrouter.ai/api/v1",
         "Kimi": "https://api.moonshot.cn/v1",
         "Anthropic": "https://api.anthropic.com",
+        ASU_PROVIDER: ASU_BASE_URL,
     }.get(provider)
     if provider == "Local vLLM":
         import streamlit as st

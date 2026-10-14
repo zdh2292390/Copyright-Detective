@@ -1905,6 +1905,13 @@ def run_min_k_prob_analysis(
     Returns:
         Dictionary containing analysis results with MIN-K% PROB metric and additional metrics.
     """
+    from src.asu_rc import ASU_PROVIDER
+    if provider == ASU_PROVIDER and not (agent_url and agent_url.strip()):
+        raise ValueError(
+            "MIN-K% PROB requires prompt-token log probabilities. This ASU integration supports "
+            "chat analyses; use a deployment agent that exposes prompt logprobs for MIN-K."
+        )
+
     # Determine base_url, provider, and model_name if agent_url is provided
     base_url = None
     effective_provider = provider
@@ -1920,6 +1927,9 @@ def run_min_k_prob_analysis(
         # Use agent_key as api_key if provided
         if agent_key and agent_key.strip():
             effective_api_key = agent_key.strip()
+        elif provider == ASU_PROVIDER:
+            # An independent deployment agent must never receive the ASU key.
+            effective_api_key = "not-required"
         # Use "Local vLLM" provider for OpenAI-compatible API compatibility
         # But set a custom progress message to reflect it's a server deployment agent
         effective_provider = "Local vLLM"

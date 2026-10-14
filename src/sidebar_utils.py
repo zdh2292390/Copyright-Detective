@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Tuple
 
 import streamlit as st
 from src.widget_defaults import widget_defaults
+from src.asu_rc import ASU_PROVIDER, ASU_DEFAULT_MODEL, AsuCatalogError, fetch_asu_models
 
 from src.auth import (
     auth_enabled,
@@ -22,6 +23,8 @@ SIDEBAR_DEFAULTS = {
     "sidebar_anthropic_api_key": "",
     "sidebar_google_api_key": "",
     "sidebar_kimi_api_key": "",
+    "sidebar_asu_rc_api_key": "",
+    "sidebar_asu_rc_custom_model": "",
     "sidebar_local_vllm_base_url": "http://localhost:8000/v1",
     "sidebar_local_vllm_api_key": "",
     "sidebar_local_vllm_model": "",
@@ -29,6 +32,12 @@ SIDEBAR_DEFAULTS = {
 }
 
 API_KEY_CONFIG = [
+    {
+        "label": "ASU Research Computing API Key",
+        "key": "sidebar_asu_rc_api_key",
+        "help": "Enter your personal ASU Research Computing API key. This provider has no shared default key.",
+        "provider": ASU_PROVIDER,
+    },
     {
         "label": "OpenAI API Key",
         "key": "sidebar_openai_api_key",
@@ -119,7 +128,7 @@ def render_model_selectbox(provider: str, config: Dict[str, Any], *, disabled: b
         if isinstance(current_model, str) and current_model:
             selected = replacement if replacement in models else models[config.get("default_index", 0)]
             st.info(f"The saved model {current_model} is no longer an option. "
-                    f"Selected {selected} for new analyses. History keep their original model.")
+                    f"Selected {selected} for new analyses. History entries keep their original model.")
 
     kwargs = {
         "label": "Model name",
@@ -134,6 +143,42 @@ def render_model_selectbox(provider: str, config: Dict[str, Any], *, disabled: b
     return st.selectbox(**kwargs)
 
 
+def render_asu_model_selection(api_key: str, *, disabled: bool = False) -> str:
+    """Use ASU's live catalog when available without changing a restored model ID."""
+    st.caption("ASU Research Computing provides this gateway at no cost. Request limits may apply.")
+    config = dict(MODEL_CONFIG[ASU_PROVIDER])
+    models = [model for model in config["models"] if model != "Custom model"]
+    if api_key and not disabled:
+        try:
+            available = fetch_asu_models(api_key)
+            if available:
+                models = list(available)
+            else:
+                st.caption("Live catalog unavailable; showing ASU's published model list.")
+        except AsuCatalogError as exc:
+            st.warning(str(exc))
+            st.caption("Showing ASU's published model list.")
+        except Exception:
+            # Never include the transport exception: it may contain credentials.
+            st.caption("Live catalog unavailable; showing ASU's published model list.")
+    current = st.session_state.get(config["key"])
+    if isinstance(current, str) and current.strip() and current != "Custom model" and current not in models:
+        models.append(current)
+    models.append("Custom model")
+    config["models"] = models
+    config["default_index"] = models.index(ASU_DEFAULT_MODEL) if ASU_DEFAULT_MODEL in models else 0
+    selection = render_model_selectbox(ASU_PROVIDER, config, disabled=disabled)
+    if selection == "Custom model":
+        return st.text_input(
+            "Custom model ID",
+            key="sidebar_asu_rc_custom_model",
+            placeholder="Exact model ID from your ASU model catalog",
+            help="Requests stay on the ASU Research Computing endpoint.",
+            disabled=disabled,
+        ).strip()
+    return selection
+
+
 def get_api_key_for_provider(provider: str, api_keys: Dict[str, str]) -> str:
     from src.user_settings import get_secure_api_key
 
@@ -143,6 +188,7 @@ def get_api_key_for_provider(provider: str, api_keys: Dict[str, str]) -> str:
         "Anthropic": "anthropic_api_key",
         "Google Gemini": "google_api_key",
         "Kimi": "kimi_api_key",
+        ASU_PROVIDER: "asu_rc_api_key",
         "Local vLLM": "local_vllm_api_key",
     }
 
@@ -163,6 +209,8 @@ def get_api_key_for_provider(provider: str, api_keys: Dict[str, str]) -> str:
 
 
 def _current_model_name(provider: str) -> str:
+    if provider == ASU_PROVIDER and st.session_state.get("sidebar_asu_rc_model_selectbox") == "Custom model":
+        return str(st.session_state.get("sidebar_asu_rc_custom_model", "") or "").strip()
     if provider in MODEL_CONFIG:
         model_key = MODEL_CONFIG[provider]["key"]
         return str(st.session_state.get(model_key, "") or "")
@@ -192,6 +240,7 @@ def render_api_configuration_section(
         "Anthropic": "anthropic_api_key",
         "Google Gemini": "google_api_key",
         "Kimi": "kimi_api_key",
+        ASU_PROVIDER: "asu_rc_api_key",
     }
 
     for config in API_KEY_CONFIG:
@@ -246,6 +295,7 @@ def render_model_selection_section(api_keys: Dict[str, str], *, disabled: bool =
         "OpenRouter",
         "Anthropic",
         "Google Gemini",
+        ASU_PROVIDER,
         "Local vLLM",
     ]
     current_provider = st.session_state.get("sidebar_provider_selectbox")
@@ -265,7 +315,10 @@ def render_model_selection_section(api_keys: Dict[str, str], *, disabled: bool =
     )
 
     model_choice = None
-    if provider in MODEL_CONFIG:
+    if provider == ASU_PROVIDER:
+        api_key = get_api_key_for_provider(provider, api_keys)
+        model_choice = render_asu_model_selection(api_key, disabled=disabled)
+    elif provider in MODEL_CONFIG:
         model_choice = render_model_selectbox(provider, MODEL_CONFIG[provider], disabled=disabled)
         api_key = get_api_key_for_provider(provider, api_keys)
     elif provider == "Local vLLM":

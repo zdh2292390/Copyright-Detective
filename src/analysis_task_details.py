@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 from urllib.parse import urlsplit, urlunsplit
 
+from src.asu_rc import ASU_PROVIDER
+
 
 def _label(value: Any, limit: int = 256) -> str | None:
     if not isinstance(value, str):
@@ -44,7 +46,8 @@ def _api(payload: dict) -> dict | None:
         provider = {
             "api.openai.com": "OpenAI", "api.anthropic.com": "Anthropic",
             "openrouter.ai": "OpenRouter", "api.moonshot.cn": "Kimi",
-            "api.moonshot.ai": "Kimi", "localhost": "Local vLLM",
+            "api.moonshot.ai": "Kimi", "openai.rc.asu.edu": ASU_PROVIDER,
+            "localhost": "Local vLLM",
             "127.0.0.1": "Local vLLM", "::1": "Local vLLM",
         }.get(hostname, "OpenAI-compatible API")
     if not any((provider, model, endpoint)):
