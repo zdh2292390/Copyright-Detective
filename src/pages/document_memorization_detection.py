@@ -533,7 +533,11 @@ def _restore_document_job():
     try:
         from src.supabase_document_checkpoints import is_cloud_document_token
         if is_cloud_document_token(token) and (not st.session_state.get("_pdf_verified_cloud_owner") or st.session_state.get("_pdf_verified_cloud_owner") != st.session_state.get("user_id")):
-            raise CheckpointError("Sign in to restore this cloud document analysis.")
+            raise CheckpointError(
+                "Sign in to restore this cloud document analysis. "
+                "You can still run new experiments without signing in, but progress is saved only "
+                "on this server and may be lost after a restart or redeployment."
+            )
         state = DOCUMENT_JOBS.get(token, owner_id=st.session_state.get("user_id"))
         if state is None:
             raise CheckpointError("The saved analysis is no longer available. Start a new run.")
