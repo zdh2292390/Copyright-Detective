@@ -1728,7 +1728,7 @@ def _render_play_tab(
                 stopped_job_key = _player_key(participant.user_id, "stage_two_background_job")
                 if (get_background_job(stopped_job_key) or {}).get("status") == "stopped":
                     render_background_job_status(stopped_job_key)
-                st.info("This run is saved. Select Resume in Saved analyses to continue.")
+                st.info("This run is saved. Select Resume in History to continue.")
                 return participant.user_id
         else:
             _mark_run_failed_safely(

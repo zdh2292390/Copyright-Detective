@@ -1,4 +1,4 @@
--- Incremental Saved analyses upgrade for an existing checkpoint installation.
+-- Incremental History details upgrade for an existing checkpoint installation.
 -- Run in the same Supabase project as SUPABASE_URL, after analysis_checkpoints.sql.
 -- API/model/current-step summaries use existing metadata.display JSONB; no new
 -- columns or backfill are needed for these display fields. Existing tasks use

@@ -263,9 +263,8 @@ class DocumentAnalysisJobs:
                 self._check_owner(state, owner_id)
                 validate_analysis_state(pairs, state)
             if state.get("kill_requested") or state["status"] in {"stopping", "killed"}:
-                if not remote and state["status"] != "killed":
-                    store.request_kill(token, active=False)
-                    state, _ = store.load(token)
+                # Legacy killed records remain readable; restoring is a read,
+                # so it must not invoke the new destructive Kill operation.
                 return state
             if state["status"] == "running" and not active:
                 state["status"] = "incomplete"
@@ -576,7 +575,7 @@ class DocumentAnalysisJobs:
         return self.stop(token, owner_id=owner_id, force=True)
 
     def force_kill(self, token, *, owner_id=None):
-        """Archive a completed result, or terminally stop unfinished work."""
+        """Cancel outbound work and permanently delete this task and its results."""
         with self._lock:
             job = self._jobs.get(token)
             active = bool(job is not None and not job.get("finished"))
@@ -588,29 +587,20 @@ class DocumentAnalysisJobs:
                 if saved is None:
                     return False
                 self._check_owner(saved[0], owner_id)
-            killed = store.request_kill(token, active=active)
-            if killed and killed.get("status") == "complete" and killed.get("archived_at"):
-                if job is not None:
-                    # Completion may have committed just before its worker
-                    # publishes the final snapshot. View must get every saved
-                    # result, even during that narrow cleanup window.
-                    saved = store.load(token)
-                    if saved is None:
-                        raise CheckpointError("The archived analysis is no longer available.")
-                    self._check_owner(saved[0], owner_id)
-                    job["state"] = _snapshot(saved[0])
-                return True
-            if not killed or not (killed.get("kill_requested") or killed.get("status") in {"stopping", "killed"}):
-                return False
-            if job is not None:
-                job["state"].update({key: killed[key] for key in (
-                    "status", "kill_requested", "kill_requested_at", "killed_at", "stop_requested", "updated_at"
-                ) if key in killed})
-                job["state"]["kill_requested"] = True
-                if active:
-                    job["kill"].set()
-                    job["stop"].set()
-                    job["cancellation"].cancel()
+            if active:
+                # Cancellation takes effect before the deletion request. If
+                # storage is unavailable, the paused task remains visible and
+                # deletion can be retried without new provider calls.
+                job["stop"].set()
+                job["cancellation"].cancel()
+                job["state"]["stop_requested"] = True
+            deleted = store.request_kill(token, active=active)
+            if not isinstance(deleted, dict) or deleted.get("deleted") is not True:
+                raise CheckpointError("The document analysis was not deleted. Retry Kill.")
+            # Updates from a cancelled worker cannot republish a deleted task.
+            # SQLite/Supabase saves only update existing manifests, so a late
+            # response cannot recreate its source, checkpoints or results.
+            self._jobs.pop(token, None)
             return True
 
     def delete(self, token, *, owner_id=None):

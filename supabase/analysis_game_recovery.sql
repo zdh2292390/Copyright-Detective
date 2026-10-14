@@ -16,6 +16,23 @@ create table if not exists public.analysis_game_task_links (
     primary key (task_id, stage),
     unique (stage, run_id)
 );
+-- Remove orphan recovery links only; official runs/scores are independent.
+-- The composite FK rejects cross-owner links and cascades deleted task links.
+do $$
+begin
+    if to_regclass('public.analysis_game_task_links') is not null then
+        delete from public.analysis_game_task_links as links
+            where not exists (select 1 from public.analysis_tasks as tasks
+                where tasks.id = links.task_id and tasks.owner_id = links.user_id);
+        alter table public.analysis_game_task_links
+            drop constraint if exists analysis_game_task_links_task_owner_fkey;
+        alter table public.analysis_game_task_links
+            add constraint analysis_game_task_links_task_owner_fkey
+            foreign key (task_id, user_id) references public.analysis_tasks(id, owner_id) on delete cascade;
+    end if;
+end;
+$$;
+
 alter table public.analysis_game_task_links enable row level security;
 revoke all on table public.analysis_game_task_links from public, anon, authenticated;
 grant select, insert, update, delete on table public.analysis_game_task_links to service_role;
@@ -24,11 +41,17 @@ grant select, insert, update, delete on table public.analysis_game_task_links to
 -- scorer. Its task ID, verified owner and protected game page must all match.
 create or replace function public.analysis_game_check_trusted_task(
     p_task_id uuid, p_user_id uuid, p_competition_slug text
-) returns void language plpgsql security invoker set search_path = '' as $$
+) returns void language plpgsql security definer set search_path = '' as $$
 declare
     task public.analysis_tasks%rowtype;
     allowed_pages text[];
 begin
+    -- A row lock needs UPDATE rights; keep direct writes revoked and lock under
+    -- this narrowly service-role-checked helper rather than grant table UPDATE.
+    if coalesce(auth.role(), '') <> 'service_role' then
+        raise exception 'analysis_official_game: official recovery requires the trusted server.'
+            using errcode = '42501';
+    end if;
     if p_competition_slug = 'hp-first-100-gpt-4o-mini-v1' then
         allowed_pages := array[
             'Game 1: The Hidden Passage Hunt', 'Game 2: The Hidden Passage Hunt',
@@ -38,8 +61,9 @@ begin
         raise exception 'This competition has no supported trusted checkpoint page.' using errcode = '42501';
     end if;
     select * into task from public.analysis_tasks
-     where id = p_task_id and owner_id = p_user_id;
-    if not found or not task.server_managed or not (task.page_key = any(allowed_pages)) then
+     where id = p_task_id and owner_id = p_user_id for update;
+    if not found or not task.server_managed or task.kill_requested
+        or task.status in ('stopping', 'killed') or not (task.page_key = any(allowed_pages)) then
         raise exception 'analysis_untrusted_game: official input must come from this owner''s server-created game task.'
             using errcode = '42501';
     end if;

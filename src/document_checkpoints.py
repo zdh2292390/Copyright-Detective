@@ -8,7 +8,6 @@ chunk rows separately so a long run does not rewrite its accumulated result blob
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime, timezone
 import hashlib
 import json
 import math
@@ -444,31 +443,9 @@ class DocumentCheckpointStore:
         return metadata
 
     def request_kill(self, token: str, *, active=False):
-        """Retain the journal, while making Kill durable even without a worker."""
-        token = _token(token)
-        with self._connection() as connection, connection:
-            connection.execute("BEGIN IMMEDIATE")
-            job = connection.execute("SELECT * FROM jobs WHERE token = ?", (token,)).fetchone()
-            if job is None:
-                return False
-            metadata = self._stored_metadata(job)
-            now = datetime.now(timezone.utc).isoformat()
-            if metadata["status"] == "complete":
-                if not metadata.get("archived_at"):
-                    metadata.update(archived_at=now, updated_at=now)
-                    data = _json(metadata)
-                    connection.execute("UPDATE jobs SET metadata = ?, metadata_hash = ? WHERE token = ?", (data, _hash(data), token))
-                return metadata
-            metadata.update(kill_requested=True, stop_requested=True, updated_at=now,
-                            retry_in_seconds=0, retry_attempt=None)
-            metadata["kill_requested_at"] = metadata.get("kill_requested_at") or now
-            metadata["status"] = "killed" if metadata.get("status") == "killed" or not active else "stopping"
-            if metadata["status"] == "killed":
-                metadata["killed_at"] = metadata.get("killed_at") or now
-                metadata["active_chunks"] = []
-            data = _json(metadata)
-            connection.execute("UPDATE jobs SET metadata = ?, metadata_hash = ? WHERE token = ?", (data, _hash(data), token))
-            return metadata
+        """Delete the task and its source/results in one cascading transaction."""
+        self.delete(token)
+        return {"deleted": True}
 
     def load(self, token: str) -> tuple[dict[str, Any], list[tuple[str, str]]] | None:
         token = _token(token)
@@ -513,10 +490,10 @@ class DocumentCheckpointStore:
         with self._connection() as connection:
             # JSON metadata keeps older SQLite installations compatible. Source
             # and generated text are never loaded to build the recovery list.
-            archive_filter = "is not null" if archived_only else "is null"
+            archive_filter = "AND json_extract(metadata, '$.archived_at') is not null " if archived_only else ""
             rows = connection.execute(
                 f"SELECT * FROM jobs WHERE json_extract(metadata, '$.owner_id') = ? "
-                f"AND json_extract(metadata, '$.archived_at') {archive_filter} "
+                f"{archive_filter}"
                 "ORDER BY json_extract(metadata, '$.updated_at') DESC, token LIMIT 100",
                 (owner_id,),
             ).fetchall()
@@ -537,6 +514,8 @@ class DocumentCheckpointStore:
                     "status": state["status"], "total_chunks": state["total_chunks"],
                     "completed_chunks": completed, "failed_chunks": failed,
                     "updated_at": state.get("updated_at"), "archived_at": state.get("archived_at"),
+                    "started_at": state.get("started_at"), "completed_at": state.get("completed_at"),
+                    "current_chunk": state.get("current_chunk"), "stop_requested": state.get("stop_requested", False),
                     "active": False,
                 })
             return result

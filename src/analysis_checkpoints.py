@@ -117,6 +117,9 @@ def classify_checkpoint_error(exc: Exception, *, operation: str = "write") -> An
     if "analysis_lease" in message:
         return failure(
             "The analysis task is owned by another worker or its lease expired.", "lease", AnalysisLeaseError)
+    if code == "P0002" and "analysis task not found" in message:
+        return failure(
+            "This analysis task was deleted or is no longer available. Start a new analysis.", "deleted")
     if code in {"PGRST202", "PGRST204", "PGRST205", "42P01", "42703", "42883"}:
         return failure(
             "Cloud checkpoint schema is unavailable or outdated. Run the full supabase/analysis_checkpoints.sql "
@@ -191,7 +194,7 @@ _ITEM_COLUMNS = "task_id,owner_id,item_index,input,status,result,error,attempts,
 # owner/task/lease arguments. Append and release can commit before a lost
 # response and require reconciliation; never repeat those blindly.
 _RETRYABLE_RPCS = frozenset({
-    "create_task", "put_items", "finalize_task", "claim", "heartbeat",
+    "put_items", "finalize_task", "claim", "heartbeat",
     "save_items", "request_stop", "kill_task", "reconcile_killed_tasks", "delete",
 })
 _CHECKPOINT_ATTEMPTS = 2
@@ -221,7 +224,7 @@ def _missing_archive_column(exc: Exception) -> bool:
 def _archive_migration_error() -> AnalysisCheckpointError:
     return AnalysisCheckpointError(
         "Completed-analysis archives are unavailable. Run supabase/analysis_completed_archive.sql "
-        "in the app's Supabase project, then refresh Saved analyses.", kind="schema",
+        "in the app's Supabase project, then refresh History.", kind="schema",
     )
 
 
@@ -388,10 +391,27 @@ class SupabaseAnalysisCheckpointStore:
             if not isinstance(fingerprint, str) or not re.fullmatch(r"[a-f0-9]{64}", fingerprint):
                 raise AnalysisCheckpointError("fingerprint must be a lowercase SHA-256 digest.")
             identity = _uuid(task_id or str(uuid4()), "task_id")
-            task = self._rpc("create_task", p_task_id=identity, p_page_key=page_key,
-                             p_settings=safe_settings, p_source=safe_source,
-                             p_total_items=count, p_fingerprint=fingerprint,
-                             p_metadata=safe_metadata, p_dynamic_items=dynamic_items)
+            try:
+                task = self._rpc("create_task", p_task_id=identity, p_page_key=page_key,
+                                 p_settings=safe_settings, p_source=safe_source,
+                                 p_total_items=count, p_fingerprint=fingerprint,
+                                 p_metadata=safe_metadata, p_dynamic_items=dynamic_items)
+            except AnalysisCheckpointError as exc:
+                if exc.kind != "network":
+                    raise
+                # A lost response may have committed creation, or Kill may have
+                # removed it. Only reconcile by reading; never reinsert the UUID.
+                task = self.get_task(identity)
+                if task is None:
+                    raise AnalysisCheckpointError(
+                        "Analysis task creation was interrupted. Start a new analysis; "
+                        "the missing task was not recreated.", kind="network") from exc
+                if (task.get("owner_id") != self.owner_id or task.get("page_key") != page_key
+                        or task.get("fingerprint") != fingerprint or task.get("settings") != safe_settings
+                        or task.get("source") != safe_source or task.get("dynamic_items") != dynamic_items
+                        or (not dynamic_items and task.get("total_items") != count)):
+                    raise AnalysisCheckpointError(
+                        "Analysis task identity/settings differ from this interrupted creation.") from exc
 
             def batches():
                 manifest.seek(0)
@@ -477,7 +497,7 @@ class SupabaseAnalysisCheckpointStore:
                 query = query.not_.is_("archived_at", "null").eq("status", "complete")
             if summary_only:
                 # Only five recent API/step labels; never pull prompts, results or
-                # final session snapshots into the Saved analyses listing.
+                # final session snapshots into the History listing.
                 query = (query.order("updated_at", desc=True, foreign_table="latest_items")
                          .order("item_index", desc=True, foreign_table="latest_items")
                          .range(0, 4, foreign_table="latest_items"))
@@ -572,16 +592,18 @@ class SupabaseAnalysisCheckpointStore:
         return self._rpc("request_stop", p_task_id=_uuid(task_id, "task_id"))
 
     def kill_task(self, task_id: str) -> dict[str, Any]:
-        """Archive completed results; terminally cancel unfinished tasks without deletion."""
-        task = self._rpc("kill_task", p_task_id=_uuid(task_id, "task_id"))
-        if task.get("status") == "complete" and not task.get("archived_at"):
-            # Older lifecycle RPCs returned a complete task unchanged. Do not
-            # hide it locally or signal cancellation when no archive was written.
-            raise _archive_migration_error()
+        """Permanently delete the task and its saved calls/results, even if active."""
+        identity = _uuid(task_id, "task_id")
+        task = self._rpc("kill_task", p_task_id=identity)
+        if task.get("deleted") is not True:
+            # Never report success when an older RPC merely retains/archives it.
+            raise AnalysisCheckpointError(
+                "Kill requires the database deletion upgrade. Apply "
+                "supabase/analysis_history_delete.sql, then retry Kill.", kind="schema")
         return task
 
     def reconcile_killed_tasks(self) -> int:
-        """Finalize abandoned Kill cleanup only after its worker lease expires."""
+        """Delete explicit legacy Kill journals after their worker leases expire."""
         def parse_count(response):
             return _integer(_data(response), "reconciled task count", high=2**31 - 1)
         return self._rpc("reconcile_killed_tasks", _parse=parse_count)

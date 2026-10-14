@@ -3,8 +3,8 @@
 -- Functional checks below should be true. If a column/RPC/FK is missing or wrong,
 -- rerun analysis_checkpoints.sql (or the incremental analysis_task_lifecycle.sql),
 -- then apply analysis_saved_details.sql if the recent-item index is missing.
--- Completed-analysis archives require analysis_completed_archive.sql (included
--- in the latest base/lifecycle migration); the new checks below identify upgrades.
+-- Permanent Kill deletion requires analysis_history_delete.sql (included in the
+-- latest base/lifecycle migrations); the checks below identify old retaining RPCs.
 
 -- Both tables need RLS and SELECT for browser reads and service-role workers.
 -- The policy expression is included for review: it should scope auth.uid() to owner_id.
@@ -171,7 +171,7 @@ select actual.oid is not null as kill_lifecycle_constraint_exists,
        actual.expression as kill_lifecycle_constraint_expression
 from expected left join actual on true;
 
--- Cleanup never scans unrelated tasks or revokes an active worker's lease.
+-- Legacy cleanup remains owner scoped and waits for an older active worker's lease.
 select i.indexrelid is not null as kill_cleanup_index_exists,
        coalesce(i.indisvalid and i.indisready and am.amname = 'btree'
            and i.indrelid = to_regclass('public.analysis_tasks')
@@ -259,12 +259,34 @@ select actual.oid is not null as archive_lifecycle_constraint_exists,
        actual.expression as archive_lifecycle_constraint_expression
 from expected left join actual on true;
 
--- Review only RPC definitions, never user result data. Both fresh installs and
--- upgrades must preserve the completed Kill archive and read-only release branch.
+-- Review only RPC definitions, never user result data. All History installs
+-- must delete task journals on Kill and reject late writes to an absent task.
 select coalesce(pg_get_functiondef(to_regprocedure('public.analysis_kill_task(uuid,uuid)'))
-           like '%set archived_at = clock_timestamp()%'
+           like '%delete from public.analysis_tasks where id = p_task_id and owner_id = p_owner_id%'
            and pg_get_functiondef(to_regprocedure('public.analysis_kill_task(uuid,uuid)'))
-           like '%task.archived_at is not null%', false) as completed_kill_archives_results,
-       coalesce(pg_get_functiondef(to_regprocedure('public.analysis_release(uuid,uuid,uuid,text,jsonb)'))
-           like '%task.archived_at is not null and task.status = ''complete''%', false)
-           as archived_release_is_read_only;
+           like '%''deleted'', true%'
+           and pg_get_functiondef(to_regprocedure('public.analysis_kill_task(uuid,uuid)'))
+           not like '%set archived_at%', false) as kill_deletes_task_results,
+       coalesce(pg_get_functiondef(to_regprocedure('public.analysis_reconcile_killed_tasks(uuid)'))
+           like '%perform public.analysis_kill_task(p_owner_id, task.id)%', false)
+           as legacy_kill_cleanup_deletes_task_results,
+       coalesce(pg_get_functiondef(to_regprocedure('public.analysis_locked_task(uuid,uuid,uuid,boolean)'))
+           like '%Analysis task not found.%', false) as late_writes_require_existing_task;
+
+-- Game links are optional; when installed they must cascade only checkpoint
+-- linkage, not independent official game runs, scores, or account settings.
+select to_regclass('public.analysis_game_task_links') is null or exists (
+    select 1 from pg_constraint c
+    where c.conrelid = to_regclass('public.analysis_game_task_links')
+      and c.conname = 'analysis_game_task_links_task_owner_fkey'
+      and c.contype = 'f' and c.convalidated and c.confdeltype = 'c'
+      and c.confrelid = to_regclass('public.analysis_tasks')
+      and (select array_agg(a.attname order by k.position)
+           from unnest(c.conkey) with ordinality k(attnum, position)
+           join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.attnum)
+          = array['task_id','user_id']::name[]
+      and (select array_agg(a.attname order by k.position)
+           from unnest(c.confkey) with ordinality k(attnum, position)
+           join pg_attribute a on a.attrelid = c.confrelid and a.attnum = k.attnum)
+          = array['id','owner_id']::name[]
+) as optional_game_link_cascade_ready;

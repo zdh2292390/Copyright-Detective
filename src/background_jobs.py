@@ -60,6 +60,11 @@ def _clear_finished_handles_locked(record: Dict[str, Any]) -> None:
     if record.get("status") in _TERMINAL_STATUSES:
         record["_future"] = None
         record["_cancel_token"] = None
+        # A successful History deletion owns removal. Keep an active record
+        # fenced until its worker has drained all accepted requests, then drop
+        # the process-local result rather than publishing it again.
+        if record.get("_delete_requested") and _JOBS.get(record.get("key")) is record:
+            _JOBS.pop(record["key"], None)
 
 
 def _now() -> str:
@@ -182,7 +187,11 @@ def submit_background_job(key: str, label: str, runner: JobRunner) -> bool:
             if _JOBS.get(key) is not record:
                 return
             record["status"] = "stopping"
-            record["message"] = "Force stop requested; preserving saved progress"
+            record["message"] = (
+                "Deleted from History; finishing cancellation"
+                if record.get("_delete_requested") else
+                "Force stop requested; preserving saved progress"
+            )
 
         def cleanup() -> None:
             token.wait_for_idle()
@@ -325,6 +334,44 @@ def force_stop_background_job(key: str, owner_id: Optional[str] = None) -> bool:
     if future is not None:
         future.cancel()
     return True
+
+
+def discard_background_task(owner_id: str, task_id: str) -> bool:
+    """Forget a successfully deleted cloud task without unlocking active work.
+
+    Call only after the owner-scoped delete RPC succeeds. A key may have been
+    reused by a newer task, so both captured owner and task identity must match.
+    Running requests keep their key fenced until cancellation cleanup is idle.
+    """
+    current_owner, _ = _origin()
+    owner = str(owner_id or "")
+    identity = str(task_id or "")
+    if not owner or not identity or str(current_owner or "") != owner:
+        return False
+    futures = []
+    found = False
+    with _LOCK:
+        for key, record in list(_JOBS.items()):
+            if str(record.get("owner_id") or "") != owner or str(record.get("task_id") or "") != identity:
+                continue
+            found = True
+            if record.get("status") not in _ACTIVE_STATUSES:
+                _JOBS.pop(key, None)
+                continue
+            record["_delete_requested"] = True
+            token = record.get("_cancel_token")
+            if token is not None:
+                token.cancel()
+            record["status"] = "stopping"
+            record["message"] = "Deleted from History; finishing cancellation"
+            future = record.get("_future")
+            if future is not None:
+                futures.append(future)
+    # Cancelling queued work runs its completion callback synchronously. Never
+    # hold the registry lock while those callbacks perform cleanup.
+    for future in futures:
+        future.cancel()
+    return found
 
 
 def get_background_job(key: str) -> Optional[Dict[str, Any]]:

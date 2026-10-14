@@ -73,6 +73,7 @@ class SupabaseDocumentCheckpointStore:
         self._state_bytes = {}
         self._identity_bytes = {}
         self._known_revisions = {}
+        self._cache_generation = 0
         self._lock = RLock()
         self._leases = {}
         self._sources = {}
@@ -252,6 +253,8 @@ class SupabaseDocumentCheckpointStore:
         raise CheckpointError("Analysis progress changed while loading. Try opening it again shortly.")
 
     def _load_once(self, token):
+        with self._lock:
+            generation = self._cache_generation
         task = self._task(token)
         if task is None:
             return None
@@ -259,6 +262,8 @@ class SupabaseDocumentCheckpointStore:
             raise CheckpointError("The document is still being saved. Try opening it again shortly.")
         state = self._state_metadata(task)
         with self._lock:
+            if generation != self._cache_generation:
+                return _CHANGED_SNAPSHOT
             if token in self._states and task.get("revision") == self._revisions[token]:
                 cached = self._states[token]
                 if task.get("completed_items") != len(cached["results"]) or task.get("failed_items") != len(cached["failures"]):
@@ -316,6 +321,8 @@ class SupabaseDocumentCheckpointStore:
         with self._lock:
             # A worker may have acknowledged a newer write after the final
             # server read but before this cache fill acquired the lock.
+            if generation != self._cache_generation:
+                return _CHANGED_SNAPSHOT
             if self._stale_revision_locked(token, task.get("revision")):
                 return _CHANGED_SNAPSHOT
             self._remember_revision_locked(token, task.get("revision"))
@@ -403,6 +410,10 @@ class SupabaseDocumentCheckpointStore:
                 metadata=batch_metadata, status=batch_metadata["status"], lease_token=self._lease(token),
             )
             with self._lock:
+                # A Kill may have deleted this task while its earlier write's
+                # HTTP response was in flight. Never refill the deleted cache.
+                if token not in self._leases or token not in self._persisted:
+                    raise CheckpointError("The document analysis was deleted.")
                 revision = task.get("revision") if isinstance(task, Mapping) else None
                 if self._stale_revision_locked(token, revision):
                     # A newer full snapshot already includes this committed
@@ -511,25 +522,18 @@ class SupabaseDocumentCheckpointStore:
         return True
 
     def request_kill(self, token, *, active=False):
-        # Kill also terminates queued and paused tasks. Unlike resumable Stop,
-        # it must reach the owner-scoped RPC without requiring a live lease.
-        if self._task(token) is None:
-            return False
-        task = self._call(self.store.kill_task, token)
-        if not isinstance(task, Mapping):
-            raise CheckpointError("The cloud analysis did not acknowledge Kill.")
-        state = self._state_metadata(task)
-        archived = state["status"] == "complete" and bool(state.get("archived_at"))
-        if not archived and not state.get("kill_requested") and state["status"] not in {"stopping", "killed"}:
-            return False
+        """Use the owner-scoped deletion RPC, including for active workers."""
+        self._token(token)
         with self._lock:
-            self._remember_revision_locked(token, task.get("revision"))
-            self._states.pop(token, None)
-            self._revisions.pop(token, None)
-            self._state_bytes[token] = 0
-            if token in self._identities:
-                self._identities[token] = deepcopy(state)
-        return state
+            deleted = self._call(self.store.kill_task, token)
+            if not isinstance(deleted, Mapping) or deleted.get("deleted") is not True:
+                raise CheckpointError(
+                    "Cloud task deletion is unavailable. Apply supabase/analysis_history_delete.sql."
+                )
+            self._cache_generation += 1
+            self._leases.pop(token, None)
+            self._drop_cache_locked(token)
+            return deleted
 
     def list_for_owner(self, *, archived_only=False):
         if not isinstance(archived_only, bool):
@@ -537,7 +541,7 @@ class SupabaseDocumentCheckpointStore:
         tasks = self._call(
             self.store.list_tasks, page_key=DOCUMENT_PAGE_KEY,
             statuses=["complete"] if archived_only else ["queued", "running", "incomplete", "complete"],
-            limit=100, exclude_archived=not archived_only, archived_only=archived_only,
+            limit=100, exclude_archived=False, archived_only=archived_only,
         )
         result = []
         for task in tasks:
@@ -545,7 +549,7 @@ class SupabaseDocumentCheckpointStore:
                 raise CheckpointError("The saved document list contains an invalid account scope.")
             if task.get("kill_requested") or task.get("status") in {"stopping", "killed"}:
                 continue
-            if bool(task.get("archived_at")) != archived_only:
+            if archived_only and not task.get("archived_at"):
                 continue
             metadata = self._state_metadata(task)
             result.append({
@@ -553,6 +557,9 @@ class SupabaseDocumentCheckpointStore:
                 "status": task["status"], "total_chunks": metadata["total_chunks"],
                 "completed_chunks": task["completed_items"], "failed_chunks": task["failed_items"],
                 "updated_at": task.get("updated_at"), "archived_at": task.get("archived_at"),
+                "created_at": task.get("created_at"), "started_at": task.get("started_at"),
+                "completed_at": task.get("completed_at"), "current_chunk": metadata.get("current_chunk"),
+                "stop_requested": metadata.get("stop_requested", False),
                 "active": task["status"] != "complete" and _active(task),
             })
         return result
@@ -561,5 +568,6 @@ class SupabaseDocumentCheckpointStore:
         self._token(token)
         self._call(self.store.delete, token)
         with self._lock:
+            self._cache_generation += 1
             self._leases.pop(token, None)
             self._drop_cache_locked(token)

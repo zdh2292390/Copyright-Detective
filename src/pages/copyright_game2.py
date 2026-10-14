@@ -515,7 +515,7 @@ def _render_round_score_overview(providers: Dict[str, Any]) -> None:
             if isinstance(payload, dict) and payload.get("skipped"):
                 st.info(f"{provider} was skipped for this batch.")
             elif isinstance(payload, dict) and payload.get("stopped"):
-                st.info(f"{provider} stopped. Select Resume in Saved analyses to continue.")
+                st.info(f"{provider} stopped. Select Resume in History to continue.")
             elif isinstance(payload, dict) and payload.get("error"):
                 st.info(f"No {provider} distribution is available because the run failed.")
             else:
