@@ -628,7 +628,12 @@ def capture_oauth_tokens_from_url_hash() -> None:
 
 
 def restore_auth_from_browser() -> None:
-    if not auth_enabled() or is_logged_in() or _has_oauth_callback_params():
+    if (
+        not auth_enabled()
+        or is_logged_in()
+        or _has_oauth_callback_params()
+        or st.session_state.get("_clear_browser_auth_pending")
+    ):
         return
     _run_auth_client(restore_cache=True)
 
@@ -722,6 +727,17 @@ def _user_from_auth_response(response: Any) -> Tuple[Optional[Any], Optional[str
     return user, access_token, refresh_token
 
 
+def _is_stale_oauth_flow_error(exc: Exception) -> bool:
+    code = getattr(exc, "code", None)
+    if code:
+        return code in {"flow_state_not_found", "flow_state_expired"}
+    # Older Supabase Auth versions only expose the error message.
+    return str(exc).strip().casefold() in {
+        "invalid flow state, no valid flow state found",
+        "invalid flow state, flow state has expired",
+    }
+
+
 def handle_oauth_callback() -> None:
     if not auth_enabled():
         return
@@ -765,7 +781,8 @@ def handle_oauth_callback() -> None:
             _clear_pkce_state()
             _clear_pkce_browser_storage()
             st.session_state["_clear_browser_auth_pending"] = True
-            st.error(f"GitHub sign-in callback failed: {exc}")
+            if not _is_stale_oauth_flow_error(exc):
+                st.error(f"GitHub sign-in callback failed: {exc}")
         return
 
     access_token = _oauth_query_param(OAUTH_TOKEN_PARAM) or _oauth_query_param("access_token")
