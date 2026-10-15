@@ -2460,7 +2460,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         generation_mode = st.selectbox(
             "Choose zero-shot/few-shot",
             ["Zero-Shot", "Few-Shot"],
-            index=0,
+            **widget_defaults("generation_mode", index=0),
             key="generation_mode",
             help="Select generation mode: Zero-Shot (no examples) or Few-Shot (uses examples from few-shot.json).",
         )
@@ -2470,7 +2470,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         selected_strategies = st.multiselect(
             "Persuasion strategies",
             available_strategies,
-            default=[],
+            **widget_defaults("strategies", default=[]),
             key="strategies",
             help=strategies_help,
         )
@@ -2480,7 +2480,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             "Attempts per strategy",
             min_value=1,
             max_value=20,
-            value=st.session_state.get('attempts', 1),
+            **widget_defaults("attempts", value=1),
             step=1,
             key="attempts",
             help="Number of mutation attempts for each strategy (more attempts = broader exploration).",
@@ -2490,7 +2490,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
         attempts_per_prompt = st.number_input(
             "Attempts per mutated prompt",
             min_value=1,
-            value=st.session_state.get('attempts_per_prompt', 1),
+            **widget_defaults("attempts_per_prompt", value=1),
             step=1,
             key="attempts_per_prompt",
             help="Number of generation attempts for each mutated prompt.",
