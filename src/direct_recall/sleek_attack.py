@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 from src.direct_recall.comparison import get_llm_completion
 from src.common.metrics.logger import is_api_error_response
+from src.analysis_outcomes import is_systemic_api_failure
 
 
 def _response_text(response: Any) -> str:
@@ -272,9 +273,14 @@ def run_sleek_attack(questions: List[SLEEKQuestion], api_key: str, model_name: s
             except Exception as exc:
                 if isinstance(exc, AnalysisCheckpointError):
                     raise
-                question_obj.response = f"Error: {str(exc).strip() or type(exc).__name__}"
+                detail = str(exc).strip() or type(exc).__name__
+                if api_key:
+                    detail = detail.replace(str(api_key), "[redacted]")
+                question_obj.response = f"Error: {detail}"
 
         report_analysis_progress(question_idx + 1, len(questions), unit="questions", stage="sleek_probe")
+        if is_api_error_response(question_obj.response) and is_systemic_api_failure(question_obj.response):
+            break
 
     return questions
 
@@ -448,7 +454,10 @@ def run_sleek_evaluation(document_text: str, api_key: str, model_name: str, prov
             cat = q.category
             if cat not in category_stats:
                 category_stats[cat] = {'total': 0, 'leaked': 0}
-            failed = not q.response or is_api_error_response(q.response)
+            if not q.response:
+                category_stats[cat]['unattempted'] = category_stats[cat].get('unattempted', 0) + 1
+                continue
+            failed = is_api_error_response(q.response)
             if failed:
                 category_stats[cat]['failed'] = category_stats[cat].get('failed', 0) + 1
                 continue
@@ -474,7 +483,10 @@ def run_sleek_evaluation(document_text: str, api_key: str, model_name: str, prov
             'support_response': support_response,
             'questions': questions_serializable,
             'successful_evaluations': len(successful_questions),
-            'failed_evaluations': total_questions - len(successful_questions),
+            'requested_evaluations': total_questions,
+            'attempted_evaluations': sum(bool(q.response) for q in questions_with_leakage),
+            'unattempted_evaluations': sum(not q.response for q in questions_with_leakage),
+            'failed_evaluations': sum(bool(q.response) and is_api_error_response(q.response) for q in questions_with_leakage),
             'total_questions': total_questions,
             'questions_with_leakage': questions_with_leakage_count,
             'leakage_rate': leakage_rate,
@@ -843,6 +855,7 @@ def run_sleek_qa_evaluation(
     all_results = []
     total_items = len(qa_pairs) * num_runs
     current_progress = 0
+    stop_batch = False
     report_analysis_progress(0, total_items, unit="questions", stage="sleek_qa")
     
     # Process each Q/A pair
@@ -860,15 +873,6 @@ def run_sleek_qa_evaluation(
         for run_idx in range(num_runs):
             report_analysis_progress(pair_idx * num_runs + run_idx, total_items, unit="questions", stage="sleek_qa")
             current_progress += 1
-            
-            if progress_callback:
-                progress_callback(
-                    current_progress,
-                    total_items,
-                    pair_idx + 1,
-                    run_idx + 1,
-                    num_runs
-                )
             
             with checkpoint_scope("sleek_qa", pair_idx, run_idx):
                 try:
@@ -903,15 +907,23 @@ def run_sleek_qa_evaluation(
                 except Exception as exc:
                     if isinstance(exc, AnalysisCheckpointError):
                         raise
+                    detail = str(exc).strip() or type(exc).__name__
+                    if api_key:
+                        detail = detail.replace(str(api_key), "[redacted]")
                     pair_results['runs'].append({
                         'run': run_idx + 1,
-                        'error': str(exc).strip() or type(exc).__name__,
+                        'error': detail,
                         'final_answer': '',
                         'ground_truth': ground_truth,
                         'sub_questions': [],
                         'sub_question_answers': [],
                     })
                     report_analysis_progress(pair_idx * num_runs + run_idx + 1, total_items, unit="questions", stage="sleek_qa")
+                    if progress_callback:
+                        progress_callback(current_progress, total_items, pair_idx + 1, run_idx + 1, num_runs)
+                    if is_systemic_api_failure(detail):
+                        stop_batch = True
+                        break
                     continue
             
                 # Store sub-question details (for reference, not for metric calculation)
@@ -953,6 +965,8 @@ def run_sleek_qa_evaluation(
             
                 pair_results['runs'].append(run_result)
                 report_analysis_progress(pair_idx * num_runs + run_idx + 1, total_items, unit="questions", stage="sleek_qa")
+                if progress_callback:
+                    progress_callback(current_progress, total_items, pair_idx + 1, run_idx + 1, num_runs)
         
         # Calculate aggregate metrics across runs
         successful_runs = [run for run in pair_results['runs'] if not run.get('error')]
@@ -963,6 +977,8 @@ def run_sleek_qa_evaluation(
             pair_results['leakage_detected'] = any(r['has_leakage'] for r in successful_runs)
         
         all_results.append(pair_results)
+        if stop_batch:
+            break
     
     # Calculate overall statistics
     successful_pairs = [pair for pair in all_results if any(not run.get("error") for run in pair["runs"])]
@@ -970,9 +986,11 @@ def run_sleek_qa_evaluation(
     total_with_leakage = sum(1 for r in successful_pairs if r.get('leakage_detected', False))
     
     # Calculate overall averages
-    overall_avg_rouge = sum(r.get('avg_rouge_score', 0) for r in successful_pairs) / total_questions if total_questions > 0 else 0
-    overall_avg_jaccard = sum(r.get('avg_jaccard_index', 0) for r in successful_pairs) / total_questions if total_questions > 0 else 0
-    overall_avg_levenshtein = sum(r.get('avg_levenshtein_distance', 0) for r in successful_pairs) / total_questions if total_questions > 0 else 0
+    successful_responses = [run for pair in all_results for run in pair['runs'] if not run.get('error')]
+    response_count = len(successful_responses)
+    overall_avg_rouge = sum(run['rouge_score'] for run in successful_responses) / response_count if response_count else 0
+    overall_avg_jaccard = sum(run['jaccard_index'] for run in successful_responses) / response_count if response_count else 0
+    overall_avg_levenshtein = sum(run['levenshtein_distance'] for run in successful_responses) / response_count if response_count else 0
     
     # Aggregate category breakdown across all pairs
     overall_category_breakdown = {}
@@ -991,7 +1009,9 @@ def run_sleek_qa_evaluation(
     return {
         'qa_pair_results': all_results,
         'requested_questions': len(qa_pairs),
-        'attempted_evaluations': total_items,
+        'requested_evaluations': total_items,
+        'attempted_evaluations': current_progress,
+        'unattempted_evaluations': total_items - current_progress,
         'successful_evaluations': sum(not run.get('error') for pair in all_results for run in pair['runs']),
         'failed_evaluations': sum(bool(run.get('error')) for pair in all_results for run in pair['runs']),
         'total_questions': total_questions,

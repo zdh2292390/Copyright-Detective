@@ -104,6 +104,14 @@ class ScalingBatch:
     errors: Tuple[str, ...] = ()
 
     @property
+    def complete(self) -> bool:
+        return not self.errors and len(self.attempts) == self.requested_runs
+
+    @property
+    def error(self) -> Optional[str]:
+        return "; ".join(self.errors) or (None if self.complete else "Some requested runs are unfinished.")
+
+    @property
     def completed_runs(self) -> int:
         return len(self.attempts)
 
@@ -228,7 +236,12 @@ def run_provider_scaling(
                 )
             )
         except Exception as exc:
+            from src.analysis_checkpoints import AnalysisCheckpointError
+            if isinstance(exc, AnalysisCheckpointError):
+                raise  # No further paid work is safe after persistence/lease failure.
             detail = str(exc).strip() or type(exc).__name__
+            if str(api_key or "").strip():
+                detail = detail.replace(str(api_key).strip(), "[redacted]")
             errors.append(f"Run {index}: {detail}")
             if re.search(r"\b(?:400|401|403|404)\b|invalid api key|authentication|unauthorized|permission denied|model not found", detail, re.IGNORECASE):
                 break

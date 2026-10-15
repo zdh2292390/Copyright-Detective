@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import html
 import logging
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -35,8 +37,6 @@ from src.auth import (
 from src.job_guard import (
     detection_job,
     finish_detection_job,
-    is_detection_job_running,
-    render_background_job_lock,
     render_run_button,
     reset_detection_job,
 )
@@ -92,6 +92,7 @@ from src.game.storage import (
     verify_participant,
 )
 from src.components import render_direct_recall_diff
+from src.analysis_checkpoints import AnalysisCheckpointError
 from src.direct_recall.comparison import calculate_similarity_metrics
 
 
@@ -109,6 +110,28 @@ def _player_key(user_id: str, name: str) -> str:
     """Keep every participant-owned widget and result isolated in one browser session."""
 
     return f"copyright_game:{user_id}:{name}"
+
+
+@contextmanager
+def _game_api_error_scope(api_key):
+    """Keep the organizer's shared key out of task errors."""
+    try:
+        yield
+    except AnalysisCheckpointError:
+        raise
+    except Exception as exc:
+        message = str(exc) or type(exc).__name__
+        if api_key:
+            message = message.replace(str(api_key), '[redacted]')
+        raise RuntimeError(message) from None
+
+
+def _stage_one_background_job_keys(user_id: str) -> List[str]:
+    base = _player_key(user_id, "stage_one_background_job")
+    saved = st.session_state.get(_player_key(user_id, "stage_one_background_jobs"), [])
+    if not isinstance(saved, (list, tuple)):
+        saved = []
+    return list(dict.fromkeys([base] + [key for key in saved if isinstance(key, str)]))
 
 
 def _run_clicked_at() -> str:
@@ -336,10 +359,9 @@ def _render_game_cache_clear_dialog() -> None:
         if participant is None:
             st.error("Sign in with GitHub before permanently deleting saved data.")
             return
-        active_job_keys = (
-            _player_key(participant.user_id, "stage_one_background_job"),
+        active_job_keys = _stage_one_background_job_keys(participant.user_id) + [
             _player_key(participant.user_id, "stage_two_background_job"),
-        )
+        ]
         if any(background_job_running(key) for key in active_job_keys):
             st.error(
                 "Wait for the active Game 1 run to finish before permanently "
@@ -354,9 +376,8 @@ def _render_game_cache_clear_dialog() -> None:
         st.session_state.pop(_hidden_history_key(participant.user_id), None)
 
     if participant:
-        forget_background_job(
-            _player_key(participant.user_id, "stage_one_background_job")
-        )
+        for key in _stage_one_background_job_keys(participant.user_id):
+            forget_background_job(key)
         forget_background_job(
             _player_key(participant.user_id, "stage_two_background_job")
         )
@@ -366,6 +387,10 @@ def _render_game_cache_clear_dialog() -> None:
         active_view_key = _player_key(participant.user_id, "active_view")
         if active_view_key in st.session_state:
             preserved_state[active_view_key] = st.session_state.get(active_view_key)
+        active_stage_one_jobs = [key for key in _stage_one_background_job_keys(participant.user_id)
+                                 if background_job_running(key)]
+        if active_stage_one_jobs:
+            preserved_state[_player_key(participant.user_id, "stage_one_background_jobs")] = active_stage_one_jobs
 
     _clear_game_session_cache(
         participant.user_id if participant else None,
@@ -1290,10 +1315,6 @@ def _render_stage_one_view(
     if custom_prompt_selected:
         st.session_state[stage_one_prompt_custom_key] = stage_one_prompt
 
-    stage_one_job_key = _player_key(
-        participant.user_id,
-        "stage_one_background_job",
-    )
     st.markdown(
         """
         <div class="copyright-game-section-heading">
@@ -1332,28 +1353,25 @@ def _render_stage_one_view(
     )
     if stage_one_inputs_missing:
         st.warning("Enter both a direct-probe prompt and ground truth before running.")
-    if background_job_running(stage_one_job_key):
-        render_background_job_lock("Copyright Challenge 1 - Stage 1 baseline")
-    render_background_job_status(stage_one_job_key)
-    stage_one_job_state = get_background_job(stage_one_job_key)
-    if (
-        isinstance(stage_one_job_state, dict)
-        and stage_one_job_state.get("status") == "completed"
-    ):
-        forget_background_job(stage_one_job_key)
+    stage_one_jobs = _stage_one_background_job_keys(participant.user_id)
+    for key in stage_one_jobs:
+        if background_job_running(key) or key == stage_one_jobs[-1]:
+            render_background_job_status(key, completed_message_ttl_seconds=5.0)
     run_stage_one_clicked = render_run_button(
         "Copyright Challenge 1 - Stage 1 baseline",
         _player_key(participant.user_id, "run_stage_one"),
         "Run: Direct Probing (Stage 1)",
         type="primary",
         disabled=(
-            background_job_running(stage_one_job_key)
-            or not shared_api_key_configured()
+            not shared_api_key_configured()
             or not competition.get("is_open")
             or stage_one_inputs_missing
         ),
     )
     if run_stage_one_clicked:
+        stage_one_job_key = st.session_state.pop("_analysis_resume_background_key", None) or (
+            _player_key(participant.user_id, "stage_one_background_job") + ":" + uuid4().hex
+        )
         preload_background_job_secrets()
         clicked_at = _run_clicked_at()
         api_key = get_shared_api_key()
@@ -1367,17 +1385,18 @@ def _render_stage_one_view(
                 stage_one_attempts,
                 "Waiting for the first OpenAI response",
             )
-            result = run_stage_one(
-                api_key,
-                temperature=stage_one_temperature,
-                top_p=stage_one_top_p,
-                book_key=resolved_stage_one_book_key,
-                attempts=stage_one_attempts,
-                prompt=stage_one_prompt,
-                reference_text=stage_one_reference,
-                metrics_fn=calculate_similarity_metrics,
-                on_progress=update,
-            )
+            with _game_api_error_scope(api_key):
+                result = run_stage_one(
+                    api_key,
+                    temperature=stage_one_temperature,
+                    top_p=stage_one_top_p,
+                    book_key=resolved_stage_one_book_key,
+                    attempts=stage_one_attempts,
+                    prompt=stage_one_prompt,
+                    reference_text=stage_one_reference,
+                    metrics_fn=calculate_similarity_metrics,
+                    on_progress=update,
+                )
             report(
                 stage_one_attempts,
                 stage_one_attempts,
@@ -1399,6 +1418,10 @@ def _render_stage_one_view(
             f"Challenge 1 Stage 1 | {clicked_at}",
             execute_stage_one,
         )
+        if started:
+            keys = _stage_one_background_job_keys(participant.user_id)
+            keys.append(stage_one_job_key)
+            st.session_state[_player_key(participant.user_id, "stage_one_background_jobs")] = list(dict.fromkeys(keys))
         finish_detection_job()
         st.session_state[run_notice_key] = {
             "level": "success" if started else "error",
@@ -1728,7 +1751,7 @@ def _render_play_tab(
                 stopped_job_key = _player_key(participant.user_id, "stage_two_background_job")
                 if (get_background_job(stopped_job_key) or {}).get("status") == "stopped":
                     render_background_job_status(stopped_job_key)
-                st.info("This run is saved. Select Resume in History to continue.")
+                st.info("This run is saved. Select Resume in Process Manager to continue.")
                 return participant.user_id
         else:
             _mark_run_failed_safely(
@@ -1742,9 +1765,6 @@ def _render_play_tab(
         return participant.user_id
 
     job_key = _player_key(participant.user_id, "stage_two_background_job")
-    stage_two_running = background_job_running(job_key)
-    if stage_two_running:
-        render_background_job_lock("Copyright Challenge 1 - Stage 2 official run")
 
     stage_two_default_book = (
         saved_stage_one_book
@@ -1991,10 +2011,11 @@ def _render_play_tab(
 
             report(0, planned_api_calls, "Reserving official run")
             def generate_result():
-                result = run_stage_two(
-                    api_key, config, available_strategies=strategies,
-                    on_progress=update_progress,
-                )
+                with _game_api_error_scope(api_key):
+                    result = run_stage_two(
+                        api_key, config, available_strategies=strategies,
+                        on_progress=update_progress,
+                    )
                 report(planned_api_calls, planned_api_calls, "Saving leaderboard entry")
                 return result
             _execute_checkpoint_stage_two(participant, config, generate_result, report)

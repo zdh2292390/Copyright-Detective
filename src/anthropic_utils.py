@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from copy import deepcopy
 import re
 from collections.abc import Mapping
 from typing import Any, Dict
@@ -73,7 +74,7 @@ def apply_anthropic_request_compat(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-def create_anthropic_message(client: Any, kwargs: Dict[str, Any]) -> Any:
+def create_anthropic_message(client: Any, kwargs: Dict[str, Any], *, on_request=None) -> Any:
     """Use Messages on old/new SDKs without dropping legacy sampling controls."""
     request = apply_anthropic_request_compat(kwargs)
     # SDK 1.0 removes sampling kwargs even for still-active older models.
@@ -94,6 +95,8 @@ def create_anthropic_message(client: Any, kwargs: Dict[str, Any]) -> Any:
         if extra_body:
             request["extra_body"] = extra_body
     try:
+        if on_request is not None:
+            on_request(deepcopy(request))
         return provider_call(client.messages.create, **request)
     except Exception as exc:
         check_cancellation()
@@ -115,6 +118,8 @@ def create_anthropic_message(client: Any, kwargs: Dict[str, Any]) -> Any:
             request["extra_body"] = extra_body
         else:
             request.pop("extra_body", None)
+        if on_request is not None:
+            on_request(deepcopy(request))
         return provider_call(client.messages.create, **request)
 
 

@@ -524,12 +524,15 @@ class SupabaseDocumentCheckpointStore:
     def request_kill(self, token, *, active=False):
         """Use the owner-scoped deletion RPC, including for active workers."""
         self._token(token)
+        # The owner-scoped RPC already serializes this task in the database.
+        # Keep its network wait outside the shared cache lock so another
+        # document can load, claim, or refresh its account binding meanwhile.
+        deleted = self._call(self.store.kill_task, token)
+        if not isinstance(deleted, Mapping) or deleted.get("deleted") is not True:
+            raise CheckpointError(
+                "Cloud task deletion is unavailable. Apply supabase/analysis_history_delete.sql."
+            )
         with self._lock:
-            deleted = self._call(self.store.kill_task, token)
-            if not isinstance(deleted, Mapping) or deleted.get("deleted") is not True:
-                raise CheckpointError(
-                    "Cloud task deletion is unavailable. Apply supabase/analysis_history_delete.sql."
-                )
             self._cache_generation += 1
             self._leases.pop(token, None)
             self._drop_cache_locked(token)

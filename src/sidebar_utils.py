@@ -128,7 +128,7 @@ def render_model_selectbox(provider: str, config: Dict[str, Any], *, disabled: b
         if isinstance(current_model, str) and current_model:
             selected = replacement if replacement in models else models[config.get("default_index", 0)]
             st.info(f"The saved model {current_model} is no longer an option. "
-                    f"Selected {selected} for new analyses. History entries keep their original model.")
+                    f"Selected {selected} for new analyses. Process Manager tasks keep their submitted model.")
 
     kwargs = {
         "label": "Model name",

@@ -604,7 +604,7 @@ Keep your analysis professional, objective, and focused on copyright detection i
         return f"Error generating LLM analysis: {str(e)}"
 
 
-def _add_blackbox_analysis_to_pdf(pdf) -> None:
+def _add_blackbox_analysis_to_pdf(pdf, confidence_result=None) -> None:
     """Add black-box memorization analysis results to PDF report.
     
     Args:
@@ -626,7 +626,7 @@ def _add_blackbox_analysis_to_pdf(pdf) -> None:
     pdf.ln(2)
     
     # Confidence Anomaly Detection Results
-    conf_result = st.session_state.get('confidence_analysis_result', {})
+    conf_result = confidence_result if isinstance(confidence_result, dict) else {}
     
     pdf.set_font("Times", style='B', size=12)
     pdf.cell(200, 10, txt="1. Confidence Anomaly Detection", ln=True)
@@ -890,9 +890,9 @@ def generate_text_memorization_pdf_report(results_data: Dict[str, Any], prompt_t
             _add_image_to_pdf(pdf, img_bytes, title=title)
     
     # Add Black-Box Analysis if available
-    conf_result = st.session_state.get('confidence_analysis_result', {})
-    if conf_result.get('analysis_available', False):
-        _add_blackbox_analysis_to_pdf(pdf)
+    conf_result = results_data.get('confidence_analysis_result') or {}
+    if isinstance(conf_result, dict) and conf_result.get('analysis_available', False):
+        _add_blackbox_analysis_to_pdf(pdf, conf_result)
     
     _add_conclusions_section(pdf, conclusions_text, recommendations)
     
@@ -1131,6 +1131,16 @@ def generate_single_choice_question_pdf_report(results_data: Dict[str, Any], mod
         conclusions_text = coverage + conclusions_text
         key_metrics['Failed Attempts'] = failed_attempts
 
+    progress = results_data.get('analysis_progress') or {}
+    requested = progress.get('requested_attempts')
+    attempted = progress.get('attempted_attempts')
+    if type(requested) is int and type(attempted) is int and attempted < requested:
+        coverage = f"Execution stopped after {attempted}/{requested} planned evaluations. Remaining requests were not sent. "
+        summary = coverage + summary
+        conclusions_text = coverage + conclusions_text
+        key_metrics['Requested Attempts'] = requested
+        key_metrics['Attempted Requests'] = attempted
+
     # Methodology Section
     methodology_text = (
         "This audit employs single-choice question evaluation to detect memorization by presenting the model with "
@@ -1147,6 +1157,20 @@ def generate_single_choice_question_pdf_report(results_data: Dict[str, Any], mod
         'Evaluation Runs': total_runs,
     }
     
+    requested_sampling = results_data.get('requested_sampling')
+    if isinstance(requested_sampling, dict):
+        methodology_params['Requested Sampling'] = ', '.join(
+            f"{key}={requested_sampling.get(key)}" for key in ('temperature', 'top_p')
+        )
+    for index, record in enumerate(results_data.get('sampling_records') or [], 1):
+        parameters = record.get('parameters') if isinstance(record, dict) else None
+        if isinstance(parameters, dict):
+            label = 'Observed Sampling' if record.get('observed') else 'Compatibility Sampling'
+            methodology_params[f'{label} {index}'] = ', '.join(
+                f"{key}={parameters.get(key) if parameters.get(key) is not None else 'provider default'}"
+                for key in ('temperature', 'top_p')
+            )
+
     # Executive Summary (should come before Methodology)
     _add_executive_summary_section(pdf, summary, key_metrics)
     
@@ -1286,7 +1310,7 @@ def generate_single_choice_question_pdf_report(results_data: Dict[str, Any], mod
                         prob_parts = []
                         for label in ["A", "B", "C", "D"]:
                             if label in probs:
-                                prob_parts.append(f"{label}: {probs[label]:.1f}%")
+                                prob_parts.append(f"{label}: {probs[label] * 100:.1f}%")
                         if prob_parts:
                             pdf.cell(200, 4, txt=f"Probabilities: {', '.join(prob_parts)}", ln=True)
 
@@ -1995,7 +2019,16 @@ def generate_open_ended_question_pdf_report(
     total_attempted = agg_metrics.get('total_attempted', sum(len(run) for run in all_results))
     successful = agg_metrics.get('total_evaluations', sum(not row.get('error') for run in all_results for row in run))
     failed = agg_metrics.get('failed_evaluations', total_attempted - successful)
-    pdf.multi_cell(0, 6, txt=f"Coverage: {successful}/{total_attempted} successful evaluations; {failed} failed. Scores cover successful responses only.")
+    try:
+        planned = max(total_attempted, int(num_qa_pairs) * int(num_eval_runs))
+    except (TypeError, ValueError):
+        planned = total_attempted
+    not_attempted = max(0, planned - total_attempted)
+    pdf.multi_cell(0, 6, txt=(
+        f"Coverage: {total_attempted}/{planned} planned evaluations attempted; "
+        f"{successful} successful, {failed} failed, {not_attempted} not attempted. "
+        "Scores cover successful responses only."
+    ))
     pdf.ln(4)
 
     # Aggregate Metrics
@@ -2028,7 +2061,7 @@ def generate_open_ended_question_pdf_report(
     else:
         interpretation = "Low Memorization: The LLM's answers differ significantly from ground truth, suggesting it is not recalling memorized content from this specific document."
 
-    if failed and successful:
+    if (failed or not_attempted) and successful:
         interpretation = "Partial evaluation; this interpretation covers successful responses only. " + interpretation
 
     # Split interpretation text to fit PDF width

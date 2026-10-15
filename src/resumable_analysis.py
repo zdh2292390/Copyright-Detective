@@ -354,6 +354,7 @@ class CallJournal:
         self.failed = False
         self.broken = False
         self.closed = False
+        self.completed = False
         self.verified_complete = False
         self._fresh_call_started = False
         self.lock = RLock()
@@ -495,6 +496,8 @@ class CallJournal:
         while not self.stop_event.wait(HEARTBEAT_SECONDS):
             try:
                 task = self.store.heartbeat(self.task_id, self.lease_token, ttl_seconds=LEASE_TTL)
+                if self.stop_event.is_set():
+                    return  # A delayed response must not cancel a released task.
                 if task.get("stop_requested"):
                     if self.cancellation_token is not None:
                         self.cancellation_token.cancel()
@@ -503,6 +506,8 @@ class CallJournal:
                     # background runner may still be draining an accepted request;
                     # another process must not resume it during that cleanup.
             except Exception:
+                if self.stop_event.is_set():
+                    return  # The lease may have been released while this RPC ran.
                 self.broken = True
                 # Nested provider calls must also stop when their checkpoint
                 # lease fails, rather than spending more API calls unsaved.
@@ -638,7 +643,7 @@ class CallJournal:
     def finish(self, success: bool, final_snapshot: dict | None = None):
         with self.lock:
             if self.closed:
-                return
+                return self.completed
             self.closed = True
             if self.read_only:
                 self.stop_event.set()
@@ -646,12 +651,14 @@ class CallJournal:
                 if success and (self.failed or self.broken or len(self.visited_items) != len(self.items)):
                     self.failed = self.broken = True
                     raise AnalysisResumeMismatch("The saved report could not be fully reconstructed because some saved calls were not replayed. Viewing results cannot create missing API calls.")
-                return
+                self.completed = bool(success)
+                return self.completed
             success = success and not (self.cancellation_token is not None and self.cancellation_token.cancelled)
             complete = success and not self.failed and not self.broken and (len(self.visited_items) == len(self.items) or self.verified_complete)
-            metadata = deepcopy(self.metadata)
-            metadata.update({key: deepcopy(value) for key, value in (self.task.get("metadata") or {}).items()
-                             if key not in {"display", "work_progress"}})
+            # The runner's newly built report is authoritative. Older task
+            # metadata supplies only fields this execution did not update.
+            metadata = deepcopy(self.task.get("metadata") or {})
+            metadata.update(deepcopy(self.metadata))
             if not complete and not self._fresh_call_started:
                 # An interrupted replay may still be rebuilding an earlier
                 # stage. Retain the last durable stage until real work resumes.
@@ -668,6 +675,7 @@ class CallJournal:
                 try:
                     self.store.release(self.task_id, self.lease_token,
                                        status="complete" if complete else "incomplete", metadata=metadata)
+                    self.completed = bool(complete)
                 except Exception as exc:
                     self.broken = True
                     raise _checkpoint_error_with_context(
@@ -701,6 +709,7 @@ class CallJournal:
                     release_checkpoint()
             else:
                 release_checkpoint()
+            return self.completed
 
 
 class PageRun:
@@ -953,32 +962,57 @@ def current_task_id():
     return current.task_id if isinstance(current, CallJournal) else None
 
 
-def prepare_background_journal(key: str, label: str):
+def prepare_background_journal(key: str, label: str, *, cached_only: bool = False):
     """Capture verified identity and frozen inputs on the UI thread, not workers."""
     scope = _CURRENT.get()
     if not isinstance(scope, PageRun) or not scope.trigger:
+        if cached_only:
+            raise AnalysisCheckpointError("Select a completed saved task before rebuilding its results.")
         return None
     if not page_supports_analysis_recovery(scope.page_key):
+        if cached_only:
+            raise AnalysisCheckpointError("This page has no saved API journal to replay. No API call was started.")
         return None
     if scope.broken:
         raise AnalysisCheckpointError("Cloud checkpoints are unavailable. Resume this task before making more calls.")
-    if scope.view_task_id:
+    if scope.view_task_id and (not cached_only or canonical_page_key(scope.page_key) in OFFICIAL_GAME_PAGE_KEYS):
         raise AnalysisCheckpointError("Completed background results must be restored locally. Viewing results cannot start a worker.")
+    if cached_only and not scope.view_task_id:
+        raise AnalysisCheckpointError("Select a completed saved task before rebuilding its results.")
     try:
         if not scope.checked_store:
             scope.checked_store = True
             scope.store = get_cloud_store_for_current_user(page_key=scope.page_key)
         store = scope.store
         if store is None:
+            if cached_only:
+                raise AnalysisCheckpointError("Sign in before viewing this task's saved results. No API call was started.", kind="auth")
             return None
-        resume_id = scope.state.get(RESUME_TASK)
-        if resume_id:
-            task = store.get_task(resume_id)
-            if not task or canonical_page_key(task.get("page_key")) != canonical_page_key(scope.page_key):
-                raise AnalysisCheckpointError("This background task is not available for your account.")
+        resume_id = scope.view_task_id if cached_only else scope.state.get(RESUME_TASK)
+        task = store.get_task(resume_id) if resume_id else None
+        if resume_id and not task:
+            raise AnalysisCheckpointError("This background task is not available for your account.")
+        if task:
             source = task.get("source") or {}
-            if source.get("background_key") != key or source.get("trigger_key") != scope.trigger:
+            matches_action = (canonical_page_key(task.get("page_key")) == canonical_page_key(scope.page_key)
+                              and source.get("trigger_key") == scope.trigger)
+            if not matches_action:
+                if cached_only:
+                    raise AnalysisResumeMismatch("Use the saved task's original page and run action to view results.")
+                # A blocked restore on another page/action must not hijack an
+                # independently submitted task. Its worker keeps its own state.
+                resume_id, task = None, None
+            elif not key.startswith("analysis:") and source.get("background_key") != key:
                 raise AnalysisResumeMismatch("Use the saved background task's original run action.")
+        if task:
+            if cached_only and task.get("status") != "complete":
+                raise AnalysisCheckpointError("Only completed saved tasks can be rebuilt without API calls.")
+            source = task.get("source") or {}
+            saved = unpack_snapshot(source.get("initial_session") or {})
+            current = snapshot_session(scope.state, scope.page_key)
+            if any(name.startswith("sidebar_") and name in current and current[name] != value
+                   for name, value in saved.items()):
+                raise AnalysisResumeMismatch("Restore the saved provider, model and endpoint before resuming.")
         else:
             task = store.create_task(
                 page_key=scope.page_key, settings={"label": label},
@@ -987,6 +1021,8 @@ def prepare_background_journal(key: str, label: str):
                         "journal_version": 2},
                 work_items=[], dynamic_items=True,
             )
+        # Complete tasks construct read-only journals: no claim, lease, writes,
+        # or missing-response provider callback is permitted during this replay.
         journal = CallJournal(store, task)
         if resume_id and scope.state.get(RESUME_TASK) == resume_id:
             scope.state.pop(RESUME_TASK, None)

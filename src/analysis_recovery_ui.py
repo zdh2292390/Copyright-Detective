@@ -8,7 +8,7 @@ import streamlit as st
 
 from src.analysis_checkpoints import OFFICIAL_GAME_PAGE_KEYS, classify_checkpoint_error
 from src.analysis_work_progress import format_work_progress
-from src.history_ui import HISTORY_STYLES, render_history_details, confirm_task_deletion
+from src.history_ui import HISTORY_STYLES, PROCESS_MANAGER_TITLE, render_history_details, confirm_task_deletion
 from src.analysis_result_restore import completed_result_snapshot
 from src.resumable_analysis import (
     AnalysisCheckpointError, PENDING_RESTORE, RESUME_TASK, VIEW_TASK, VIEW_PAGE,
@@ -28,7 +28,7 @@ _ACCOUNT_ANALYSIS_PREFIXES = (
     "text_", "qa_", "sc_", "sleek_", "persuasion_", "min_k_", "mink_",
     "unlearn_", "representational_", "muse_", "probe_", "preview_",
     "pdf_", "_pdf_", "copyright_game", "_copyright_game", "sidebar_",
-    "_analysis_", "_background_job_", "detection_run_", "detection_job_",
+    "_analysis_", "_background_job_", "_page_job_", "detection_run_", "detection_job_",
     "adv_", "jailbreak_",
 )
 _ACCOUNT_ANALYSIS_KEYS = frozenset({
@@ -54,6 +54,16 @@ def clear_account_analysis_state() -> None:
                 or name in _ACCOUNT_ANALYSIS_KEYS):
             st.session_state.pop(key, None)
     st.query_params.pop("document_analysis", None)
+
+
+def discard_pending_analysis_restore():
+    """Abandon queued restore intent without changing submitted workers."""
+    notice = st.session_state.get(_RESTORE_FEEDBACK)
+    if isinstance(notice, dict) and isinstance(notice.get("trigger_key"), str):
+        st.session_state.pop(f"detection_run_{notice['trigger_key']}", None)
+    for key in (PENDING_RESTORE, RESUME_TASK, VIEW_TASK, VIEW_PAGE, _RESTORE_FEEDBACK,
+                "_analysis_resume_background_key", "_analysis_restored_inputs", "_page_job_pending_view"):
+        st.session_state.pop(key, None)
 
 
 def apply_pending_analysis_restore():
@@ -93,6 +103,9 @@ def apply_pending_analysis_restore():
     final = final or {}
     restored = {**initial, **final} if restore_results else initial
     page_key = canonical_page_key(str(task.get("page_key") or ""))
+    discard_pending_analysis_restore()
+    from src.page_jobs import detach_page_jobs
+    detach_page_jobs(page_key)
     for key in list(st.session_state):
         if is_safe_state_key(str(key)) and key_belongs_to_page(str(key), page_key):
             st.session_state.pop(key, None)
@@ -127,13 +140,10 @@ def apply_pending_analysis_restore():
         st.session_state["_analysis_resume_background_key"] = source["background_key"]
     st.session_state["_analysis_restored_inputs"] = True
     trigger = source["trigger_key"]
-    for key in list(st.session_state):
-        if str(key).startswith("detection_run_"):
-            st.session_state.pop(key, None)
+    # Restoring one task must not clear another submitted action or change
+    # the lifecycle of a worker that is still using its captured inputs.
     if not restore_results:
         st.session_state[f"detection_run_{trigger}"] = True
-    st.session_state["detection_job_running"] = False
-    st.session_state.pop("detection_run_armed", None)
     st.session_state[_RESTORE_FEEDBACK] = {
         "task_id": str(task["id"]), "page_key": page_key, "trigger_key": trigger,
         "action": "results" if completed else "resume", "replay": completed and not restore_results,
@@ -327,13 +337,29 @@ def _step_description(task, display):
     return "Current step: " + name
 
 
-def _kill_saved_task(store, task_id, *, task_completed=False):
+def _task_action_store(store, page_key):
+    # The shared list uses the authenticated read client. Official-game writes
+    # retain their original server-side client and verified owner boundary.
+    current_owner = str(st.session_state.get("user_id") or "")
+    if not current_owner or current_owner != str(store.owner_id or ""):
+        raise AnalysisCheckpointError("Your account changed. Reopen this task from Process Manager.", kind="auth")
+    if page_key not in OFFICIAL_GAME_PAGE_KEYS:
+        return store
+    action_store = get_cloud_store_for_current_user(page_key=page_key)
+    if action_store is None or str(action_store.owner_id) != str(store.owner_id):
+        raise AnalysisCheckpointError("Sign in to this task's account before managing it.", kind="auth")
+    return action_store
+
+
+def _kill_saved_task(store, task_id, *, task_completed=False, page_key=None):
     """Cancel this task and delete its durable inputs, checkpoints and results."""
     from src.run_cancellation import cancel_task
     task_id = str(task_id)
-    cancelled = cancel_task(store.owner_id, task_id)
+    cancelled = False
     error_key = f"_analysis_kill_error:{task_id}"
     try:
+        store = _task_action_store(store, page_key)
+        cancelled = cancel_task(store.owner_id, task_id)
         deleted = store.kill_task(task_id)
         if not isinstance(deleted, dict) or deleted.get("deleted") is not True:
             raise AnalysisCheckpointError(
@@ -370,13 +396,15 @@ def _kill_saved_task(store, task_id, *, task_completed=False):
 
 
 
-def _stop_saved_task(store, task_id):
+def _stop_saved_task(store, task_id, *, page_key=None):
     """Pause a task while retaining its inputs and successful responses."""
     from src.run_cancellation import cancel_task
     task_id = str(task_id)
-    cancelled = cancel_task(store.owner_id, task_id)
+    cancelled = False
     error_key = f"_analysis_stop_error:{task_id}"
     try:
+        store = _task_action_store(store, page_key)
+        cancelled = cancel_task(store.owner_id, task_id)
         task = store.request_stop(task_id)
         if not task.get("stop_requested") and task.get("status") != "complete":
             raise AnalysisCheckpointError("The task did not acknowledge Stop. Retry Stop.")
@@ -391,22 +419,24 @@ def _stop_saved_task(store, task_id):
 
 
 def render_analysis_recovery(page_key: str):
-    if (page_key == "Content Recall Detection" and
-            (st.session_state.get("content_recall_mode") == "Document Memorization Detection"
-             or (not st.session_state.get("content_recall_mode") and st.query_params.get("document_analysis")))):
-        return  # Documents render their own History beside the document inputs.
-    if page_key == "Legal Cases Display" or not page_supports_analysis_recovery(page_key):
-        return
+    # Tasks belong to the submitting account/session, independently of whichever
+    # page and inputs the user is editing now.
+    from src.background_jobs import list_background_jobs
+
+    local_jobs = list_background_jobs()
+    store = None
+    tasks = []
+    has_more = False
+    limit_key = "_analysis_task_list_limit"
+    limit = int(st.session_state.get(limit_key, 50))
     try:
-        store = get_cloud_store_for_current_user(page_key=page_key)
-        if store is None:
-            return
-        limit_key = f"_analysis_task_list_limit:{page_key}"
-        limit = int(st.session_state.get(limit_key, 50))
-        tasks = store.list_tasks(
-            page_key=page_key, limit=limit, summary_only=True, exclude_killed=True,
-            statuses=["creating", "queued", "running", "incomplete", "complete"],
-        )
+        store = get_cloud_store_for_current_user()
+        if store is not None:
+            tasks = store.list_tasks(
+                limit=limit, summary_only=True, exclude_killed=True,
+                statuses=["creating", "queued", "running", "incomplete", "complete"],
+            )
+            has_more = len(tasks) >= limit
     except Exception as exc:
         diagnostic = classify_checkpoint_error(exc, operation="read")
         st.warning(f"Cloud recovery is unavailable. {diagnostic}")
@@ -419,28 +449,91 @@ def render_analysis_recovery(page_key: str):
         if match:
             st.caption(f"Configured Supabase project: {match.group(1)}. Apply migrations in this same project.")
         st.caption("New signed-in analyses will wait until cloud checkpoints are available.")
-        return
-    has_more = len(tasks) >= limit
+
     tasks = [task for task in tasks if task.get("dynamic_items")
+             and page_supports_analysis_recovery(task.get("page_key"))
              and not task.get("kill_requested") and task.get("status") not in {"stopping", "killed"}]
+    saved_ids = {str(task["id"]) for task in tasks}
+    local_results = {}
+    for job in local_jobs:  # The registry returns newest submissions first.
+        if (job.get("task_id") and job.get("source_type") == "page_job" and job.get("has_result")
+                and job.get("status") in {"completed", "failed"}):
+            local_results.setdefault(str(job["task_id"]), job)
+    local_jobs = [job for job in local_jobs
+                  if job.get("page_key") and str(job.get("task_id") or "") not in saved_ids]
+    if store is None and not local_jobs:
+        return
+    active_local = any(job.get("status") in {"queued", "running", "stopping"} for job in local_jobs)
     st.html(HISTORY_STYLES)
     with st.container(key="analysis_history_list", gap=None):
-        with st.expander("History", expanded=any(t.get("status") != "complete" for t in tasks)):
+        with st.expander(PROCESS_MANAGER_TITLE,
+                         expanded=active_local or any(t.get("status") != "complete" for t in tasks)):
             with st.container(horizontal=True, vertical_alignment="center", gap="small",
-                              key="history_toolbar"):
-                st.caption("Resume continues saved progress. Kill permanently deletes the task and its results.")
-                if st.button("Refresh", key=f"_analysis_refresh:{page_key}", width="content"):
+                              key="api_history_toolbar"):
+                st.caption("Tasks keep their submitted settings. You can change inputs, switch pages, or submit another task.")
+                if st.button("Refresh", key="_analysis_refresh", width="content"):
                     st.rerun()
-            if not tasks:
-                st.caption("No analyses on this page yet.")
+            if not tasks and not local_jobs:
+                st.caption("No submitted tasks yet.")
+            for job in local_jobs:
+                _render_local_analysis_card(job)
             for task in tasks:
-                _render_saved_analysis_card(task, store, page_key)
-            if has_more and limit < 1000 and st.button("Show more", key=f"_analysis_show_older:{page_key}"):
+                _render_saved_analysis_card(task, store, task.get("page_key") or page_key,
+                                            local_result=local_results.get(str(task["id"])))
+            if has_more and limit < 1000 and st.button("Show more", key="_analysis_show_older"):
                 st.session_state[limit_key] = min(1000, limit + 50)
                 st.rerun()
 
 
-def _render_saved_analysis_card(task, store, page_key):
+def _render_local_analysis_card(job):
+    from src.background_jobs import force_stop_background_job
+    from src.page_jobs import view_page_job
+
+    key = str(job["key"])
+    status = str(job.get("status") or "queued")
+    active = status in {"queued", "running", "stopping"}
+    stopping = status == "stopping"
+    display_status = {"queued": "Queued", "running": "Running", "stopping": "Stopping",
+                      "completed": "Complete", "failed": "Failed", "stopped": "Paused"}.get(status, status.capitalize())
+    color = {"Running": "blue", "Complete": "green", "Stopping": "orange",
+             "Paused": "orange", "Failed": "red"}.get(display_status, "gray")
+    with st.container(border=True, key=f"history_task_local_{key}", gap="small"):
+        title, actions = st.columns([5, 3], gap="small", vertical_alignment="center")
+        with title:
+            with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+                st.markdown(f"**{job.get('label') or 'Analysis'}**", width="content")
+                st.badge(display_status, color=color)
+        with actions:
+            with st.container(horizontal=True, vertical_alignment="center", gap="small",
+                              key=f"history_actions_local_{key}", horizontal_alignment="right"):
+                if active:
+                    st.button(
+                        "Stopping..." if stopping else "Stop", key=f"_analysis_local_stop:{key}",
+                        disabled=stopping, width="content",
+                        on_click=force_stop_background_job, args=(key,),
+                        help="Stop this task without affecting other tasks.",
+                    )
+                if (status in {"completed", "failed"} and job.get("source_type") == "page_job"
+                        and job.get("has_result")):
+                    # Navigation/result state must change in a callback before
+                    # Streamlit recreates the page and sidebar widgets.
+                    st.button(
+                        "View", key=f"_analysis_local_view:{key}", width="content", type="primary",
+                        on_click=view_page_job, args=(key,),
+                        help="Open the saved output of this task.",
+                    )
+        st.caption(f"Page: {job.get('page_key')}")
+        current, total = job.get("current", 0), job.get("total", 1)
+        st.caption(f"Progress: {current} / {total}")
+        if job.get("message"):
+            st.caption(str(job["message"]))
+        if active:
+            st.caption("Running independently. Inputs and other tasks remain available.")
+        if job.get("error"):
+            st.warning(str(job["error"]))
+
+
+def _render_saved_analysis_card(task, store, page_key, *, local_result=None):
     label = (task.get("settings") or {}).get("label", "Analysis")
     status = str(task.get("status") or "incomplete")
     active = _lease_active(task)
@@ -466,7 +559,8 @@ def _render_saved_analysis_card(task, store, page_key):
                     render_force_stop_button(
                         key=f"_analysis_stop:{task['id']}", label="Stopping…" if stopping else "Stop",
                         disabled=stopping, width="content",
-                        on_click=lambda task_id=str(task['id']): _stop_saved_task(store, task_id),
+                        on_click=lambda task_id=str(task['id']), task_page=page_key:
+                            _stop_saved_task(store, task_id, page_key=task_page),
                         help="Pause this task and keep saved progress for Resume.",
                     )
         with actions:
@@ -481,6 +575,14 @@ def _render_saved_analysis_card(task, store, page_key):
                           "View the saved final results without new API calls." if status == "complete" else
                           "Continue this task with its original settings and reuse completed calls."),
                 )
+                if status != "complete" and local_result is not None:
+                    from src.page_jobs import view_page_job
+                    local_key = str(local_result["key"])
+                    st.button(
+                        "View", key=f"_analysis_local_view:{local_key}", width="content",
+                        on_click=view_page_job, args=(local_key,),
+                        help="View the saved partial results without restarting this task or making API calls.",
+                    )
                 with st.container(width="content"):
                     from src.job_guard import render_force_stop_button
                     if render_force_stop_button(
@@ -490,9 +592,10 @@ def _render_saved_analysis_card(task, store, page_key):
                     ):
                         confirm_task_deletion(
                             task_id=str(task['id']), owner_id=store.owner_id, label=label,
-                            on_confirm=lambda task_id=str(task['id']), complete=status == "complete":
-                                _kill_saved_task(store, task_id, task_completed=complete),
+                            on_confirm=lambda task_id=str(task['id']), complete=status == "complete", task_page=page_key:
+                                _kill_saved_task(store, task_id, task_completed=complete, page_key=task_page),
                         )
+        st.caption(f"Page: {task.get('page_key') or page_key}")
         with st.container(horizontal=True, vertical_alignment="center", gap="small"):
             if apis:
                 api = apis[0]
@@ -505,7 +608,7 @@ def _render_saved_analysis_card(task, store, page_key):
         st.caption(_step_description(task, display))
         if active and status != "complete":
             st.caption("Finishing current requests…" if stopping else
-                       "Running · Resume becomes available after the worker stops.")
+                       "Running independently. You can change inputs, switch pages, or submit another task.")
         with st.container(key=f"history_details_{task['id']}", gap=None):
             with st.expander("Details", expanded=False):
                 render_history_details(task, page_key=page_key)
@@ -522,3 +625,5 @@ def _render_saved_analysis_card(task, store, page_key):
         stop_error = st.session_state.get(f"_analysis_stop_error:{task['id']}")
         if stop_error:
             st.warning(stop_error)
+        if status != "complete" and local_result and local_result.get("error"):
+            st.warning(str(local_result["error"]))

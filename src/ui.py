@@ -5,6 +5,7 @@ import json
 import traceback
 from datetime import datetime
 from collections import Counter
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -111,7 +112,8 @@ from src.pages.unlearning_detection import render_unlearning_detection_page
 from src.pages.document_memorization_detection import render_pdf_analysis_page
 from src.pages.text_memorization_detection import render_text_analysis_page
 from src.pages.single_choice_detection import render_single_choice_detection_page
-from src.upload_cache import resolve_uploaded_file
+from src.upload_cache import CachedUpload, resolve_uploaded_file
+from src.page_jobs import TaskUI, detach_page_jobs, freeze_task_state, submit_page_job
 from src.sidebar_utils import (
     MODEL_CONFIG,
     render_api_configuration_section,
@@ -119,19 +121,14 @@ from src.sidebar_utils import (
     render_model_selection_section,
 )
 from src.job_guard import (
-    detection_job,
     finish_detection_job,
-    get_ui_disabled,
-    is_detection_job_running,
     sidebar_rendering,
     render_run_button,
-    reset_detection_job,
     wd,
 )
 from src.floating_clear_cache import (
     register_clear_cache_handler,
     set_active_clear_cache_id,
-    show_api_failure_if_needed,
     show_error_with_clear_cache,
 )
 
@@ -249,17 +246,16 @@ def _trigger_rerun() -> None:
 
 
 def _clear_knowledge_cache() -> None:
+    detach_page_jobs("Knowledge Memorization Detection")
+    detach_page_jobs("Game 3: The Memory Vault Hunt")
     for key in list(st.session_state.keys()):
         if key.startswith("qa_") or key.startswith("sc_"):
             del st.session_state[key]
-    reset_detection_job()
     _trigger_rerun()
 
 
 def _clear_persuasive_cache() -> None:
-    if is_detection_job_running():
-        st.warning("Warning: A Persuasive Jailbreak run is in progress. Clear Cache is disabled until it finishes.")
-        return
+    detach_page_jobs("Persuasive Jailbreak Detection")
     for key in (
         "generated_persuasion_mutations",
         "stage1_reference_texts",
@@ -272,12 +268,12 @@ def _clear_persuasive_cache() -> None:
         "jailbreak_distribution_legend_note",
         "persuasion_run_checkpoint",
         "persuasion_last_run_summary",
+        "persuasion_result_metadata",
     ):
         st.session_state.pop(key, None)
     for key in list(st.session_state.keys()):
         if key.startswith("adv_") or key.startswith("jailbreak_"):
             del st.session_state[key]
-    reset_detection_job()
     _trigger_rerun()
 
 
@@ -505,21 +501,23 @@ def render_metric_cards(metrics_data: List[Dict[str, Any]]) -> None:
     st.markdown(container_html, unsafe_allow_html=True)
 
 
-def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
+def run_knowmem_evaluation(api_key, model_choice, provider, *, task_ui=None) -> None:
     """Run knowmem evaluation on the queued QA examples using API."""
-    ensure_qa_session_defaults()
+    ui = task_ui if task_ui is not None else st
+    if task_ui is None:
+        ensure_qa_session_defaults()
     
-    eval_examples: List[Dict[str, Any]] = st.session_state[QA_EVAL_QUEUE_KEY]
+    eval_examples: List[Dict[str, Any]] = ui.session_state[QA_EVAL_QUEUE_KEY]
     if not eval_examples:
-        st.warning("No examples in evaluation queue.")
+        ui.warning("No examples in evaluation queue.")
         return
     
     if (provider != "Local vLLM" and not str(api_key or "").strip()) or not model_choice:
-        st.error("Please configure API key and model in the sidebar.")
+        ui.error("Please configure API key and model in the sidebar.")
         return
     
     # Get ICL examples
-    icl_examples: List[Dict[str, Any]] = st.session_state[QA_ICL_SESSION_KEY]
+    icl_examples: List[Dict[str, Any]] = ui.session_state[QA_ICL_SESSION_KEY]
     icl_qs = [ex["question"] for ex in icl_examples]
     icl_as = [ex["answer"] for ex in icl_examples]
     
@@ -531,8 +529,8 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
         from src.direct_recall.comparison import get_llm_completion, calculate_rouge_score, calculate_jaccard_index
         from Levenshtein import distance
         
-        st.markdown("###  Running Knowmem Evaluation")
-        progress_bar = st.progress(0, text=" Setting up evaluation...")
+        ui.markdown("###  Running Knowmem Evaluation")
+        progress_bar = ui.progress(0, text=" Setting up evaluation...")
         progress_bar.progress(0.1, text=" Setting up evaluation...")
         
         # Create logger for results
@@ -540,10 +538,10 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
         general_prompt: str = ""
 
         # Determine if few-shot based on mode
-        qa_prompt_mode = st.session_state.get("qa_prompt_mode", "Zero-Shot")
+        qa_prompt_mode = ui.session_state.get("qa_prompt_mode", "Zero-Shot")
         if qa_prompt_mode == "Few-Shot":
             # Use all predefined examples for few-shot prompting
-            selected_question = st.session_state.get("qa_selected_example_question")
+            selected_question = ui.session_state.get("qa_selected_example_question")
             few_shot_examples = PREDEFINED_QA_EXAMPLES
             if selected_question:
                 filtered_examples = [
@@ -556,12 +554,12 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
             for example in few_shot_examples:
                 general_prompt += f"Question: {example['question']}\nAnswer: {example['answer']}\n\n"
 
-        if st.session_state.get("_analysis_resume_task") and "qa_knowmem_general_prompt" in st.session_state:
-            general_prompt = st.session_state["qa_knowmem_general_prompt"]
-        st.session_state["qa_knowmem_general_prompt"] = general_prompt
+        if ui.session_state.get("_analysis_resume_task") and "qa_knowmem_general_prompt" in ui.session_state:
+            general_prompt = ui.session_state["qa_knowmem_general_prompt"]
+        ui.session_state["qa_knowmem_general_prompt"] = general_prompt
         progress_bar.progress(0.3, text=" Running evaluation...")
 
-        max_new_tokens = int(st.session_state.get("qa_knowmem_max_new_tokens", 64) or 64)
+        max_new_tokens = int(ui.session_state.get("qa_knowmem_max_new_tokens", 64) or 64)
         report_analysis_progress(0, len(questions), unit="questions", stage="knowmem")
         
         for i, (question, answer) in enumerate(zip(questions, answers)):
@@ -584,7 +582,7 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
                     )
 
                 if is_api_error_response(generated_text):
-                    st.error(f"Error: API error for question {i+1}: {generated_text}")
+                    ui.error(f"Error: API error for question {i+1}: {generated_text}")
                     report_analysis_progress(i + 1, len(questions), unit="questions", stage="knowmem")
                     continue
 
@@ -603,21 +601,22 @@ def run_knowmem_evaluation(api_key, model_choice, provider) -> None:
                 detail = str(exc).strip() or type(exc).__name__
                 if api_key:
                     detail = detail.replace(str(api_key), "[redacted]")
-                st.error(f"Evaluation of question {i + 1} failed: {detail}")
+                ui.error(f"Evaluation of question {i + 1} failed: {detail}")
                 report_analysis_progress(i + 1, len(questions), unit="questions", stage="knowmem")
                 continue
 
-        st.session_state["qa_knowmem_saved_entries"] = list(logger.entries)
+        ui.session_state["qa_knowmem_saved_entries"] = list(logger.entries)
         progress_bar.progress(1.0, text="Done:All evaluations completed!")
         progress_bar.empty()
         
-        _render_knowmem_results(logger, len(questions))
+        if task_ui is None:
+            _render_knowmem_results(logger, len(questions))
     except Exception as e:
         if isinstance(e, AnalysisCheckpointError):
             raise
-        st.error(f"Error: during knowmem evaluation: {str(e)}")
+        ui.error(f"Error: during knowmem evaluation: {str(e)}")
         import traceback
-        st.code(traceback.format_exc())
+        ui.code(traceback.format_exc())
 
 
 def _render_knowmem_results(logger, planned_count: int) -> None:
@@ -733,6 +732,43 @@ def _render_knowmem_results(logger, planned_count: int) -> None:
 
 
 
+def _freeze_document_upload(uploaded_document):
+    if uploaded_document is None:
+        return None
+    return CachedUpload(
+        data=bytes(uploaded_document.getvalue()), name=str(uploaded_document.name),
+        mime_type=str(getattr(uploaded_document, "type", "") or ""),
+    )
+
+
+def _finish_api_task(task_ui, outputs, api_key=None):
+    from src.analysis_outcomes import task_outcome_errors
+    for message in task_outcome_errors(outputs):
+        task_ui.error(message)
+    if api_key:
+        task_ui.errors = [message.replace(str(api_key), "[redacted]") for message in task_ui.errors]
+    result_fields = {
+        "qa_knowmem_saved_entries", "qa_generated_qa_pairs", "qa_evaluation_results",
+        "qa_sleek_results", "generated_persuasion_mutations", "persuasion_probe_results",
+        "sleek_evaluation_results",
+    }
+    if task_ui.errors and not any(outputs.get(key) for key in result_fields):
+        # A failed new task has no replacement report. Keep the page's last
+        # successful result while exposing the failure in Process Manager.
+        outputs = {}
+    return task_ui.result(outputs)
+
+
+def _generate_task_report_safely(task_ui, factory, *args, **kwargs):
+    try:
+        return factory(*args, **kwargs)
+    except AnalysisCheckpointError:
+        raise
+    except Exception as exc:
+        task_ui.warning(f"The analysis results are available, but the PDF report could not be generated: {str(exc).strip() or type(exc).__name__}")
+        return None
+
+
 def _generate_report_safely(factory, *args, **kwargs):
     try:
         return factory(*args, **kwargs)
@@ -780,13 +816,25 @@ def render_evaluation_queue(api_key, model_choice, provider) -> None:
         "qa_run_knowmem_eval",
         "🧠 Run: Knowmem Evaluation",
     ):
-        with detection_job("Knowmem Evaluation"):
-            run_knowmem_evaluation(api_key, model_choice, provider)
+        frozen_state = freeze_task_state()
+
+        def _run_knowmem(report, frozen_state=frozen_state, api_key=api_key, model_choice=model_choice, provider=provider):
+            task_ui = TaskUI(frozen_state, report)
+            task_ui.session_state["qa_knowmem_saved_entries"] = []
+            run_knowmem_evaluation(api_key, model_choice, provider, task_ui=task_ui)
+            return _finish_api_task(task_ui, {
+                "qa_knowmem_saved_entries": task_ui.session_state.get("qa_knowmem_saved_entries", []),
+                "qa_knowmem_general_prompt": task_ui.session_state.get("qa_knowmem_general_prompt", ""),
+                "qa_knowmem_planned_count": len(frozen_state.get(QA_EVAL_QUEUE_KEY, [])),
+            }, api_key)
+
+        if submit_page_job("qa_run_knowmem_eval", "Knowmem Evaluation", _run_knowmem):
+            st.rerun()
     elif "qa_knowmem_saved_entries" in st.session_state:
         # Final snapshots already contain scored answers; viewing them makes no API calls.
         logger = RougeEvalLogger()
         logger.entries = list(st.session_state["qa_knowmem_saved_entries"])
-        _render_knowmem_results(logger, len(eval_examples))
+        _render_knowmem_results(logger, st.session_state.get("qa_knowmem_planned_count", len(eval_examples)))
     
     if st.button("Clear evaluation batch", key="qa_clear_eval_batch"):
         st.session_state[QA_EVAL_QUEUE_KEY] = []
@@ -1338,26 +1386,8 @@ def render_qa_based_detection(api_key, model_choice, provider):
             with st.expander(f"Q{idx+1}: {qa['question']}"):
                 st.markdown(f"**Answer:** {qa['answer']}")
     else:
-        # Dataset mode
-        if not source_text:
-            source_text, source_meta = load_dataset_excerpt(
-                qa_source_mode,
-                st.session_state.get('qa_dataset_document'),
-            )
-        if not source_text:
-            st.warning("Warning: Please select a dataset document first.")
-        else:
-            document_text = source_text
-            qa_pairs = generate_qa_pairs_from_text(
-                document_text,
-                qa_gen_api_key,
-                qa_gen_model,
-                qa_gen_provider,
-                num_pairs=num_qa_pairs,
-                temperature=qa_gen_temperature,
-                top_p=qa_gen_top_p,
-            )
-    
+        st.warning("Please select a supported question source.")
+
     # Step 3: Configure Q/A pairs generation (only for Input Text/Upload Document)
     if qa_source_mode != "Predefined Examples":
         st.markdown('<p class="analysis-step-label">Step 3 - Configure Q/A pairs generation</p>', unsafe_allow_html=True)
@@ -1425,7 +1455,26 @@ def render_qa_based_detection(api_key, model_choice, provider):
             if provider != "Local vLLM" and not str(qa_gen_api_key or "").strip():
                 show_error_with_clear_cache("Warning: Please provide an API key for Q/A generation.", clear_id=KNOWLEDGE_CLEAR_CACHE_ID)
             else:
-                with detection_job("Q/A Pair Generation"):
+                def _run_task(
+                    report,
+                    frozen_state=freeze_task_state(),
+                    model_choice=deepcopy(model_choice),
+                    num_qa_pairs=deepcopy(num_qa_pairs),
+                    qa_gen_api_key=deepcopy(qa_gen_api_key),
+                    qa_gen_model=deepcopy(qa_gen_model),
+                    qa_gen_provider=deepcopy(qa_gen_provider),
+                    qa_gen_temperature=deepcopy(qa_gen_temperature),
+                    qa_gen_top_p=deepcopy(qa_gen_top_p),
+                    qa_source_mode=deepcopy(qa_source_mode),
+                    uploaded_document=_freeze_document_upload(uploaded_document),
+                ):
+                    st = TaskUI(frozen_state, report)
+                    st.session_state["qa_generated_qa_pairs"] = []
+                    st.session_state["qa_pairs_source"] = None
+                    st.session_state["qa_evaluation_results"] = None
+                    st.session_state["qa_sleek_results"] = None
+                    st.session_state.pop("qa_pdf_report_bytes", None)
+                    st.session_state.pop("qa_sleek_pdf_report", None)
                     from src.direct_recall.knowledge_qa import generate_qa_pairs_from_document, generate_qa_pairs_from_text
 
                     try:
@@ -1480,11 +1529,14 @@ def render_qa_based_detection(api_key, model_choice, provider):
                         if isinstance(exc, AnalysisCheckpointError):
                             raise
                         st.error(f"Q/A generation failed: {str(exc).strip() or type(exc).__name__}")
+                    return _finish_api_task(st, {key: st.session_state.get(key) for key in ('qa_generated_qa_pairs', 'qa_pairs_source', 'qa_evaluation_results', 'qa_sleek_results', 'qa_pdf_report_bytes', 'qa_sleek_pdf_report')}, qa_gen_api_key)
+                if submit_page_job('generate_qa_button', 'Q/A Pair Generation', _run_task):
+                    st.rerun()
 
         # Display Q/A pairs
         if st.session_state['qa_generated_qa_pairs']:
             section_title = " Generated Q/A Pairs"
-            caption_text = f"Generated {len(st.session_state['qa_generated_qa_pairs'])} question-answer pairs from the document."
+            caption_text = f"Generated {len(st.session_state['qa_generated_qa_pairs'])} question-answer pairs."
             
             st.markdown(f'<h4 class="section-header sm">{section_title}</h4>', unsafe_allow_html=True)
             st.caption(caption_text)
@@ -1587,7 +1639,19 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 elif not model_choice:
                     st.error("Warning: Please select a model in the sidebar before running evaluation.")
                 else:
-                    with detection_job("Knowledge Memorization Evaluation"):
+                    def _run_task(
+                        report,
+                        frozen_state=freeze_task_state(),
+                        api_key=deepcopy(api_key),
+                        enable_llm_judge=deepcopy(enable_llm_judge),
+                        eval_temperature=deepcopy(eval_temperature),
+                        eval_top_p=deepcopy(eval_top_p),
+                        model_choice=deepcopy(model_choice),
+                        num_eval_runs=deepcopy(num_eval_runs),
+                        provider=deepcopy(provider),
+                        qa_source_mode=deepcopy(qa_source_mode),
+                    ):
+                        st = TaskUI(frozen_state, report)
                         st.session_state["qa_evaluation_results"] = None
                         st.session_state.pop("qa_pdf_report_bytes", None)
                         total_qa_pairs = len(st.session_state['qa_generated_qa_pairs'])
@@ -1597,6 +1661,7 @@ def render_qa_based_detection(api_key, model_choice, provider):
                             'model': model_choice, 'provider': provider,
                             'source_mode': qa_source_mode, 'num_qa_pairs': total_qa_pairs,
                             'num_eval_runs': num_eval_runs, 'temperature': eval_temperature, 'top_p': eval_top_p,
+                            'requested_attempts': total_items,
                         }
 
                         progress_bar = st.progress(0, text="Starting evaluation...")
@@ -1632,7 +1697,9 @@ def render_qa_based_detection(api_key, model_choice, provider):
                                 llm_judge_fn=llm_judge_fn,
                             )
 
-                            progress_bar.progress(1.0, text=f"Completed {num_eval_runs} run(s) x {total_qa_pairs} Q/A pairs = {total_items} evaluations")
+                            attempted = sum(len(batch) for batch in (all_results or []))
+                            progress_bar.progress(attempted / total_items if total_items else 0,
+                                                  text=f"Processed {attempted}/{total_items} evaluations")
                             progress_bar.empty()
                         except Exception as e:
                             if isinstance(e, AnalysisCheckpointError):
@@ -1648,13 +1715,14 @@ def render_qa_based_detection(api_key, model_choice, provider):
                                 st.info(f"Make sure you have configured the API key for **{provider}** in the sidebar.")
                         else:
                             st.session_state['qa_evaluation_results'] = all_results
+                            st.session_state['qa_evaluation_metadata']['attempted_attempts'] = sum(len(batch) for batch in all_results)
 
                             qa_pairs = st.session_state.get('qa_generated_qa_pairs', [])
                             source_mode = st.session_state.get('qa_source_mode', 'Input Text')
-                            num_qa_pairs = st.session_state.get('qa_num_qa_pairs', 5)
+                            num_qa_pairs = len(qa_pairs)
                             agg_metrics = calculate_aggregate_metrics(all_results)
 
-                            pdf_bytes = _generate_report_safely(generate_open_ended_question_pdf_report,
+                            pdf_bytes = _generate_task_report_safely(st, generate_open_ended_question_pdf_report,
                                 all_results,
                                 agg_metrics,
                                 qa_pairs,
@@ -1666,6 +1734,9 @@ def render_qa_based_detection(api_key, model_choice, provider):
                                 eval_top_p
                             )
                             st.session_state['qa_pdf_report_bytes'] = pdf_bytes
+                        return _finish_api_task(st, {key: st.session_state.get(key) for key in ('qa_evaluation_results', 'qa_evaluation_metadata', 'qa_pdf_report_bytes')}, api_key)
+                    if submit_page_job('run_knowledge_eval_button', 'Knowledge Memorization Evaluation', _run_task):
+                        st.rerun()
             
             # Display results (whether just generated or retrieved from session state)
             if st.session_state['qa_evaluation_results']:
@@ -1674,6 +1745,11 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 # Calculate aggregate metrics
                 agg_metrics = calculate_aggregate_metrics(all_results)
                 failed_count = agg_metrics.get('failed_evaluations', 0)
+                coverage = st.session_state.get('qa_evaluation_metadata') or {}
+                planned = coverage.get('requested_attempts', 0)
+                attempted = coverage.get('attempted_attempts', sum(len(batch) for batch in all_results))
+                if isinstance(planned, int) and planned > attempted:
+                    st.warning(f"Evaluation stopped early: {attempted}/{planned} planned requests attempted; {planned - attempted} were not started.")
                 if failed_count:
                     st.warning(f"Partial evaluation: {agg_metrics.get('total_evaluations', 0)} successful; {failed_count} failed. Scores cover successful responses only.")
                 if not agg_metrics.get('total_evaluations', 0):
@@ -2030,55 +2106,72 @@ def render_qa_based_detection(api_key, model_choice, provider):
                 elif not model_choice:
                     st.error("Warning: Please select a model in the sidebar before running evaluation.")
                 else:
-                    st.session_state["qa_sleek_results"] = None
-                    st.session_state.pop("qa_sleek_pdf_report", None)
-                    from src.direct_recall.sleek_attack import run_sleek_qa_evaluation
-                    
-                    total_qa_pairs = len(st.session_state['qa_generated_qa_pairs'])
-                    
-                    progress_bar = st.progress(0, text=" Starting Step-by-step Leaking and Extraction evaluation...")
-                    
-                    def update_sleek_progress(current, total, pair_num, run_num, run_total):
-                        progress = current / total if total > 0 else 0
-                        progress_bar.progress(progress, text=f" Q/A Pair {pair_num}/{total_qa_pairs} | Run {run_num}/{run_total} | Overall: {current}/{total}")
-                    
-                    try:
-                        sleek_results = run_sleek_qa_evaluation(
-                            qa_pairs=st.session_state['qa_generated_qa_pairs'],
-                            api_key=api_key,
-                            model_name=model_choice,
-                            provider=provider,
-                            num_runs=sleek_num_runs,
-                            temperature=sleek_temperature,
-                            top_p=sleek_top_p,
-                            progress_callback=update_sleek_progress
-                        )
-                        
-                        progress_bar.progress(1.0, text="Done:Step-by-step Leaking and Extraction evaluation completed!")
-                        progress_bar.empty()
-                        
-                        st.session_state['qa_sleek_results'] = sleek_results
-                        
-                        # Generate and cache PDF report
-                        pdf_bytes = _generate_report_safely(generate_sleek_attack_pdf_report,
-                            sleek_results, 
-                            model_choice, 
-                            provider
-                        )
-                        st.session_state['qa_sleek_pdf_report'] = pdf_bytes
-                        
-                    except Exception as e:
-                        if isinstance(e, AnalysisCheckpointError):
-                            raise
-                        progress_bar.empty()
-                        st.error(f"Error: Evaluation failed: {str(e)}")
-                        st.session_state['qa_sleek_results'] = None
+                    def _run_task(
+                        report,
+                        frozen_state=freeze_task_state(),
+                        api_key=deepcopy(api_key),
+                        model_choice=deepcopy(model_choice),
+                        provider=deepcopy(provider),
+                        sleek_num_runs=deepcopy(sleek_num_runs),
+                        sleek_temperature=deepcopy(sleek_temperature),
+                        sleek_top_p=deepcopy(sleek_top_p),
+                    ):
+                        st = TaskUI(frozen_state, report)
+                        st.session_state["qa_sleek_results"] = None
+                        st.session_state.pop("qa_sleek_pdf_report", None)
+                        from src.direct_recall.sleek_attack import run_sleek_qa_evaluation
+
+                        total_qa_pairs = len(st.session_state['qa_generated_qa_pairs'])
+
+                        progress_bar = st.progress(0, text=" Starting Step-by-step Leaking and Extraction evaluation...")
+
+                        def update_sleek_progress(current, total, pair_num, run_num, run_total):
+                            progress = current / total if total > 0 else 0
+                            progress_bar.progress(progress, text=f" Q/A Pair {pair_num}/{total_qa_pairs} | Run {run_num}/{run_total} | Overall: {current}/{total}")
+
+                        try:
+                            sleek_results = run_sleek_qa_evaluation(
+                                qa_pairs=st.session_state['qa_generated_qa_pairs'],
+                                api_key=api_key,
+                                model_name=model_choice,
+                                provider=provider,
+                                num_runs=sleek_num_runs,
+                                temperature=sleek_temperature,
+                                top_p=sleek_top_p,
+                                progress_callback=update_sleek_progress
+                            )
+
+                            requested = sleek_results.get('requested_evaluations', total_qa_pairs * sleek_num_runs)
+                            attempted = sleek_results.get('attempted_evaluations', requested)
+                            progress_bar.progress(attempted / requested if requested else 0,
+                                                  text=f"Processed {attempted}/{requested} evaluations")
+                            progress_bar.empty()
+
+                            st.session_state['qa_sleek_results'] = sleek_results
+
+                            # Generate and cache PDF report
+                            pdf_bytes = _generate_task_report_safely(st, generate_sleek_attack_pdf_report,
+                                sleek_results,
+                                model_choice,
+                                provider
+                            )
+                            st.session_state['qa_sleek_pdf_report'] = pdf_bytes
+
+                        except Exception as e:
+                            if isinstance(e, AnalysisCheckpointError):
+                                raise
+                            progress_bar.empty()
+                            st.error(f"Error: Evaluation failed: {str(e)}")
+                            st.session_state['qa_sleek_results'] = None
+                        return _finish_api_task(st, {key: st.session_state.get(key) for key in ('qa_sleek_results', 'qa_sleek_pdf_report')}, api_key)
+                    if submit_page_job('run_sleek_eval_button', 'Step-by-step Leaking and Extraction Evaluation', _run_task):
+                        st.rerun()
             
             # Display Step-by-step Leaking and Extraction results
             if st.session_state.get('qa_sleek_results'):
                 sleek_results = st.session_state['qa_sleek_results']
-                if sleek_results.get('failed_evaluations', 0):
-                    st.warning(f"Partial evaluation: {sleek_results.get('successful_evaluations', 0)} successful; {sleek_results['failed_evaluations']} failed. Scores cover successful responses only.")
+                if sleek_results.get('failed_evaluations', 0) or sleek_results.get('unattempted_evaluations', 0):
+                    st.warning(f"Partial evaluation: {sleek_results.get('successful_evaluations', 0)} successful; {sleek_results.get('failed_evaluations', 0)} failed; {sleek_results.get('unattempted_evaluations', 0)} unattempted. Scores cover successful responses only.")
                 if sleek_results.get('successful_evaluations') == 0:
                     for pair in sleek_results.get('qa_pair_results', []):
                         for run in pair.get('runs', []):
@@ -2607,30 +2700,48 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                 "judged": 0,
             }
 
-            with detection_job("Persuasive Jailbreak Detection"):
+            def _run_task(
+                report,
+                frozen_state=freeze_task_state(),
+                api_key=deepcopy(api_key),
+                attempts=deepcopy(attempts),
+                attempts_per_prompt=deepcopy(attempts_per_prompt),
+                baseline_strategy_label=deepcopy(baseline_strategy_label),
+                generation_modes=deepcopy(generation_modes),
+                generation_mode=deepcopy(generation_mode),
+                is_custom_input=deepcopy(is_custom_input),
+                model_choice=deepcopy(model_choice),
+                original_prompt=deepcopy(original_prompt),
+                provider=deepcopy(provider),
+                reference_text=deepcopy(reference_text),
+                selected_strategies=deepcopy(selected_strategies),
+            ):
+                st = TaskUI(frozen_state, report)
+                mutation_store = {}
+                stage1_reference_map = {}
                 st.session_state.pop("persuasion_last_run_summary", None)
                 try:
                     if reference_text:
                         stage1_reference_map[original_prompt] = reference_text
-                    
+
                     # Display processing header
                     st.markdown(f"**Processing:** {textwrap.shorten(original_prompt, width=120, placeholder=chr(0x2026))}")
                     st.caption(f" {generation_mode} x {len(selected_strategies)} strategy(ies) x {attempts} attempt(s) = {len(selected_strategies) * attempts} mutations")
-                    
+
                     successful_count = 0
-                    
+
                     # ===== Generate Mutations =====
                     st.markdown("** Generating mutations**")
                     st.caption(f"Generating {generation_mode} x {len(selected_strategies)} strategy(ies) x {attempts} attempt(s) = {len(selected_strategies) * attempts} total mutations")
-                    
+
                     generation_progress = st.progress(0, text=" Starting mutation generation...")
-                    
+
                     all_evaluations = []
-                    
+
                     # Process the single generation mode
                     mode_idx = 0
                     generation_mode = generation_modes[0]  # Always one element
-                    
+
                     # Load few-shot examples if needed
                     # For Few-Shot mode, we need to trigger the few-shot template loading
                     # The get_mutation_instruction function will load the template from few-shot.json
@@ -2642,7 +2753,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         # The template expects 5 mutation examples, so we provide placeholders
                         # (the template structure in few-shot.json already contains the example format)
                         few_shot_examples = [original_prompt.strip()] * 5
-                    
+
                     # Prepare strategy list (skip baseline if no prompt)
                     allow_baseline = bool(original_prompt.strip())
                     if (baseline_strategy_label in selected_strategies) and not allow_baseline:
@@ -2651,7 +2762,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         s for s in selected_strategies
                         if s != baseline_strategy_label or allow_baseline
                     ]
-                    
+
                     # Generate mutations for each strategy individually to show progress
                     progress_placeholder = st.empty()
                     total_mutations = len(strategies_to_run) * attempts
@@ -2663,7 +2774,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         progress_text = f"** Generating mutations ({cumulative + 1}-{cumulative + attempts}/{total_mutations}): {strategy}**"
                         progress_placeholder.markdown(progress_text)
                         generation_progress.progress(strategy_idx / max(len(strategies_to_run), 1))
-                
+
                         # Special handling: baseline uses original prompt without mutation
                         if strategy == baseline_strategy_label:
                             evaluations = []
@@ -2701,7 +2812,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 top_p=0.9,
                                 dry_run=False,
                             )
-                            
+
                             # Add mode information to evaluations
                             for i, evaluation in enumerate(evaluations):
                                 if evaluation and evaluation.mutation:
@@ -2727,7 +2838,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 top_p=0.9,
                                 dry_run=False,
                             )
-                            
+
                             # Add mode information to evaluations
                             for i, evaluation in enumerate(evaluations):
                                 if evaluation and evaluation.mutation:
@@ -2738,8 +2849,10 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                         attempt=evaluation.attempt,
                                         mode=generation_mode,
                                     )
-                        
+
                         all_evaluations.extend(evaluations)
+                        if len(evaluations) < attempts:
+                            st.error(f"Strategy {strategy} returned {len(evaluations)}/{attempts} planned mutations.")
                         cumulative += attempts
                         report_analysis_progress(min(len(all_evaluations), total_mutations), total_mutations, unit="mutations", stage="mutation_generation")
                         st.session_state["persuasion_run_checkpoint"] = {
@@ -2748,48 +2861,48 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                             "evaluated": 0,
                             "judged": 0,
                         }
-                    
+
                     generation_progress.progress(1.0)
                     generation_progress.empty()
                     progress_placeholder.empty()
-                    
+
                     if not all_evaluations:
-                        show_error_with_clear_cache(
+                        st.error(
                             "Error: No mutations produced. Check your API key and model settings.",
                             clear_id=PERSUASIVE_CLEAR_CACHE_ID,
                         )
                     else:
-                        
+
                         # ===== Evaluate Mutations =====
                         st.markdown("** Evaluating mutations against reference text**")
                         st.caption("Sending each mutation to the LLM and calculating ROUGE-L with reference output...")
-                        
+
                         evaluated_mutations = []
                         progress_bar = st.progress(0, text=" Starting mutation evaluation...")
-                        
-                        total_evaluations = len(all_evaluations) * attempts_per_prompt
+
+                        total_evaluations = total_mutations * attempts_per_prompt
                         report_analysis_progress(0, total_evaluations, unit="responses", stage="mutation_evaluation")
                         eval_count = 0
                         evaluation_failures = [str(item.mutation.error or "Invalid mutation prompt") if item is not None else "Missing mutation result" for item in all_evaluations if item is None or item.mutation.error or not item.parsed or not item.parsed.mutated_text]
                         generation_failed = sum(item is None or bool(item.mutation.error) or not item.parsed or not item.parsed.mutated_text for item in all_evaluations)
                         if generation_failed:
                             st.warning(f"{generation_failed}/{len(all_evaluations)} mutations failed or returned an invalid prompt. These are excluded from evaluation.")
-                        
+
                         for eval_idx, evaluation in enumerate(all_evaluations):
                             if evaluation is None or evaluation.mutation.error:
                                 continue
-                            
+
                             parsed = evaluation.parsed
                             if not parsed or not parsed.mutated_text:
                                 continue
-                            
+
                             mutated_text = parsed.mutated_text.strip()
-                            
+
                             # Send mutated prompt to LLM multiple times to get responses
                             for prompt_attempt in range(1, attempts_per_prompt + 1):
                                 eval_count += 1
                                 progress_bar.progress(eval_count / total_evaluations, text=f" Evaluating mutation {eval_count}/{total_evaluations}")
-                                
+
                                 try:
                                     # Request logprobs for confidence analysis (OpenAI/OpenRouter only)
                                     with checkpoint_scope("persuasion_evaluate", evaluation.mutation.strategy, evaluation.attempt, prompt_attempt):
@@ -2802,7 +2915,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                             top_p=0.9,
                                             return_logprobs=True,
                                         )
-                                    
+
                                     # Handle return value based on whether logprobs were requested
                                     if isinstance(result, tuple):
                                         llm_response, logprobs_data = result
@@ -2810,13 +2923,11 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                         llm_response = result
                                         logprobs_data = None
 
-                                    if isinstance(llm_response, str) and show_api_failure_if_needed(
-                                        llm_response, clear_id=PERSUASIVE_CLEAR_CACHE_ID
-                                    ):
+                                    if isinstance(llm_response, str) and is_api_error_response(llm_response):
                                         evaluation_failures.append(llm_response)
                                         report_analysis_progress(eval_count, total_evaluations, unit="responses", stage="mutation_evaluation")
                                         continue
-                                    
+
                                     if not isinstance(llm_response, str) or not llm_response.strip():
                                         raise ValueError("The model returned an empty or invalid response.")
 
@@ -2833,7 +2944,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                             confidence_result = conf_analysis.to_dict()
                                         except Exception:
                                             confidence_result = None
-                                    
+
                                     # Calculate similarity metrics (full bundle for downstream ranking)
                                     metrics_dict = calculate_similarity_metrics(reference_text.strip(), llm_response)
                                     if not metrics_dict or any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) for value in metrics_dict.values()):
@@ -2841,7 +2952,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                     rouge_score = metrics_dict.get("rouge_l", 0.0)
                                     jaccard = metrics_dict.get("jaccard_index", 0.0)
                                     levenshtein = metrics_dict.get("levenshtein", 0.0)
-                                    
+
                                     eval_metrics = SimilarityMetrics(
                                         rouge_l=rouge_score,
                                         rouge_1=metrics_dict.get("rouge_1", 0.0),
@@ -2855,7 +2966,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                         minhash_similarity=metrics_dict.get("minhash_similarity", 0.0),
                                         levenshtein=levenshtein,
                                     )
-                                    
+
                                     updated_evaluation = MutationEvaluation(
                                         mutation=evaluation.mutation,
                                         parsed=evaluation.parsed,
@@ -2863,9 +2974,9 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                         attempt=evaluation.attempt,
                                         mode=evaluation.mode,
                                     )
-                                    
+
                                     unique_prompt_attempt = (evaluation.attempt - 1) * attempts_per_prompt + prompt_attempt
-                                    
+
                                     evaluated_mutations.append({
                                         'evaluation': updated_evaluation,
                                         'llm_response': llm_response,
@@ -2918,7 +3029,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                         "evaluated": len(evaluated_mutations),
                                         "judged": 0,
                                     }
-                                    
+
                                 except Exception as e:
                                     if isinstance(e, AnalysisCheckpointError):
                                         raise
@@ -2927,7 +3038,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                     st.warning(f"Warning: Failed to evaluate mutation {eval_idx + 1}, attempt {prompt_attempt}: {detail}")
                                     report_analysis_progress(eval_count, total_evaluations, unit="responses", stage="mutation_evaluation")
                                     continue
-                        
+
                         progress_bar.empty()
                         st.session_state["persuasion_last_run_summary"] = {
                             "model": model_choice, "provider": provider,
@@ -2937,36 +3048,36 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                         }
                         if len(evaluated_mutations) < total_evaluations:
                             st.warning(f"Partial evaluation: {len(evaluated_mutations)}/{total_evaluations} planned responses were scored. Scores cover successful responses only.")
-                        
+
                         if not evaluated_mutations:
                             st.error("Error: No mutations were successfully evaluated.")
                         else:
                             # ===== Rank & Store Results =====
                             st.markdown("** Ranking mutations by ROUGE-L score**")
-                            
+
                             # Sort by ROUGE-L score (descending)
                             evaluated_mutations.sort(
                                 key=lambda x: x["evaluation"].metrics.rouge_l if x["evaluation"].metrics else 0,
                                 reverse=True
                             )
-                            
+
                             # Idempotent store (entries may already exist from incremental eval store)
                             for eval_item in evaluated_mutations:
                                 evaluation = eval_item["evaluation"]
                                 llm_response = eval_item["llm_response"]
-                                
+
                                 # Determine config_type from the evaluation's mode
                                 config_type = "zero" if evaluation.mode == "Zero-Shot" else "few"
-                                
+
                                 record_entries = mutation_store.setdefault(original_prompt, [])
-                                
+
                                 mutation_entry = MutationWithJudge(
                                     evaluation=evaluation,
                                     judge=None,
                                     judge_passed=None,
                                 )
                                 serialised_entry = serialise_mutation_with_judge(mutation_entry)
-                                
+
                                 # Check for duplicates - now include prompt_attempt
                                 mutated_text = evaluation.parsed.mutated_text.strip()
                                 prompt_attempt = eval_item.get("prompt_attempt", 1)
@@ -2979,11 +3090,11 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                         stored_parsed = stored_eval.get("parsed") or {}
                                         stored_mutated_text = stored_parsed.get("mutated_text", "").strip()
                                         stored_prompt_attempt = stored.get("prompt_attempt", 1)
-                                        
+
                                         if stored_mutated_text == mutated_text and stored_prompt_attempt == prompt_attempt:
                                             entry_exists = True
                                             break
-                                
+
                                 if not entry_exists:
                                     record_entries.append({
                                         "config": [config_type, False],
@@ -2993,11 +3104,11 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                         "confidence_result": eval_item.get("confidence_result"),
                                     })
                                     successful_count += 1
-                            
+
                             # ===== Intention Preservation Judging =====
                             st.markdown("** Intention Preservation Judging**")
                             st.caption("Assessing whether mutated prompts preserve the original harmful intention...")
-                            
+
                             judging_progress = st.progress(0, text=" Starting intention preservation judging...")
 
                             # Only judge each unique mutated prompt once (per strategy + attempt)
@@ -3017,7 +3128,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                 evaluation = eval_item["evaluation"]
                                 mutated_text = evaluation.parsed.mutated_text.strip()
                                 strategy = evaluation.mutation.strategy
-                                
+
                                 judging_progress.progress((judge_idx + 1) / len(unique_mutation_items), text=f" Judging mutation {judge_idx + 1}/{len(unique_mutation_items)} ({strategy})...")
                                 try:
                                     with checkpoint_scope("persuasion_judge", strategy, evaluation.attempt):
@@ -3031,7 +3142,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                             top_p=0.9,
                                             dry_run=False,
                                         )
-                                    
+
                                     # Update mutation store with judging results
                                     record_entries = mutation_store.get(original_prompt, [])
                                     # Determine config_type from the evaluation's mode
@@ -3049,7 +3160,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                                 stored_attempt = int(stored_attempt_raw) if stored_attempt_raw is not None else evaluation.attempt
                                             except (TypeError, ValueError):
                                                 stored_attempt = evaluation.attempt
-                                            
+
                                             if stored_mutated_text == mutated_text and stored_attempt == evaluation.attempt:
                                                 # Update with judging results for all matching prompt attempts
                                                 judged_entry = MutationWithJudge(
@@ -3066,7 +3177,7 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                                     "secondary_error": assessment.secondary.error,
                                                 }
                                                 # Do not break; apply to all prompt attempts sharing this mutated prompt
-                                    
+
                                     # Store assessment for display
                                     eval_item["assessment"] = assessment
                                     st.session_state["persuasion_run_checkpoint"] = {
@@ -3075,31 +3186,43 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
                                         "evaluated": len(evaluated_mutations),
                                         "judged": judge_idx + 1,
                                     }
-                                    
+
                                 except Exception as e:
                                     if isinstance(e, AnalysisCheckpointError):
                                         raise
-                                    st.warning(f"Warning: Failed to judge mutation {judge_idx + 1}: {e}")
+                                    st.error(f"Failed to judge mutation {judge_idx + 1}: {e}")
                                     eval_item["assessment"] = None
-                                
+
                                 report_analysis_progress(judge_idx + 1, len(unique_mutation_items), unit="judgements", stage="intention_judging")
                                 judging_progress.progress((judge_idx + 1) / len(unique_mutation_items), text=f"Completed judging mutation {judge_idx + 1}/{len(unique_mutation_items)}")
-                            
+
                             judging_progress.empty()
-                            
+
                             st.session_state["last_prompt"] = original_prompt
                             st.session_state["results_prompt_selector"] = original_prompt
-                            
+
                             if len(evaluated_mutations) == total_evaluations:
                                 st.success(f"Done:**Generation Complete:** Evaluated {len(evaluated_mutations)} mutations (ranked by ROUGE-L)")
                 except Exception as e:
                     if isinstance(e, AnalysisCheckpointError):
                         raise
-                    show_error_with_clear_cache(
+                    st.error(
                         f"Error: Persuasive Jailbreak run failed: {e}",
                         clear_id=PERSUASIVE_CLEAR_CACHE_ID,
                     )
                     st.code(traceback.format_exc())
+                st.session_state["generated_persuasion_mutations"] = mutation_store
+                st.session_state["stage1_reference_texts"] = stage1_reference_map
+                metadata = {}
+                metadata[original_prompt] = {
+                    "model": model_choice, "provider": provider,
+                    "generation_mode": generation_mode, "attempts": attempts,
+                    "attempts_per_prompt": attempts_per_prompt,
+                }
+                st.session_state["persuasion_result_metadata"] = metadata
+                return _finish_api_task(st, {key: st.session_state.get(key) for key in ('generated_persuasion_mutations', 'stage1_reference_texts', 'persuasion_run_checkpoint', 'persuasion_last_run_summary', 'persuasion_result_metadata', 'jailbreak_pdf_report_bytes', 'jailbreak_boxplot_png_bytes', 'jailbreak_histogram_png_bytes', 'jailbreak_distribution_legend_note')}, api_key)
+            if submit_page_job('run_generation', 'Persuasive Jailbreak Detection', _run_task):
+                st.rerun()
     
     st.divider()
 
@@ -3524,17 +3647,19 @@ def render_adversarial_persuasion_page(api_key, model_choice, provider):
             pdf_strategies = list(set(row["strategy"] for row in ranked_rows))
             pdf_generation_mode = "Zero-Shot" if records and (records[0].get("config") or ["zero"])[0] == "zero" else "Few-Shot"
             
+            # Use the submitted task's metadata after sidebar/draft changes.
+            pdf_metadata = (st.session_state.get("persuasion_result_metadata") or {}).get(selected_prompt, {})
             # Generate PDF Report
-            if 'jailbreak_pdf_report_bytes' not in st.session_state:
+            if not st.session_state.get('jailbreak_pdf_report_bytes'):
                 pdf_bytes = generate_jailbreak_detection_pdf_report(
                     ranked_rows,
-                    model_choice,
+                    pdf_metadata.get("model", model_choice),
                     selected_prompt,
                     pdf_reference_text,
-                    pdf_generation_mode,
+                    pdf_metadata.get("generation_mode", pdf_generation_mode),
                     pdf_strategies,
-                    st.session_state.get('attempts', 1),
-                    st.session_state.get('attempts_per_prompt', 1),
+                    pdf_metadata.get("attempts", st.session_state.get('attempts', 1)),
+                    pdf_metadata.get("attempts_per_prompt", st.session_state.get('attempts_per_prompt', 1)),
                     distribution_plot_png=st.session_state.get('jailbreak_boxplot_png_bytes'),
                     distribution_histogram_png=st.session_state.get('jailbreak_histogram_png_bytes'),
                     distribution_legend_note=st.session_state.get('jailbreak_distribution_legend_note'),
@@ -3619,7 +3744,18 @@ def render_jailbreak_persuasion_probe_section(api_key, model_choice, provider):
         elif not model_choice:
             st.warning("Warning: Please select a model in the sidebar.")
         else:
-            with detection_job("Persuasive Probe"):
+            def _run_task(
+                report,
+                frozen_state=freeze_task_state(),
+                api_key=deepcopy(api_key),
+                ground_truth_probe=deepcopy(ground_truth_probe),
+                input_text_probe=deepcopy(input_text_probe),
+                model_choice=deepcopy(model_choice),
+                persuasion_strategy=deepcopy(persuasion_strategy),
+                provider=deepcopy(provider),
+            ):
+                st = TaskUI(frozen_state, report)
+                st.session_state.pop("persuasion_probe_results", None)
                 with st.spinner(f"Running persuasion probe with {model_choice}..."):
                     try:
                         chunk_size = len(ground_truth_probe.split())
@@ -3647,6 +3783,9 @@ def render_jailbreak_persuasion_probe_section(api_key, model_choice, provider):
                             "metrics": metrics_map,
                         }
                         st.success("Done:Probe completed. Review the overlap below.")
+                return _finish_api_task(st, {key: st.session_state.get(key) for key in ('persuasion_probe_results',)}, api_key)
+            if submit_page_job('run_probe_button', 'Persuasive Probe', _run_task):
+                st.rerun()
         finish_detection_job()
 
     saved_probe = st.session_state.get("persuasion_probe_results")
@@ -3781,27 +3920,41 @@ def render_sleek_attack_page(api_key, model_choice, provider):
             temperature = st.session_state.get('sleek_temperature', 0.7)
             top_p = st.session_state.get('sleek_top_p', 0.9)
             
-            st.session_state['sleek_evaluation_results'] = None
-            with st.spinner(" Running SLEEK Attack evaluation..."):
-                try:
-                    results = run_sleek_evaluation(
-                        document_text=document_text,
-                        api_key=api_key,
-                        model_name=model_choice,
-                        provider=provider,
-                        temperature=temperature,
-                        top_p=top_p
-                    )
-                    
-                    st.session_state['sleek_evaluation_results'] = results
-                    st.success("Done:SLEEK Attack evaluation completed!")
-                    
-                except Exception as e:
-                    if isinstance(e, AnalysisCheckpointError):
-                        raise
-                    st.error(f"Error: SLEEK Attack failed: {str(e)}")
-                    import traceback
-                    st.code(traceback.format_exc())
+            def _run_task(
+                report,
+                frozen_state=freeze_task_state(),
+                api_key=deepcopy(api_key),
+                model_choice=deepcopy(model_choice),
+                provider=deepcopy(provider),
+                document_text=deepcopy(document_text),
+                temperature=deepcopy(temperature),
+                top_p=deepcopy(top_p),
+            ):
+                st = TaskUI(frozen_state, report)
+                st.session_state['sleek_evaluation_results'] = None
+                with st.spinner(" Running SLEEK Attack evaluation..."):
+                    try:
+                        results = run_sleek_evaluation(
+                            document_text=document_text,
+                            api_key=api_key,
+                            model_name=model_choice,
+                            provider=provider,
+                            temperature=temperature,
+                            top_p=top_p
+                        )
+
+                        st.session_state['sleek_evaluation_results'] = results
+                        st.success("Done:SLEEK Attack evaluation completed!")
+
+                    except Exception as e:
+                        if isinstance(e, AnalysisCheckpointError):
+                            raise
+                        st.error(f"Error: SLEEK Attack failed: {str(e)}")
+                        import traceback
+                        st.code(traceback.format_exc())
+                return _finish_api_task(st, {key: st.session_state.get(key) for key in ('sleek_evaluation_results',)}, api_key)
+            if submit_page_job('run_sleek_button', 'SLEEK Attack', _run_task):
+                st.rerun()
     
     # Display results
     if st.session_state.get('sleek_evaluation_results'):

@@ -93,8 +93,8 @@ def is_detection_job_running() -> bool:
 
 
 def get_ui_disabled() -> bool:
-    """Return whether the active-job overlay should block interaction."""
-    return is_detection_job_running()
+    """Submitted work never disables page navigation or configuration."""
+    return False
 
 def wd(extra_disabled: bool = False) -> bool:
     """Preserve only page-specific business disabled conditions."""
@@ -102,30 +102,41 @@ def wd(extra_disabled: bool = False) -> bool:
 
 
 def install_widget_guards() -> None:
-    """Create the per-script CSS slot used to atomically lock controls."""
+    """Create a per-script slot for clearing legacy interaction guards."""
     st.session_state[JOB_STYLE_SLOT_KEY] = st.empty()
 
 def arm_detection_run(label: str, trigger_key: str) -> None:
-    """Schedule a run and lock the next script pass before any widgets render."""
+    """Schedule one run without restricting any page controls."""
+    from src.analysis_recovery_ui import discard_pending_analysis_restore
+    discard_pending_analysis_restore()
     st.session_state.pop("_fcc_rendered_run", None)
     st.session_state[f"detection_run_{trigger_key}"] = True
     st.session_state[RUN_ARMED_KEY] = trigger_key
-    start_detection_job(label)
+
 
 
 def should_execute_detection_run(trigger_key: str) -> bool:
     """Return True once for the rerun triggered by a specific Run button."""
     run_key = f"detection_run_{trigger_key}"
-    return bool(st.session_state.pop(run_key, False))
+    should_run = bool(st.session_state.pop(run_key, False))
+    if st.session_state.get(RUN_ARMED_KEY) == trigger_key:
+        st.session_state.pop(RUN_ARMED_KEY, None)
+    return should_run
+
+
+def discard_unconsumed_detection_run() -> None:
+    """Do not let a skipped Run click start work on an unrelated later rerun."""
+    trigger = st.session_state.pop(RUN_ARMED_KEY, None)
+    if isinstance(trigger, str) and trigger:
+        st.session_state.pop(f"detection_run_{trigger}", None)
 
 
 def render_run_button(label: str, trigger_key: str, button_label: str, **kwargs: Any) -> bool:
-    """Render a Run button that locks the UI and returns True when it should execute."""
+    """Render an independent submission action and consume its trigger once."""
     should_run = should_execute_detection_run(trigger_key)
     if should_run:
         from src.resumable_analysis import register_ui_run
         register_ui_run(label, trigger_key)
-        start_detection_job(label)
 
     extra_disabled = bool(kwargs.pop("disabled", False))
     kwargs.pop("type", None)
@@ -248,7 +259,7 @@ def handle_interrupted_job() -> None:
 
 
 def render_active_job_lock() -> None:
-    """Show the running banner and lock styles while a job is active."""
+    """Show legacy foreground status while leaving controls available."""
     if not is_detection_job_running():
         st.session_state.pop(JOB_UNLOCK_PENDING_KEY, None)
         _render_ui_unlock_styles()
@@ -266,13 +277,13 @@ def render_active_job_lock() -> None:
         job_label, key="force_stop_detection_job", on_stop=force_stop_detection_job,
         help=stop_help,
     )
-    st.caption("Keep this page open and leave parameters unchanged while the analysis runs.")
-    _render_ui_lock_styles()
+    st.caption("You can configure other tasks while this task runs.")
+    _render_ui_unlock_styles()
 
 
 def render_background_job_lock(label: str) -> None:
-    """Lock controls; the background status poller renders its status and Stop."""
-    _render_ui_lock_styles()
+    """Keep background tasks independent of the current page's controls."""
+    _render_ui_unlock_styles()
 
 
 def render_running_status_row(
@@ -348,59 +359,8 @@ def _render_guard_styles(css: str) -> None:
 
 
 def _render_ui_lock_styles() -> None:
-    _render_guard_styles(
-        """
-        <style>
-        :is(
-            [data-testid="stMain"],
-            .stMain,
-            section.main,
-            section[data-testid="stSidebar"]
-        ) :is(
-            button,
-            a,
-            summary,
-            iframe,
-            [role="button"],
-            [role="tab"],
-            [role="combobox"],
-            [role="slider"],
-            [contenteditable="true"],
-            [data-testid="stSlider"],
-            [data-testid="stNumberInput"],
-            [data-testid="stTextArea"],
-            [data-testid="stTextInput"],
-            [data-testid="stSelectbox"],
-            [data-testid="stRadio"],
-            [data-testid="stCheckbox"],
-            [data-testid="stToggle"],
-            [data-testid="stFileUploader"],
-            [data-testid="stMultiSelect"],
-            [data-testid="stDateInput"],
-            [data-testid="stTimeInput"],
-            [data-testid="stColorPicker"],
-            [data-testid="stDataEditor"],
-            [data-testid="stDataFrame"]
-        ) {
-            pointer-events: none !important;
-            opacity: 0.68 !important;
-            filter: saturate(0.72) !important;
-            cursor: not-allowed !important;
-        }
-        :is(
-            [data-testid="stMain"], .stMain, section.main,
-            section[data-testid="stSidebar"]
-        ) [class*="st-key-force_stop_controls_"] button,
-        .st-key-history_confirm_body button,
-        [data-testid="stDialog"] button[aria-label="Close"] {
-            pointer-events: auto !important;
-            opacity: 1 !important;
-            filter: none !important;
-            cursor: pointer !important;
-        }
-        </style>
-        """
-    )
+    # Kept for older callers; submitted tasks never lock page controls.
+    _render_ui_unlock_styles()
 
 
 def _render_ui_unlock_styles() -> None:

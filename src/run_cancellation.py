@@ -114,12 +114,14 @@ def cancellable_call(invoke: Callable, *args, **kwargs):
             if closed_response:
                 return
             closed_response = True
-        close = getattr(value, "close", None)
-        if callable(close):
-            try:
+        # Disposal is best-effort: even an invalid response adapter's
+        # attribute lookup or BaseException must not strand the result Future.
+        try:
+            close = getattr(value, "close", None)
+            if callable(close):
                 close()
-            except Exception:
-                pass
+        except BaseException:
+            pass
 
     token._begin_call()
     try:
@@ -137,6 +139,8 @@ def cancellable_call(invoke: Callable, *args, **kwargs):
 
         def execute():
             binding = None
+            value = None
+            failure = None
             try:
                 binding = _IN_CALL.set(True)
                 token.check()
@@ -145,19 +149,28 @@ def cancellable_call(invoke: Callable, *args, **kwargs):
                     close_discarded_response(value)
                     token.check()
             except BaseException as exc:
-                result.set_exception(exc)
-            else:
-                result.set_result(value)
+                failure = exc
             finally:
                 try:
-                    if binding is not None:
-                        _IN_CALL.reset(binding)
-                finally:
                     try:
-                        if release_slot is not None:
-                            release_slot()
+                        if binding is not None:
+                            _IN_CALL.reset(binding)
                     finally:
-                        token._end_call()
+                        try:
+                            if release_slot is not None:
+                                release_slot()
+                        finally:
+                            token._end_call()
+                except BaseException as exc:
+                    if failure is None:
+                        failure = exc
+                    close_discarded_response(value)
+            # Publishing wakes the coordinator. Its checkpoint finalization
+            # must observe an idle request and a released API permit.
+            if failure is not None:
+                result.set_exception(failure)
+            else:
+                result.set_result(value)
 
         Thread(target=lambda: context.run(execute), daemon=True, name="analysis-api-request").start()
     except BaseException:

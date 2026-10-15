@@ -519,9 +519,16 @@ def get_llm_completion(
         message = "Error: Enter an ASU model ID or select a model from the catalog before starting analysis."
         return (message, None) if return_logprobs else message
     resolved_model = model_name or DEFAULT_MODELS.get(provider)
+    invoke_base_url = base_url
+    if provider == "Local vLLM" and base_url is None:
+        from src.api_task_context import current_api_task_settings
+        task_settings = current_api_task_settings()
+        if task_settings is not None:
+            invoke_base_url = task_settings["base_url"]
+            api_key = api_key or task_settings.get("api_key", "")
     if provider == ASU_PROVIDER:
         # Record the actual endpoint so resumes cannot drift to another service.
-        base_url = ASU_BASE_URL
+        base_url = invoke_base_url = ASU_BASE_URL
     payload = {
         "prompt": prompt, "provider": provider, "model_name": resolved_model,
         "temperature": temperature, "top_p": top_p, "base_url": base_url,
@@ -532,7 +539,7 @@ def get_llm_completion(
     return checkpoint_call(
         "llm.completion", payload,
         lambda: _get_llm_completion_uncheckpointed(
-            prompt, api_key, resolved_model, provider, temperature, top_p, base_url,
+            prompt, api_key, resolved_model, provider, temperature, top_p, invoke_base_url,
             progress_message=progress_message, max_output_tokens=max_output_tokens,
             stop_sequences=stop_sequences, return_logprobs=return_logprobs,
             request_timeout=request_timeout, request_max_retries=request_max_retries,

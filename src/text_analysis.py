@@ -68,13 +68,18 @@ def run_text_inferences(inference_runs, analyze_run, on_success):
     if type(inference_runs) is not int or not 1 <= inference_runs <= 1000:
         raise TextAnalysisError("Number of inference runs must be an integer from 1 to 1000.")
     from src.resumable_analysis import report_analysis_progress
+    from src.run_cancellation import check_cancellation
     report_analysis_progress(0, inference_runs, unit="runs", stage="text_inference")
     for index in range(inference_runs):
+        check_cancellation()
         try:
             generated, metrics, logprobs = unpack_text_result(analyze_run(index))
         except Exception as exc:
             message = str(exc) or type(exc).__name__
             raise TextAnalysisError(f"Run {index + 1}/{inference_runs} failed: {message}") from exc
+        # A stop may arrive while the provider returns; do not publish the
+        # discarded response into a task that has already been cancelled.
+        check_cancellation()
         on_success(index, generated, metrics, logprobs)
         report_analysis_progress(index + 1, inference_runs, unit="runs", stage="text_inference")
 

@@ -6,6 +6,7 @@ text snippets for potential copyright infringement.
 """
 
 import textwrap
+from copy import deepcopy
 from typing import Dict, List, Optional
 
 import matplotlib.pyplot as plt
@@ -29,11 +30,13 @@ from src.pdf_preview import (
     build_text_memorization_plots,
 )
 from src.prompt_utils import get_full_prompt
-from src.resumable_analysis import AnalysisCheckpointError, checkpoint_scope, report_analysis_progress
+from src.resumable_analysis import AnalysisCheckpointError, checkpoint_scope
 from src.common.metrics.logger import is_api_error_response
-from src.job_guard import detection_job, finish_detection_job, render_run_button, reset_detection_job, wd
+from src.job_guard import finish_detection_job, render_run_button
+from src.page_jobs import PageJobResult, TaskUI, freeze_task_state, submit_page_job, detach_page_jobs
 from src.floating_clear_cache import (
     build_reset_and_rerun_handler,
+    register_clear_cache_handler,
     set_active_clear_cache_id,
     show_error_with_clear_cache,
 )
@@ -107,6 +110,7 @@ def _run_blackbox_analysis_auto(
     generated_text: str,
     provider: str,
     logprobs_data: Optional[List[Dict]] = None,
+    *, state=None,
 ) -> None:
     """Run black-box memorization analysis using pre-existing logprobs data.
     
@@ -118,6 +122,9 @@ def _run_blackbox_analysis_auto(
         provider: The LLM provider used.
         logprobs_data: Pre-existing logprobs data from the main analysis.
     """
+    if state is None:
+        state = st.session_state
+
     # Run Confidence Anomaly Detection using pre-existing logprobs (only for OpenAI/OpenRouter)
     if provider in ("OpenAI", "OpenRouter"):
         if logprobs_data:
@@ -128,19 +135,19 @@ def _run_blackbox_analysis_auto(
                     confidence_threshold=0.85,
                     min_spike_length=3,
                 )
-                st.session_state['confidence_analysis_result'] = confidence_result.to_dict()
+                state['confidence_analysis_result'] = confidence_result.to_dict()
             except Exception as e:
-                st.session_state['confidence_analysis_result'] = {
+                state['confidence_analysis_result'] = {
                     'analysis_available': False,
                     'error_message': f"Confidence analysis failed: {str(e)}"
                 }
         else:
-            st.session_state['confidence_analysis_result'] = {
+            state['confidence_analysis_result'] = {
                 'analysis_available': False,
                 'error_message': "No logprobs data available. The model may not support logprobs or the API did not return them."
             }
     else:
-        st.session_state['confidence_analysis_result'] = {
+        state['confidence_analysis_result'] = {
             'analysis_available': False,
             'error_message': f"Confidence analysis requires logprobs, which are not available for {provider}. This feature works with OpenAI and OpenRouter providers."
         }
@@ -167,13 +174,6 @@ DON_QUIJOTE_GROUND_TRUTH = (
 )
 
 
-def _rerun_after_api_failure(message: str) -> None:
-    """Unlock controls immediately and preserve the API error across the rerun."""
-    display = message if message.startswith("❌") else f"❌ {message}"
-    st.session_state[TEXT_API_FAILURE_KEY] = display
-    finish_detection_job(show_clear_cache=False)
-    st.rerun()
-
 def _show_text_report_failure(message: str) -> None:
     st.warning(f"The analysis results are saved, but the PDF report could not be generated: {message}")
     if st.button('Retry PDF report', key='text_retry_pdf_report'):
@@ -181,9 +181,27 @@ def _show_text_report_failure(message: str) -> None:
         _trigger_rerun()
 
 
-def _save_text_report_narrative(results_data, api_key, prompt_type, model_choice, provider):
+def _text_result_outputs(results_data):
+    """Keep every report and its confidence evidence bound to the same result."""
+    return {
+        'text_analysis_results': results_data,
+        'confidence_analysis_result': deepcopy(results_data.get('confidence_analysis_result')),
+        'text_pdf_report': None,
+        'text_pdf_report_fingerprint': None,
+        'text_pdf_report_error': None,
+    }
+
+
+def _save_text_report_narrative(results_data, api_key, prompt_type, model_choice, provider, *, state=None):
     """Generate narrative only inside the registered run that owns its calls."""
+    if state is None:
+        state = st.session_state
     captured = results_data.get('user_inputs') or {}
+    report_provider = captured.get('provider') or provider
+    if report_provider != provider:
+        raise TextAnalysisError(
+            f"Select {report_provider} in the sidebar before generating AI report analysis for these results."
+        )
     with checkpoint_scope("text_report_narrative"):
         narrative = generate_llm_analysis(
             results_data, captured.get('prompt_type', prompt_type),
@@ -196,9 +214,10 @@ def _save_text_report_narrative(results_data, api_key, prompt_type, model_choice
             or narrative == "LLM analysis could not be generated."):
         raise TextAnalysisError(str(narrative or "The model returned no report narrative."))
     results_data['report_narrative'] = narrative
-    st.session_state.pop('text_pdf_report', None)
-    st.session_state.pop('text_pdf_report_fingerprint', None)
-    st.session_state.pop('text_pdf_report_error', None)
+    results_data.pop('report_narrative_error', None)
+    state.pop('text_pdf_report', None)
+    state.pop('text_pdf_report_fingerprint', None)
+    state.pop('text_pdf_report_error', None)
 
 
 def render_text_analysis_page(api_key, model_choice, provider, *, show_page_header: bool = True):
@@ -248,9 +267,15 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
         key for key in st.session_state
         if key.startswith(("text_input_", "text_custom_", "text_example_input_", "text_literal_"))
     ]
-    clear_text_cache = build_reset_and_rerun_handler(
+    reset_text_cache = build_reset_and_rerun_handler(
         TEXT_CLEAR_CACHE_ID, clear_text_keys, rerun=_trigger_rerun,
     )
+
+    def clear_text_cache():
+        detach_page_jobs()
+        reset_text_cache()
+
+    register_clear_cache_handler(TEXT_CLEAR_CACHE_ID, clear_text_cache)
 
     if show_page_header:
         header_col, button_col = st.columns([4, 1])
@@ -900,14 +925,17 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 finish_detection_job()
                 return
 
-            with detection_job("Text Memorization Detection"):
+            frozen_state = freeze_task_state()
+
+            def execute_text(report):
+                st = TaskUI(frozen_state, report)
                 generated_texts = []
                 similarity_scores = []
                 first_run_logprobs = None
                 captured_inputs = {
                     'input_text': text1,
                     'ground_truth': text2,
-                    'input_method': input_method if 'input_method' in locals() else 'Custom Input',
+                    'input_method': st.session_state.get('text_input_method', 'Custom Input'),
                     'inference_runs': inference_runs,
                     'temperature': temperature,
                     'top_p': top_p,
@@ -983,7 +1011,7 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                 try:
                     with st.spinner(f"🔄 Generating text with {model_choice} and calculating scores..."):
                         run_text_inferences(inference_runs, analyze_run, save_success)
-                except TextAnalysisError as exc:
+                except (TextAnalysisError, AnalysisCheckpointError) as exc:
                     message = str(exc)
                     if api_key:
                         message = message.replace(str(api_key), '[redacted]')
@@ -992,27 +1020,45 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
                         message += f" Completed {len(generated_texts)}/{inference_runs} runs remain available below."
                     elif st.session_state.get('text_analysis_results'):
                         message += " The previous analysis results remain available below."
-                    _rerun_after_api_failure(message)
+                    st.session_state[TEXT_API_FAILURE_KEY] = message
+                    if not generated_texts:
+                        raise TextAnalysisError(message)
+                    _run_blackbox_analysis_auto(
+                        generated_text=generated_texts[0], provider=provider,
+                        logprobs_data=first_run_logprobs, state=st.session_state,
+                    )
+                    partial = st.session_state['text_analysis_results']
+                    partial['confidence_analysis_result'] = deepcopy(st.session_state.get('confidence_analysis_result'))
+                    outputs = _text_result_outputs(partial)
+                    outputs[TEXT_API_FAILURE_KEY] = message
+                    return PageJobResult(outputs, complete=False, error=message)
                 if generated_texts:
                     _run_blackbox_analysis_auto(
                         generated_text=generated_texts[0], provider=provider,
-                        logprobs_data=first_run_logprobs,
+                        logprobs_data=first_run_logprobs, state=st.session_state,
                     )
+                completed_results = st.session_state['text_analysis_results']
+                completed_results['confidence_analysis_result'] = deepcopy(st.session_state.get('confidence_analysis_result'))
+                report_error = None
                 if len(generated_texts) == inference_runs and api_key and provider:
                     try:
                         _save_text_report_narrative(
                             st.session_state['text_analysis_results'], api_key,
-                            prompt_type, model_choice, provider,
+                            prompt_type, model_choice, provider, state=st.session_state,
                         )
-                    except AnalysisCheckpointError:
-                        raise
                     except Exception as exc:
                         message = str(exc) or type(exc).__name__
                         if api_key:
                             message = message.replace(str(api_key), '[redacted]')
-                        st.warning(f"The analysis results are saved, but AI report analysis failed: {message}")
+                        report_error = f"The inference results are saved, but AI report analysis failed: {message}"
+                        completed_results['report_narrative_error'] = report_error
                 if progress_bar is not None:
                     progress_bar.progress(1.0, text="✅ All runs completed!")
+                return PageJobResult(_text_result_outputs(completed_results),
+                                     complete=report_error is None, error=report_error)
+
+            submit_page_job("run_snippet_analysis_button", "Text Memorization Detection", execute_text)
+            st.rerun()
         else:
             finish_detection_job()
 
@@ -1193,22 +1239,29 @@ def render_text_analysis_page(api_key, model_choice, provider, *, show_page_head
             if render_run_button(
                 "Text Report Analysis", "text_generate_report_narrative", "Generate AI report analysis",
             ):
-                if provider != "Local vLLM" and not str(api_key or '').strip():
+                report_provider = (results_data.get('user_inputs') or {}).get('provider', provider)
+                if report_provider != provider:
+                    st.warning(f"Select {report_provider} in the sidebar before generating AI report analysis for these results.")
+                    finish_detection_job()
+                elif provider != "Local vLLM" and not str(api_key or '').strip():
                     st.warning("Enter your API key before generating AI report analysis.")
                     finish_detection_job()
                 else:
-                    with detection_job("Text Report Analysis"):
-                        try:
-                            report_analysis_progress(0, 1, unit="reports", stage="text_report")
-                            _save_text_report_narrative(results_data, api_key, prompt_type, model_choice, provider)
-                            report_analysis_progress(1, 1, unit="reports", stage="text_report")
-                        except AnalysisCheckpointError:
-                            raise
-                        except Exception as exc:
-                            message = str(exc) or type(exc).__name__
-                            if api_key:
-                                message = message.replace(str(api_key), '[redacted]')
-                            st.warning(f"AI report analysis failed: {message}")
+                    captured_results = deepcopy(results_data)
+                    frozen_state = freeze_task_state()
+
+                    def execute_report(report):
+                        state = dict(frozen_state)
+                        report(0, 1, "Generating AI report analysis")
+                        _save_text_report_narrative(
+                            captured_results, api_key, prompt_type, model_choice, provider,
+                            state=state,
+                        )
+                        report(1, 1, "AI report analysis completed")
+                        return _text_result_outputs(captured_results)
+
+                    submit_page_job("text_generate_report_narrative", "Text Report Analysis", execute_report)
+                    st.rerun()
 
         report_fingerprint = text_report_fingerprint(results_data)
         if st.session_state.get('text_pdf_report_fingerprint') != report_fingerprint:

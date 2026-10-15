@@ -7,6 +7,7 @@ This module provides the UI for single-choice question-based knowledge memorizat
 import hashlib
 import json
 import textwrap
+from copy import deepcopy
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict
@@ -17,7 +18,6 @@ from src.widget_defaults import widget_defaults
 
 from src.pages.sampling_controls import render_temperature_top_p
 from src.direct_recall import (
-    generate_single_choice_questions_from_document_fragments,
     generate_single_choice_questions_from_fragments,
     parse_question_indices,
     run_single_choice_evaluation,
@@ -28,7 +28,8 @@ from src.pdf_preview import (
     generate_single_choice_question_pdf_report,
     render_pdf_preview_with_blob,
 )
-from src.job_guard import detection_job, render_run_button, wd
+from src.job_guard import render_run_button
+from src.page_jobs import TaskUI, freeze_task_state, submit_page_job
 from src.analysis_checkpoints import AnalysisCheckpointError
 from src.upload_cache import resolve_uploaded_file
 from src.direct_recall.pdf_utils import extract_text_from_document
@@ -50,9 +51,29 @@ def _sync_source_identity(identity):
         st.session_state["sc_evaluation_results"] = None
         st.session_state["sc_document_text"] = ""
         st.session_state.pop("sc_evaluation_metadata", None)
+        st.session_state.pop("sc_generation_metadata", None)
         for key in ("sc_upload_source_text", "sc_upload_source_name", "sc_upload_source_identity"):
             st.session_state.pop(key, None)
     st.session_state["sc_source_identity"] = identity
+
+
+def _single_choice_result_context(results, metadata):
+    """Read only the evaluated questions, including reports saved before snapshots."""
+    metadata = metadata if isinstance(metadata, dict) else {}
+    questions = metadata.get('generated_mcqs')
+    if not isinstance(questions, list) or not questions:
+        questions = []
+        for run in results or []:
+            if not isinstance(run, (list, tuple)):
+                continue
+            questions = [
+                {key: deepcopy(item.get(key)) for key in ('question', 'options', 'correct_option', 'explanation')}
+                for item in run if isinstance(item, dict) and isinstance(item.get('question'), str)
+                and isinstance(item.get('options'), list)
+            ]
+            if questions:
+                break
+    return deepcopy(questions), str(metadata.get('document_text') or '')
 
 
 def render_single_choice_detection_page(api_key, model_choice, provider):
@@ -261,6 +282,8 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
                 
                 generated_mcqs = load_predefined_examples(selected_dataset, indices_to_load)
                 if generated_mcqs:
+                    st.session_state.pop('sc_generation_metadata', None)
+                    st.session_state.pop('sc_evaluation_metadata', None)
                     st.session_state['sc_generated_mcqs'] = generated_mcqs
                     st.session_state['sc_document_text'] = f"Predefined dataset: {selected_dataset}"
                     if indices_to_load:
@@ -341,7 +364,18 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
         if not effective_api_key and generation_provider != "Local vLLM":
             st.error("⚠️ Please provide an API key for question generation.")
         else:
-            with detection_job("Single-Choice Question Generation"):
+            frozen_state = freeze_task_state()
+            # Consume uploaded content before the browser can replace its file.
+            source_text = (
+                st.session_state.get("sc_input_text", "").strip()
+                if source_mode == "Input Text"
+                else st.session_state.get("sc_upload_source_text", "")
+            )
+
+            def execute_generation(report):
+                st = TaskUI(frozen_state, report)
+                st.session_state['sc_generated_mcqs'] = []
+                st.session_state['sc_document_text'] = ''
                 num_questions = st.session_state['sc_num_questions']
                 num_distractors = st.session_state['sc_num_distractors']
                 progress_bar = st.progress(0, text=f"🔄 Starting question generation with target model ({model_choice})...")
@@ -354,56 +388,17 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
                     )
 
                 try:
-                    if source_mode == "Input Text":
-                        input_text = st.session_state.get("sc_input_text", "").strip()
-                        if not input_text:
-                            st.warning("⚠️ Please enter some text first.")
-                            generated_mcqs, document_text = [], ""
-                        else:
-                            document_text = input_text
-                            generated_mcqs = generate_single_choice_questions_from_fragments(
-                                document_text,
-                                effective_api_key,
-                                generation_model,
-                                generation_provider,
-                                num_questions=st.session_state['sc_num_questions'],
-                                num_distractors=st.session_state['sc_num_distractors'],
-                                temperature=st.session_state['sc_gen_temperature'],
-                                top_p=st.session_state['sc_gen_top_p'],
-                                progress_callback=update_generation_progress,
-                            )
-                    elif source_mode == "Upload Document":
-                        saved_upload_text = st.session_state.get("sc_upload_source_text", "")
-                        if not uploaded_document and not saved_upload_text:
-                            st.warning("⚠️ Upload a PDF/TXT document first.")
-                            generated_mcqs, document_text = [], ""
-                        elif uploaded_document is None:
-                            document_text = saved_upload_text
-                            generated_mcqs = generate_single_choice_questions_from_fragments(
-                                document_text,
-                                effective_api_key,
-                                generation_model,
-                                generation_provider,
-                                num_questions=st.session_state['sc_num_questions'],
-                                num_distractors=st.session_state['sc_num_distractors'],
-                                temperature=st.session_state['sc_gen_temperature'],
-                                top_p=st.session_state['sc_gen_top_p'],
-                                progress_callback=update_generation_progress,
-                            )
-                        else:
-                            generated_mcqs, document_text = generate_single_choice_questions_from_document_fragments(
-                                uploaded_document,
-                                effective_api_key,
-                                generation_model,
-                                generation_provider,
-                                num_questions=st.session_state['sc_num_questions'],
-                                num_distractors=st.session_state['sc_num_distractors'],
-                                temperature=st.session_state['sc_gen_temperature'],
-                                top_p=st.session_state['sc_gen_top_p'],
-                                progress_callback=update_generation_progress,
-                            )
-                    else:
-                        generated_mcqs, document_text = [], ""
+                    document_text = source_text
+                    if not document_text.strip():
+                        raise ValueError("Provide source text or upload a PDF/TXT document before generating questions.")
+                    generated_mcqs = generate_single_choice_questions_from_fragments(
+                        document_text, effective_api_key, generation_model, generation_provider,
+                        num_questions=st.session_state['sc_num_questions'],
+                        num_distractors=st.session_state['sc_num_distractors'],
+                        temperature=st.session_state['sc_gen_temperature'],
+                        top_p=st.session_state['sc_gen_top_p'],
+                        progress_callback=update_generation_progress,
+                    )
 
                     progress_bar.empty()
 
@@ -419,18 +414,39 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
                     progress_bar.empty()
                     if isinstance(exc, AnalysisCheckpointError):
                         raise
-                    st.error(f"❌ Generation failed: {exc}")
+                    message = str(exc)
+                    if effective_api_key:
+                        message = message.replace(str(effective_api_key), '[redacted]')
+                    st.error(f"Generation failed: {message}")
+
+                return st.result({
+                    'sc_generated_mcqs': st.session_state.get('sc_generated_mcqs', []),
+                    'sc_document_text': st.session_state.get('sc_document_text', ''),
+                    'sc_evaluation_results': None,
+                    'sc_evaluation_metadata': None,
+                    'sc_generation_metadata': {
+                        'model': generation_model, 'provider': generation_provider,
+                        'source_mode': source_mode,
+                    },
+                })
+
+            submit_page_job("sc_generate_mcq_button", "Single-Choice Question Generation", execute_generation)
+            st.rerun()
 
     # Handle predefined examples - load them directly
     if source_mode == "Predefined Examples":
         pass  # Loading is now handled by the load button above
 
     if st.session_state['sc_generated_mcqs']:
-        section_title = "🧩 Generated Single-choice Questions" if source_mode in ["Input Text", "Upload Document"] else "📚 Predefined Single-choice Questions"
+        generated_mode = (st.session_state.get('sc_generation_metadata') or {}).get('source_mode', source_mode)
+        section_title = "🧩 Generated Single-choice Questions" if generated_mode in ["Input Text", "Upload Document"] else "📚 Predefined Single-choice Questions"
         st.markdown(f'<h4 class="section-header sm">{section_title}</h4>', unsafe_allow_html=True)
+        generation_metadata = st.session_state.get('sc_generation_metadata') or {}
+        if generation_metadata:
+            st.caption(f"Submitted source: {generated_mode} | {generation_metadata.get('provider', '')} | {generation_metadata.get('model', '')}")
         for idx, mcq in enumerate(st.session_state['sc_generated_mcqs'], start=1):
             question_title = mcq['question']
-            if source_mode == "Predefined Examples":
+            if generated_mode == "Predefined Examples":
                 # For predefined examples, show more descriptive title
                 question_title = f"Question {idx} ({mcq['question']})"
             
@@ -439,14 +455,14 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
                 for option in mcq['options']:
                     badge = "✅" if option['label'] == mcq['correct_option'] else ""
                     st.write(f"{option['label']}. {option['text']} {badge}")
-                if source_mode == "Predefined Examples":
+                if generated_mode == "Predefined Examples":
                     st.caption(
                         f"Correct option after shuffle: {mcq.get('correct_option')} "
                         f"(raw DE-COP CSV answer was {mcq.get('original_correct_option', 'A')})"
                     )
                 if mcq.get('explanation'):
                     st.caption(f"Rationale: {mcq['explanation']}")
-                if source_mode == "Predefined Examples" and mcq.get("original_id"):
+                if generated_mode == "Predefined Examples" and mcq.get("original_id"):
                     st.caption(f"Original ID: {mcq['original_id']}")
 
     # Step 4: Evaluate with target model
@@ -493,7 +509,10 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
         elif not model_choice:
             st.error("⚠️ Select a target model in the sidebar before running evaluation.")
         else:
-            with detection_job("Single-Choice Evaluation"):
+            frozen_state = freeze_task_state()
+
+            def execute_evaluation(report):
+                st = TaskUI(frozen_state, report)
                 st.session_state['sc_evaluation_results'] = None
                 st.session_state.pop("sc_evaluation_metadata", None)
                 total_questions = len(st.session_state['sc_generated_mcqs'])
@@ -523,25 +542,62 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
                         st.error("❌ Evaluation returned no results. Please try again.")
                     else:
                         st.session_state['sc_evaluation_results'] = results
+                        sampling_records = []
+                        for batch in results:
+                            for row in batch:
+                                parameters = row.get('generation_parameters')
+                                if isinstance(parameters, dict):
+                                    record = {'parameters': deepcopy(parameters),
+                                              'observed': bool(row.get('generation_parameters_observed'))}
+                                    if record not in sampling_records:
+                                        sampling_records.append(record)
                         st.session_state["sc_evaluation_metadata"] = {
-                            "model": model_choice, "provider": provider, "source_mode": source_mode,
+                            "model": model_choice, "provider": provider,
+                            "source_mode": (st.session_state.get("sc_generation_metadata") or {}).get("source_mode", source_mode),
+                            "generated_mcqs": deepcopy(st.session_state['sc_generated_mcqs']),
+                            "document_text": st.session_state.get('sc_document_text', ''),
+                            "requested_sampling": {'temperature': st.session_state['sc_eval_temperature'],
+                                                   'top_p': st.session_state['sc_eval_top_p']},
+                            "sampling_records": sampling_records,
+                            "requested_attempts": total_items,
+                            "attempted_attempts": sum(len(batch) for batch in results),
                         }
                         summary = summarize_single_choice_results(results)
                         failed = summary.get("failed_attempts", 0)
                         if failed:
-                            st.warning(f"Completed {summary.get('successful_attempts', 0)} evaluations; {failed} attempts failed and have no score.")
+                            st.error(f"Completed {summary.get('successful_attempts', 0)} evaluations; {failed} attempts failed and have no score.")
                         else:
                             st.success(f"✅ Completed {total_items} single-choice evaluations.")
                 except Exception as exc:  # noqa: BLE001
                     progress_bar.empty()
                     if isinstance(exc, AnalysisCheckpointError):
                         raise
-                    st.error(f"❌ Evaluation failed: {exc}")
+                    message = str(exc)
+                    if api_key:
+                        message = message.replace(str(api_key), '[redacted]')
+                    st.error(f"Evaluation failed: {message}")
+
+                return st.result({
+                    'sc_evaluation_results': st.session_state.get('sc_evaluation_results'),
+                    'sc_evaluation_metadata': st.session_state.get('sc_evaluation_metadata'),
+                })
+
+            submit_page_job("sc_run_eval_button", "Single-Choice Evaluation", execute_evaluation)
+            st.rerun()
+
+    evaluated_metadata = st.session_state.get('sc_evaluation_metadata') or {}
+    evaluated_questions, evaluated_document = _single_choice_result_context(
+        st.session_state.get('sc_evaluation_results'), evaluated_metadata,
+    )
 
     if st.session_state['sc_evaluation_results']:
         results = st.session_state['sc_evaluation_results']
         metrics = summarize_single_choice_results(results)
         if metrics:
+            requested = evaluated_metadata.get('requested_attempts')
+            attempted = evaluated_metadata.get('attempted_attempts')
+            if type(requested) is int and type(attempted) is int and attempted < requested:
+                st.warning(f"The provider rejected this run after {attempted}/{requested} planned evaluations. Remaining requests were not sent. Review the failed response before resuming.")
             st.markdown('<h4 class="section-header sm">📊 Evaluation summary</h4>', unsafe_allow_html=True)
             accuracy = metrics.get('overall_accuracy', 0)
             avg_conf = metrics.get('avg_correct_confidence')
@@ -604,7 +660,7 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
                     st.dataframe(per_question_df, hide_index=True, width='stretch')
 
         st.markdown('<h3 class="section-header sm">📝 Detailed responses</h3>', unsafe_allow_html=True)
-        for question_idx, mcq in enumerate(st.session_state['sc_generated_mcqs'], start=1):
+        for question_idx, mcq in enumerate(evaluated_questions, start=1):
             with st.expander(f"Question {question_idx}: {textwrap.shorten(mcq['question'], width=80, placeholder='…')}"):
                 st.markdown(f"**Question:** {mcq['question']}")
                 for option in mcq['options']:
@@ -636,9 +692,9 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
                             prob_line = ", ".join(ordered + leftovers)
                             st.caption(f"Option probabilities » {prob_line}")
 
-                if st.session_state['sc_document_text']:
+                if evaluated_document:
                     with st.expander("📄 Source excerpt", expanded=False):
-                        st.write(st.session_state['sc_document_text'][:5000])
+                        st.write(evaluated_document[:5000])
 
         # Display memorization risk assessment at the end (outside the loop)
         if accuracy is None:
@@ -663,8 +719,11 @@ def render_single_choice_detection_page(api_key, model_choice, provider):
         pdf_data = {
             'results': results,
             'metrics': metrics,
-            'generated_mcqs': st.session_state.get('sc_generated_mcqs', []),
-            'document_text': st.session_state.get('sc_document_text', '')
+            'generated_mcqs': evaluated_questions,
+            'document_text': evaluated_document,
+            'analysis_progress': {key: evaluated_metadata.get(key) for key in ('requested_attempts', 'attempted_attempts')},
+            'requested_sampling': evaluated_metadata.get('requested_sampling'),
+            'sampling_records': evaluated_metadata.get('sampling_records'),
         }
 
         # Generate PDF report

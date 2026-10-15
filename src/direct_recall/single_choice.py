@@ -671,8 +671,8 @@ def _try_openai_style_completion(
         "model": model_choice,
         "prompt": prompt,
         "max_tokens": 1,
-        "temperature": 0,
-        "top_p": 1,
+        "temperature": temperature,
+        "top_p": top_p,
         "logprobs": 4,
         "stop": ["\n"],
     }
@@ -738,6 +738,8 @@ def _try_openai_style_completion(
         "option_probabilities": probabilities,
         "raw_response": token_text,
         "logit_mode": "logprobs" if probabilities else "text",
+        "generation_parameters": {key: request_kwargs.get(key) for key in ('temperature', 'top_p')},
+        "generation_parameters_observed": True,
     }
 
 
@@ -745,16 +747,23 @@ def _try_anthropic_style_completion(
     prompt: str,
     api_key: str,
     model_choice: str,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
 ) -> Optional[Dict[str, Any]]:
     unsupported = anthropic_short_answer_error(model_choice)
     if unsupported:
         return _sc_error_result(unsupported)
+    sent_parameters = {}
+    def observe_request(request):
+        extra_body = request.get('extra_body') or {}
+        sent_parameters.update({key: request.get(key, extra_body.get(key)) for key in ('temperature', 'top_p')})
     try:
         with limit_api_concurrency(timeout=120), Anthropic(api_key=api_key, timeout=120, max_retries=0) as client:
             response = create_anthropic_message(client, {
                 "model": model_choice, "max_tokens": 1,
-                "messages": [{"role": "user", "content": prompt}], "temperature": 0,
-            })
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": temperature, "top_p": top_p,
+            }, on_request=observe_request)
     except Exception as exc:
         # Basic fallback uses the same Messages endpoint, so another request
         # cannot add a missing capability or restore a retired model.
@@ -770,6 +779,8 @@ def _try_anthropic_style_completion(
         "option_probabilities": None,
         "raw_response": token_text,
         "logit_mode": "text",
+        "generation_parameters": sent_parameters,
+        "generation_parameters_observed": True,
     }
 
 
@@ -786,8 +797,8 @@ def _evaluate_with_basic_completion(
         api_key,
         model_choice,
         provider,
-        temperature=0.7,
-        top_p=0.9,
+        temperature=temperature,
+        top_p=top_p,
         max_output_tokens=1,
         stop_sequences=["\n"],
         progress_message="Running single-choice evaluation",
@@ -800,11 +811,22 @@ def _evaluate_with_basic_completion(
     selected = _extract_option_from_text(text)
     if not selected:
         return _sc_error_result("Error: Model returned no valid option.")
+    normalized = {'temperature': temperature, 'top_p': top_p}
+    if provider in {'OpenAI', 'OpenRouter'}:
+        request = apply_openai_short_answer_compat({'model': model_choice, 'max_tokens': 1, **normalized})
+        normalized = {key: request.get(key) for key in ('temperature', 'top_p')}
+    elif provider == 'Kimi':
+        actual_temperature, actual_top_p = normalize_kimi_sampling_params(
+            model_choice, temperature, top_p, thinking_enabled=False,
+        )
+        normalized = {'temperature': actual_temperature, 'top_p': actual_top_p}
     return {
         "choice": _extract_option_from_text(text) or "?",
         "option_probabilities": None,
         "raw_response": text,
         "logit_mode": "text",
+        "generation_parameters": normalized,
+        "generation_parameters_observed": False,
     }
 
 
@@ -850,7 +872,7 @@ def _evaluate_single_choice_question_uncached(
     if provider in {"OpenAI", "OpenRouter", "Kimi"}:
         result = _try_openai_style_completion(prompt, api_key, model_choice, provider, temperature, top_p)
     elif provider == "Anthropic":
-        result = _try_anthropic_style_completion(prompt, api_key, model_choice)
+        result = _try_anthropic_style_completion(prompt, api_key, model_choice, temperature, top_p)
 
     if result is None:
         result = _evaluate_with_basic_completion(prompt, api_key, model_choice, provider, temperature, top_p)
@@ -886,8 +908,13 @@ def evaluate_single_choice_question(
         ASU_PROVIDER: ASU_BASE_URL,
     }.get(provider)
     if provider == "Local vLLM":
-        import streamlit as st
-        endpoint = st.session_state.get("sidebar_local_vllm_base_url", "http://localhost:8000/v1")
+        from src.api_task_context import current_api_task_settings
+        task_settings = current_api_task_settings()
+        if task_settings is not None:
+            endpoint = task_settings["base_url"]
+        else:
+            import streamlit as st
+            endpoint = st.session_state.get("sidebar_local_vllm_base_url", "http://localhost:8000/v1")
     return checkpoint_call(
         "single_choice.evaluate", {
             "question": question, "model": model_choice or DEFAULT_MODELS.get(provider),
@@ -921,7 +948,8 @@ def run_single_choice_evaluation(
     top_p: float = 0.9,
     progress_callback: Optional[Callable[[int, int, int, int, int], None]] = None,
 ) -> List[List[Dict[str, Any]]]:
-    """Evaluate generated MCQs using the target LLM."""
+    """Evaluate MCQs, stopping safely when the provider rejects the configuration."""
+    from src.analysis_outcomes import is_systemic_api_failure
 
     all_results: List[List[Dict[str, Any]]] = []
     total_items = max(1, num_runs * len(questions))
@@ -951,6 +979,12 @@ def run_single_choice_evaluation(
                     evaluation.get("error", "Error: Invalid evaluation response.")
                     if isinstance(evaluation, dict) else "Error: Invalid evaluation response."
                 )
+            systemic_failure = bool(evaluation.get("error") and is_systemic_api_failure(evaluation["error"]))
+            if evaluation.get("error") and api_key:
+                evaluation = dict(evaluation)
+                for field in ('error', 'raw_response'):
+                    if isinstance(evaluation.get(field), str):
+                        evaluation[field] = evaluation[field].replace(str(api_key), '[redacted]')
             choice = evaluation.get("choice", "?")
             mcq = mcq if isinstance(mcq, dict) else {}
 
@@ -965,6 +999,8 @@ def run_single_choice_evaluation(
                 "raw_response": evaluation.get("raw_response", ""),
                 "option_probabilities": evaluation.get("option_probabilities"),
                 "logit_mode": evaluation.get("logit_mode", "text"),
+                "generation_parameters": evaluation.get("generation_parameters"),
+                "generation_parameters_observed": bool(evaluation.get("generation_parameters_observed")),
                 "explanation": mcq.get("explanation"),
             }
 
@@ -973,6 +1009,9 @@ def run_single_choice_evaluation(
             current += 1
             if progress_callback:
                 progress_callback(current, total_items, run_idx + 1, question_idx + 1, len(questions))
+            if systemic_failure:
+                all_results.append(run_results)
+                return all_results
 
         all_results.append(run_results)
 

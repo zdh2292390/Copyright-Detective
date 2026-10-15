@@ -359,6 +359,8 @@ def run_knowledge_qa_evaluation(
                         temperature=temperature, top_p=top_p, completion_fn=completion_fn,
                     )
                 if is_api_error_response(llm_answer):
+                    if api_key:
+                        llm_answer = llm_answer.replace(str(api_key), "[redacted]")
                     evaluation = {
                         'question': question if isinstance(question, str) else '',
                         'ground_truth': ground_truth if isinstance(ground_truth, str) else '',
@@ -374,7 +376,8 @@ def run_knowledge_qa_evaluation(
                         score = judge_result.get('score')
                         judge_error = judge_result.get('error')
                         if judge_error or not isinstance(score, (int, float)) or isinstance(score, bool) or not math.isfinite(score) or not 0 <= score <= 1:
-                            evaluation['llm_judge_error'] = judge_error or judge_result.get('reasoning') or "Invalid judge result."
+                            detail = str(judge_error or judge_result.get('reasoning') or "Invalid judge result.")
+                            evaluation['llm_judge_error'] = detail.replace(str(api_key), "[redacted]") if api_key else detail
                         else:
                             evaluation['llm_judge_score'] = score
                             evaluation['llm_judge_reasoning'] = judge_result.get('reasoning', '')
@@ -384,6 +387,13 @@ def run_knowledge_qa_evaluation(
                 current_item += 1
                 if progress_callback:
                     progress_callback(current_item, total_items, run_idx + 1, qa_idx + 1, len(qa_pairs))
+                from src.analysis_outcomes import is_systemic_api_failure
+                if (is_systemic_api_failure(evaluation.get('error'))
+                        or is_systemic_api_failure(evaluation.get('llm_judge_error'))):
+                    # Retain this diagnostic and prior successes. A corrected
+                    # credential/configuration can explicitly Resume the task.
+                    all_results.append(run_results)
+                    return all_results
         all_results.append(run_results)
 
     return all_results

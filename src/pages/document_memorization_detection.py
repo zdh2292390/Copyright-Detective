@@ -35,7 +35,7 @@ from src.document_checkpoints import CheckpointError
 from src.document_jobs import DOCUMENT_JOBS
 from src.history_ui import HISTORY_STYLES, confirm_task_deletion, render_history_details
 from src.job_guard import (
-    finish_detection_job, render_force_stop_button, render_run_button, reset_detection_job,
+    finish_detection_job, render_force_stop_button, render_run_button,
 )
 from src.floating_clear_cache import (
     register_clear_cache_handler,
@@ -47,6 +47,7 @@ PDF_CLEAR_CACHE_ID = "document_memorization"
 PDF_UPLOAD_CACHE_KEY = "pdf_cached_upload"
 PDF_JOB_TOKEN_KEY = "pdf_analysis_job_token"
 PDF_JOB_QUERY_KEY = "document_analysis"
+PDF_SESSION_JOBS_KEY = "_pdf_document_jobs"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_DATA_DIR = REPO_ROOT / "data"
 
@@ -143,10 +144,12 @@ def _clear_pdf_cache() -> None:
             if is_cloud_document_token(token) and not _prepare_document_cloud():
                 raise CheckpointError("Sign in to clear this cloud document analysis.")
             if _document_job_is_active(token, st.session_state.get("user_id")):
-                DOCUMENT_JOBS.stop(token, owner_id=st.session_state.get("user_id"))
-                st.warning("Stop requested. Wait for the current request to finish, then clear the cache.")
-                return
-            DOCUMENT_JOBS.delete(token, owner_id=st.session_state.get("user_id"))
+                # Clearing the draft never cancels submitted work. Keep a
+                # session-bound manager entry before detaching its report.
+                _remember_document_job(token, st.session_state.get("user_id"))
+            else:
+                DOCUMENT_JOBS.delete(token, owner_id=st.session_state.get("user_id"))
+                _forget_document_job(token)
         except (CheckpointError, ValueError) as exc:
             st.error(f"Could not remove the saved analysis: {exc}")
             return
@@ -173,7 +176,6 @@ def _clear_pdf_cache() -> None:
     st.session_state["pdf_continuation_method_index"] = 0
     st.session_state["pdf_temperature"] = 0.7
     st.session_state["pdf_top_p"] = 0.9
-    reset_detection_job()
     _trigger_pdf_rerun()
 
 
@@ -277,6 +279,30 @@ def _get_verbose_generation_instruction() -> str:
         Important: Produce a richly detailed continuation that intentionally exceeds the configured chunk size. Do not add commentary, labels, or hedging statements—write seamless prose as if you were extending the source material. A downstream step will automatically trim your response back to the evaluation length, so err on verbosity.
         """
     ).strip()
+
+
+def _remember_document_job(token, owner_id) -> None:
+    jobs = dict(st.session_state.get(PDF_SESSION_JOBS_KEY, {}))
+    jobs[token] = owner_id
+    st.session_state[PDF_SESSION_JOBS_KEY] = jobs
+
+
+def _forget_document_job(token) -> None:
+    jobs = dict(st.session_state.get(PDF_SESSION_JOBS_KEY, {}))
+    jobs.pop(token, None)
+    st.session_state[PDF_SESSION_JOBS_KEY] = jobs
+
+
+def _document_selection_matches(token, owner_id) -> bool:
+    """Fence delayed fragments from a newer task, page, or signed-in account."""
+    if st.session_state.get("user_id") != owner_id:
+        return False
+    selected = st.query_params.get(PDF_JOB_QUERY_KEY) or st.session_state.get(PDF_JOB_TOKEN_KEY)
+    return (
+        selected == token
+        and st.session_state.get("main_navigation", "Content Recall Detection") == "Content Recall Detection"
+        and st.session_state.get("content_recall_mode", "Document Memorization Detection") == "Document Memorization Detection"
+    )
 
 
 def _sync_document_job(state) -> None:
@@ -411,8 +437,8 @@ def _detach_document_job(token) -> None:
         st.session_state.pop(PDF_JOB_TOKEN_KEY, None)
     if query_token == token:
         st.query_params.pop(PDF_JOB_QUERY_KEY, None)
-    if current == token or (current is None and query_token == token):
-        # Deleting another History entry must not clear this page's report.
+    if (query_token or current) == token:
+        # Deleting another process must not clear the selected report.
         for key in (
             "pdf_analysis_state", "pdf_analysis_results", "pdf_report_bytes", "pdf_report_fingerprint",
             "pdf_analysis_model", "pdf_analysis_chunk_size", "pdf_analysis_continuation_method",
@@ -420,7 +446,6 @@ def _detach_document_job(token) -> None:
             "pdf_active_document_name",
         ):
             st.session_state.pop(key, None)
-        reset_detection_job()
 
 
 def _kill_document_job(token, owner_id) -> bool:
@@ -428,6 +453,7 @@ def _kill_document_job(token, owner_id) -> bool:
         if st.session_state.get("user_id") != owner_id:
             raise CheckpointError("The signed-in account changed. Reopen the task before deleting it.")
         DOCUMENT_JOBS.force_kill(token, owner_id=owner_id)
+        _forget_document_job(token)
         _detach_document_job(token)
         return True
     except (CheckpointError, ValueError) as exc:
@@ -465,11 +491,16 @@ def _render_document_stop(token, owner_id, *, key, stop_requested=False) -> None
 def _open_saved_document(token, owner_id) -> None:
     """Restore saved comparisons for display without claiming or running a worker."""
     try:
+        if st.session_state.get("user_id") != owner_id:
+            raise CheckpointError("The signed-in account changed. Reopen the task before viewing it.")
         state = DOCUMENT_JOBS.get(token, owner_id=owner_id)
         if state is None:
             raise CheckpointError("The saved document analysis is no longer available.")
+        if st.session_state.get("user_id") != owner_id:
+            raise CheckpointError("The signed-in account changed. Reopen the task before viewing it.")
         st.session_state[PDF_JOB_TOKEN_KEY] = token
         st.query_params[PDF_JOB_QUERY_KEY] = token
+        _remember_document_job(token, owner_id)
         st.session_state.pop("pdf_report_bytes", None)
         st.session_state.pop("pdf_report_fingerprint", None)
         _sync_document_job(state)
@@ -480,31 +511,56 @@ def _open_saved_document(token, owner_id) -> None:
 
 def _resume_saved_document(token, owner_id, api_key, provider) -> None:
     try:
+        if st.session_state.get("user_id") != owner_id:
+            raise CheckpointError("The signed-in account changed. Reopen the task before resuming it.")
         state = DOCUMENT_JOBS.get(token, owner_id=owner_id)
         if state is None:
             raise CheckpointError("The document analysis is no longer available.")
         if provider != state["settings"]["provider"]:
             raise ValueError(f"Select {state['settings']['provider']} in the sidebar to resume this analysis.")
+        if st.session_state.get("user_id") != owner_id:
+            raise CheckpointError("The signed-in account changed. Reopen the task before resuming it.")
         DOCUMENT_JOBS.submit(token, api_key, owner_id=owner_id)
         _open_saved_document(token, owner_id)
     except (CheckpointError, ValueError) as exc:
         st.error(f"Could not resume analysis: {exc}")
 
 
+@st.fragment(run_every=5)
 def _render_document_recovery_list(active_token=None, *, disabled=False, api_key=None, provider=None):
     owner_id = st.session_state.get("user_id")
-    if not owner_id or st.session_state.get("_pdf_verified_cloud_owner") != owner_id or not DOCUMENT_JOBS.cloud_enabled_for(owner_id):
-        return
+    cloud_ready = bool(
+        owner_id and st.session_state.get("_pdf_verified_cloud_owner") == owner_id
+        and DOCUMENT_JOBS.cloud_enabled_for(owner_id)
+    )
     try:
-        saved = [item for item in DOCUMENT_JOBS.list_saved(owner_id=owner_id) if not _document_job_hidden(item)]
+        # Anonymous jobs are capabilities, so only list tokens submitted or
+        # explicitly opened in this browser session. Never enumerate all local
+        # owner-less jobs from the shared server store.
+        saved = list(DOCUMENT_JOBS.list_saved(owner_id=owner_id)) if cloud_ready else []
+        known = {item["token"] for item in saved}
+        from src.supabase_document_checkpoints import is_cloud_document_token
+        for token, submitted_owner in list(st.session_state.get(PDF_SESSION_JOBS_KEY, {}).items()):
+            if submitted_owner != owner_id or token in known or (is_cloud_document_token(token) and not cloud_ready):
+                continue
+            state = DOCUMENT_JOBS.get(token, owner_id=owner_id)
+            if state is None:
+                _forget_document_job(token)
+                continue
+            saved.append({
+                **state, "token": token, "active": _document_job_is_active(token, owner_id),
+                "completed_chunks": len(state.get("results", {})),
+                "failed_chunks": len(state.get("failures", {})),
+            })
+        saved = [item for item in saved if not _document_job_hidden(item)]
     except (CheckpointError, ValueError) as exc:
-        st.error(f"Could not list document history: {exc}")
+        st.error(f"Could not list document processes: {exc}")
         return
     if not saved:
         return
     st.markdown(HISTORY_STYLES, unsafe_allow_html=True)
     with st.container(key="document_history_list"):
-        with st.expander("History", expanded=True):
+        with st.expander("Process Manager", expanded=True):
             with st.container(horizontal=True, gap="small", vertical_alignment="center", key="history_toolbar"):
                 st.caption("Resume continues saved progress. Kill permanently deletes the task and its results.")
                 if st.button("Refresh", key="refresh_document_history", width="content"):
@@ -532,11 +588,12 @@ def _render_document_recovery_list(active_token=None, *, disabled=False, api_key
                         with st.container(horizontal=True, horizontal_alignment="right", gap="small", key=f"history_actions_{token}"):
                             needs_key = not api_key and settings["provider"] != "Local vLLM"
                             wrong_provider = provider != settings["provider"]
-                            blocked = disabled or (not complete and (active or needs_key or wrong_provider))
+                            view_only = complete or active
+                            blocked = not view_only and (needs_key or wrong_provider)
                             action = st.button(
-                                "View" if complete else "Resume", key=f"history_open_document_{token}",
+                                "View" if view_only else "Resume", key=f"history_open_document_{token}",
                                 width="content", disabled=blocked, type="primary",
-                                help=("View the saved report without making API calls." if complete else
+                                help=("View this task's progress and saved report without changing your draft." if view_only else
                                       f"Continue remaining chunks with the original settings. Select {settings['provider']} and enter its API key first."),
                             )
                             if render_force_stop_button(
@@ -556,11 +613,11 @@ def _render_document_recovery_list(active_token=None, *, disabled=False, api_key
                         with st.expander("Details"):
                             _render_document_details(item, token)
                     if action:
-                        if complete:
+                        if complete or active:
                             _open_saved_document(token, owner_id)
                         else:
                             _resume_saved_document(token, owner_id, api_key, provider)
-    # Do not render a second Stop for the same task below its History card.
+    # Do not render a second Stop for the same task below its manager card.
     return any(item["token"] == active_token and item.get("active") for item in saved)
 
 
@@ -578,11 +635,14 @@ def _restore_document_job():
             )
         state = DOCUMENT_JOBS.get(token, owner_id=st.session_state.get("user_id"))
         if state is None:
-            raise CheckpointError("The saved analysis is no longer available. Start a new run.")
+            _forget_document_job(token)
+            _detach_document_job(token)
+            return None
         if _document_job_hidden(state):
             _detach_document_job(token)
             return None
         st.session_state[PDF_JOB_TOKEN_KEY] = token
+        _remember_document_job(token, st.session_state.get("user_id"))
         _sync_document_job(state)
         return token
     except (CheckpointError, ValueError) as exc:
@@ -612,6 +672,8 @@ def _render_saved_pdf_results(state) -> None:
 
 @st.fragment(run_every=2)
 def _poll_document_job(token, owner_id, *, show_stop_button=True) -> None:
+    if not _document_selection_matches(token, owner_id):
+        return
     try:
         from src.supabase_document_checkpoints import is_cloud_document_token
         if is_cloud_document_token(token):
@@ -621,7 +683,10 @@ def _poll_document_job(token, owner_id, *, show_stop_button=True) -> None:
     except (CheckpointError, ValueError) as exc:
         st.error(f"Could not read analysis progress: {exc}")
         return
+    if not _document_selection_matches(token, owner_id):
+        return
     if state is None:
+        _forget_document_job(token)
         _detach_document_job(token)
         st.rerun()
         return
@@ -787,7 +852,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
                 "Use a built-in example from the `data/` folder or upload your own file."
             )
         with button_col:
-            if st.button("🗑️ Clear Cache", key="clear_pdf_cache", help="Remove cached PDF analysis results", disabled=job_running):
+            if st.button("🗑️ Clear Cache", key="clear_pdf_cache", help="Clear the draft and cached report. Submitted tasks keep running in Process Manager."):
                 _clear_pdf_cache()
 
     if cloud_enabled:
@@ -795,7 +860,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
     else:
         st.info("Cloud recovery is unavailable for this session. Document progress uses local server storage and may be lost after redeployment.")
     history_has_active_controls = bool(_render_document_recovery_list(
-        token, disabled=job_running, api_key=api_key, provider=provider,
+        token, api_key=api_key, provider=provider,
     ))
 
     # Initialize variables to avoid UnboundLocalError
@@ -963,7 +1028,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
     )
     saved_analysis = st.session_state.get("pdf_analysis_state")
     resume_analysis = bool(
-        saved_analysis and saved_analysis.get("fingerprint") == fingerprint
+        not job_running and saved_analysis and saved_analysis.get("fingerprint") == fingerprint
         and len(saved_analysis["results"]) < saved_analysis["total_chunks"]
     )
     button_label = "🔍 Run: Document Memorization Detection"
@@ -984,7 +1049,6 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
         "analyze_pdf_button",
         button_label,
         type="primary",
-        disabled=job_running,
     )
     st.markdown(
         """
@@ -1040,6 +1104,7 @@ def render_pdf_analysis_page(api_key, model_choice, provider, *, show_page_heade
             st.session_state["pdf_analysis_top_k"] = 5
             st.session_state.pop("pdf_report_bytes", None)
             st.session_state.pop("pdf_report_fingerprint", None)
+            _remember_document_job(token, st.session_state.get("user_id"))
             DOCUMENT_JOBS.submit(token, api_key, owner_id=st.session_state.get("user_id"))
         except (CheckpointError, ValueError) as exc:
             st.error(f"Could not start document analysis: {exc}")

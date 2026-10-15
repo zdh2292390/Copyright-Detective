@@ -1,4 +1,4 @@
-"""Compact presentation shared by API and document analysis history."""
+"""Shared presentation for API and document Process Managers."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -7,6 +7,8 @@ from html import escape
 import streamlit as st
 from uuid import uuid4
 
+
+PROCESS_MANAGER_TITLE = "Process Manager"
 
 HISTORY_STYLES = """<style>
 /* Only history controls are styled; page Run buttons keep their existing UI. */
@@ -215,7 +217,7 @@ def confirm_task_deletion(*, task_id, owner_id, label, on_confirm):
         "on_confirm": on_confirm,
     }
     if not _confirmation_owner_matches(pending):
-        st.warning("Your account changed. Reopen this task from History before deleting it.")
+        st.warning("Your account changed. Reopen this task from Process Manager before deleting it.")
         return False
     if not callable(on_confirm) or not pending["task_id"]:
         raise ValueError("A task and a deletion callback are required.")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
 import os
@@ -22,6 +23,8 @@ DEFAULT_CHUNK_CONCURRENCY = 3
 DEFAULT_PARALLEL_THRESHOLD = 8
 DEFAULT_CHUNK_WORKERS = 8
 LEASE_HEARTBEAT_SECONDS = 20
+# Shared cloud item errors are limited to 16,000 characters.
+MAX_ERROR_CHARS = 16_000
 
 
 def _configured_limit(name, default, maximum):
@@ -41,6 +44,9 @@ def _redact_error(message: Any, api_key: str) -> str:
     text = str(message)
     if api_key:
         text = text.replace(api_key, "[redacted]")
+    if len(text) > MAX_ERROR_CHARS:
+        suffix = " [truncated]"
+        text = text[:MAX_ERROR_CHARS - len(suffix)] + suffix
     return text
 
 
@@ -139,8 +145,44 @@ class DocumentAnalysisJobs:
         self._lock = RLock()
         self._max_pending = max_pending
         self._jobs = {}
+        self._closed = False
+        self._submitting = set()
+        self._lifecycle_locks = {}
         self._cloud_stores = {}
         self._analyze_chunk = analyze_chunk or _analyze_chunk
+
+    @contextmanager
+    def _lifecycle(self, token):
+        """Serialize a task's lifecycle without blocking unrelated tasks.
+
+        Registry access is short; neither waiting for another task operation
+        nor checkpoint I/O may hold the process-wide registry lock. Count
+        waiters before taking the task lock so its identity stays stable.
+        """
+        with self._lock:
+            entry = self._lifecycle_locks.get(token)
+            if entry is None:
+                entry = {"lock": RLock(), "users": 0}
+                self._lifecycle_locks[token] = entry
+            entry["users"] += 1
+        try:
+            with entry["lock"]:
+                yield
+        finally:
+            with self._lock:
+                entry["users"] -= 1
+                if not entry["users"]:
+                    self._lifecycle_locks.pop(token, None)
+
+    def _discard_job(self, token, expected):
+        with self._lock:
+            if self._jobs.get(token) is expected:
+                self._jobs.pop(token, None)
+
+    def _worker_job(self, token, cancellation):
+        """Look up a worker's own record; callers hold the registry lock."""
+        job = self._jobs.get(token)
+        return job if job is not None and job.get("cancellation") is cancellation else None
 
     def configure_cloud_store(self, cloud_store):
         """Bind a store supplied by the UI after Supabase verifies its user."""
@@ -153,10 +195,10 @@ class DocumentAnalysisJobs:
             if adapter is None:
                 adapter = SupabaseDocumentCheckpointStore(cloud_store)
                 self._cloud_stores[adapter.owner_id] = adapter
-            else:
-                # Preserve active leases/caches while adopting the client's
-                # refreshed authenticated session for this verified owner.
-                adapter.bind_store(cloud_store)
+                return
+        # An adapter may be finishing storage I/O under its own lock. Waiting
+        # for its refreshed binding must not hold the task registry lock.
+        adapter.bind_store(cloud_store)
 
     def cloud_enabled_for(self, owner_id):
         with self._lock:
@@ -177,17 +219,30 @@ class DocumentAnalysisJobs:
     def list_saved(self, *, owner_id=None, archived_only=False):
         with self._lock:
             store = self._cloud_stores.get(owner_id) if owner_id else None
-        return (store.list_for_owner(archived_only=archived_only) if store is not None
-                else self.store.list_for_owner(owner_id, archived_only=archived_only))
+        saved = (store.list_for_owner(archived_only=archived_only) if store is not None
+                 else self.store.list_for_owner(owner_id, archived_only=archived_only))
+        with self._lock:
+            for item in saved:
+                token = item.get("token")
+                job = self._jobs.get(token)
+                if (job and job.get("finished") and job["state"].get("owner_id") == owner_id
+                        and item.get("status") == "complete"
+                        and item.get("completed_chunks") == job["state"]["total_chunks"]):
+                    # Listing a recovered complete task is enough to know all
+                    # retained successes are durable; viewing every old report
+                    # must not be required to free submission capacity.
+                    self._jobs.pop(token, None)
+        return saved
 
     def is_active(self, token, *, owner_id=None):
-        with self._lock:
-            job = self._jobs.get(token)
-            if job is not None and not job.get("finished"):
-                self._check_owner(job["state"], owner_id)
-                return True
-        store = self._store_for(token, owner_id=owner_id)
-        return bool(getattr(store, "remote", False) and store.is_active(token))
+        with self._lifecycle(token):
+            with self._lock:
+                job = self._jobs.get(token)
+                if job is not None and not job.get("finished"):
+                    self._check_owner(job["state"], owner_id)
+                    return True
+            store = self._store_for(token, owner_id=owner_id)
+            return bool(getattr(store, "remote", False) and store.is_active(token))
 
     def concurrency_for(self, remaining_chunks):
         if remaining_chunks < self.parallel_threshold:
@@ -226,6 +281,9 @@ class DocumentAnalysisJobs:
             if endpoint.username or endpoint.password or endpoint.query or endpoint.fragment:
                 raise ValueError("Use an endpoint URL without credentials or query parameters; enter credentials in the API key field.")
         state = deepcopy(state)
+        state["failures"] = {index: _redact_error(message, "") for index, message in state["failures"].items()}
+        if isinstance(state.get("error"), str):
+            state["error"] = _redact_error(state["error"], "")
         state["owner_id"] = owner_id
         state["updated_at"] = _now()
         store = self._store_for(owner_id=owner_id) if use_cloud else self.store
@@ -234,18 +292,62 @@ class DocumentAnalysisJobs:
     def is_running(self, token):
         with self._lock:
             job = self._jobs.get(token)
-            return bool(job is not None and not job.get("finished"))
+            return bool(token in self._submitting or (job is not None and not job.get("finished")))
 
     def get(self, token, *, owner_id=None):
-        # Keep restoration atomic with submit, so a concurrent UI read cannot
-        # label a newly submitted worker as a server interruption.
-        with self._lock:
-            job = self._jobs.get(token)
+        # Restoration stays atomic with submit for this token. Other tasks
+        # can publish, stop, or start while this checkpoint store responds.
+        with self._lifecycle(token):
+            with self._lock:
+                job = self._jobs.get(token)
+                if job is not None:
+                    self._check_owner(job["state"], owner_id)
+                    retained = _snapshot(job["state"])
+                    finished = bool(job.get("finished"))
             if job is not None:
-                self._check_owner(job["state"], owner_id)
-                return deepcopy(job["state"])
-            store = self._store_for(token, owner_id=owner_id)
-            saved = store.load(token)
+                # Nested result copies can be large. The immutable result
+                # values are already fenced by the shallow registry snapshot.
+                retained = deepcopy(retained)
+                if not finished:
+                    return retained
+                # A storage outage retains unsaved successes in memory. That
+                # fallback must not hide a later worker's progress or a task
+                # deleted from another browser/server once storage recovers.
+                store = job["store"]
+                try:
+                    saved = store.load(token)
+                except CheckpointError:
+                    return retained
+                if saved is None:
+                    self._discard_job(token, job)
+                    return None
+                state, pairs = saved
+                self._check_owner(state, owner_id)
+                validate_analysis_state(pairs, state)
+                self._validate_settings(state)
+                if state.get("kill_requested") or state["status"] in {"stopping", "killed"}:
+                    self._discard_job(token, job)
+                    return state
+                missing = retained["results"].keys() - state["results"].keys()
+                if missing:
+                    # Keep only still-unsaved successes, taking newer durable
+                    # responses and lifecycle metadata as authoritative. A
+                    # later explicit Resume can flush these retained results.
+                    for index in missing:
+                        state["results"][index] = deepcopy(retained["results"][index])
+                        state["failures"].pop(index, None)
+                    for index, count in retained["attempts"].items():
+                        state["attempts"][index] = max(count, state["attempts"].get(index, 0))
+                    with self._lock:
+                        if self._jobs.get(token) is job:
+                            job["state"] = _snapshot(state)
+                    return deepcopy(state)
+                # Every retained success is now durable. Release the capacity
+                # reservation and continue with the freshly loaded checkpoint.
+                self._discard_job(token, job)
+            else:
+                store = self._store_for(token, owner_id=owner_id)
+                saved = store.load(token)
             if saved is None:
                 return None
             state, pairs = saved
@@ -277,90 +379,117 @@ class DocumentAnalysisJobs:
             return state
 
     def submit(self, token, api_key, *, owner_id=None):
-        with self._lock:
-            existing = self._jobs.get(token)
-            if existing is not None:
-                self._check_owner(existing["state"], owner_id)
-                if not existing.get("finished"):
-                    return False
-            active_count = sum(
-                not job.get("finished") or bool(job.get("storage_failed"))
-                for saved_token, job in self._jobs.items() if saved_token != token
-            )
-            if active_count >= self._max_pending:
-                raise CheckpointError("Document analysis capacity is busy. Try starting this saved run again shortly.")
-            store = self._store_for(token, owner_id=owner_id)
-            saved = store.load(token)
-            if saved is None:
-                raise CheckpointError("The saved analysis is no longer available.")
-            state, pairs = saved
-            self._check_owner(state, owner_id)
-            validate_analysis_state(pairs, state)
-            self._validate_settings(state)
-            if state.get("kill_requested") or state["status"] in {"stopping", "killed"}:
-                return False
-            if not str(api_key or "").strip() and state["settings"]["provider"] != "Local vLLM":
-                raise ValueError("Enter an API key before starting or resuming analysis.")
-            if state["status"] == "complete":
-                return False
-            self._check_model_available(state)
-            claimed = False
-            try:
-                if getattr(store, "remote", False):
-                    if not store.claim(token):
-                        return False
-                    claimed = True
-                    # Claim fences competing processes. Re-read progress after
-                    # acquiring it so a just-finished chunk is never repeated.
-                    state, pairs = store.load(token)
-                    self._check_owner(state, owner_id)
-                    validate_analysis_state(pairs, state)
-                    self._validate_settings(state)
-                    if state.get("kill_requested") or state["status"] in {"stopping", "killed"}:
-                        store.release(token)
-                        return False
+        with self._lifecycle(token):
+            with self._lock:
+                if self._closed:
+                    raise CheckpointError("Document analysis workers are shutting down. Retry on an active server.")
+                existing = self._jobs.get(token)
+                retained_state = None
                 if existing is not None:
-                    retained = existing["state"]
-                    if not getattr(store, "remote", False):
-                        state = deepcopy(retained)
-                    else:
-                        # A newer worker's persisted successes take precedence
-                        # over results retained during a previous storage outage.
-                        for index, result in retained["results"].items():
-                            state["results"].setdefault(index, deepcopy(result))
-                            state["failures"].pop(index, None)
-                        for index, attempts in retained["attempts"].items():
-                            state["attempts"][index] = max(attempts, state["attempts"].get(index, 0))
-                state["status"] = "running"
-                state["stop_requested"] = False
-                state["active_chunks"] = []
-                limit = self.concurrency_for(state["total_chunks"] - len(state["results"]))
-                state["concurrency_limit"] = limit
-                state["effective_concurrency"] = limit
-                state["error"] = None
-                state["started_at"] = state.get("started_at") or _now()
-                state["updated_at"] = _now()
-                store.save(token, state)
-                stop = Event()
-                cancellation = CancellationToken()
-                kill = Event()
-                self._jobs[token] = {
-                    "state": _snapshot(state), "stop": stop, "store": store,
-                    "cancellation": cancellation, "kill": kill,
+                    self._check_owner(existing["state"], owner_id)
+                    if not existing.get("finished"):
+                        return False
+                    retained_state = _snapshot(existing["state"])
+                occupied = {
+                    identity for identity, job in self._jobs.items()
+                    if not job.get("finished") or job.get("storage_failed")
                 }
+                if len((occupied | self._submitting) - {token}) >= self._max_pending:
+                    raise CheckpointError("Document analysis capacity is busy. Try starting this saved run again shortly.")
+                # Reserve before I/O; simultaneous submissions for different
+                # tokens must not both pass the global capacity check.
+                self._submitting.add(token)
+            try:
+                store = self._store_for(token, owner_id=owner_id)
+                saved = store.load(token)
+                if saved is None:
+                    raise CheckpointError("The saved analysis is no longer available.")
+                state, pairs = saved
+                self._check_owner(state, owner_id)
+                validate_analysis_state(pairs, state)
+                self._validate_settings(state)
+                if state.get("kill_requested") or state["status"] in {"stopping", "killed"}:
+                    return False
+                if not str(api_key or "").strip() and state["settings"]["provider"] != "Local vLLM":
+                    raise ValueError("Enter an API key before starting or resuming analysis.")
+                if state["status"] == "complete":
+                    return False
+                self._check_model_available(state)
+                claimed = False
                 try:
-                    self._executor.submit(self._run, token, state, pairs, str(api_key or "").strip(), stop, store, cancellation, kill)
-                except Exception:
-                    self._jobs.pop(token, None)
-                    state["status"] = "incomplete"
-                    state["error"] = "The analysis worker could not start. Retry the run."
+                    if getattr(store, "remote", False):
+                        if not store.claim(token):
+                            return False
+                        claimed = True
+                        # Claim fences competing processes. Re-read progress after
+                        # acquiring it so a just-finished chunk is never repeated.
+                        state, pairs = store.load(token)
+                        self._check_owner(state, owner_id)
+                        validate_analysis_state(pairs, state)
+                        self._validate_settings(state)
+                        if state.get("kill_requested") or state["status"] in {"stopping", "killed"}:
+                            store.release(token)
+                            return False
+                    if existing is not None:
+                        retained = retained_state
+                        if not getattr(store, "remote", False):
+                            state = deepcopy(retained)
+                        else:
+                            # A newer worker's persisted successes take precedence
+                            # over results retained during a previous storage outage.
+                            for index, result in retained["results"].items():
+                                state["results"].setdefault(index, deepcopy(result))
+                                state["failures"].pop(index, None)
+                            for index, attempts in retained["attempts"].items():
+                                state["attempts"][index] = max(attempts, state["attempts"].get(index, 0))
+                    # Normalize older/local checkpoints before the first cloud
+                    # save, rather than failing to resume on an oversized error.
+                    state["failures"] = {
+                        index: _redact_error(message, str(api_key or "").strip())
+                        for index, message in state["failures"].items()
+                    }
+                    state["status"] = "running"
+                    state["stop_requested"] = False
+                    state["active_chunks"] = []
+                    limit = self.concurrency_for(state["total_chunks"] - len(state["results"]))
+                    state["concurrency_limit"] = limit
+                    state["effective_concurrency"] = limit
+                    state["error"] = None
+                    state["started_at"] = state.get("started_at") or _now()
+                    state["updated_at"] = _now()
                     store.save(token, state)
+                    stop = Event()
+                    cancellation = CancellationToken()
+                    kill = Event()
+                    record = {
+                        "state": _snapshot(state), "stop": stop, "store": store,
+                        "cancellation": cancellation, "kill": kill,
+                    }
+                    with self._lock:
+                        closed = self._closed
+                        if not closed:
+                            self._jobs[token] = record
+                    if closed:
+                        state["status"] = "incomplete"
+                        state["error"] = "The server stopped before this worker could start. Resume on an active server."
+                        store.save(token, state)
+                        raise CheckpointError(state["error"])
+                    try:
+                        self._executor.submit(self._run, token, state, pairs, str(api_key or "").strip(), stop, store, cancellation, kill)
+                    except Exception:
+                        self._discard_job(token, record)
+                        state["status"] = "incomplete"
+                        state["error"] = "The analysis worker could not start. Retry the run."
+                        store.save(token, state)
+                        raise
+                    return True
+                except BaseException:
+                    if claimed:
+                        store.release(token)
                     raise
-                return True
-            except BaseException:
-                if claimed:
-                    store.release(token)
-                raise
+            finally:
+                with self._lock:
+                    self._submitting.discard(token)
 
     def _run(self, token, state, pairs, api_key, stop, store, cancellation, kill):
         heartbeat_done = Event()
@@ -402,8 +531,9 @@ class DocumentAnalysisJobs:
             index: _redact_error(error, api_key) for index, error in state["failures"].items()
         }
         with self._lock:
-            if token in self._jobs:
-                self._jobs[token]["state"]["failures"] = dict(state["failures"])
+            job = self._worker_job(token, cancellation)
+            if job is not None:
+                job["state"]["failures"] = dict(state["failures"])
 
         def checkpoint(updated):
             updated["updated_at"] = _now()
@@ -428,8 +558,9 @@ class DocumentAnalysisJobs:
                     updated["stop_requested"] = True
             finally:
                 with self._lock:
-                    if token in self._jobs:
-                        _update_snapshot(self._jobs[token]["state"], updated, current_index)
+                    job = self._worker_job(token, cancellation)
+                    if job is not None:
+                        _update_snapshot(job["state"], updated, current_index)
 
         def analyze_chunk(upper, lower):
             # A chunk can issue several provider calls. Carry the token into
@@ -478,20 +609,24 @@ class DocumentAnalysisJobs:
             except Exception:
                 # Keep every drained success available while storage is down.
                 with self._lock:
-                    if token in self._jobs:
-                        self._jobs[token]["storage_failed"] = True
+                    job = self._worker_job(token, cancellation)
+                    if job is not None:
+                        job["storage_failed"] = True
             finally:
                 with self._lock:
-                    if token in self._jobs:
-                        self._jobs[token]["state"] = _snapshot(state)
+                    job = self._worker_job(token, cancellation)
+                    if job is not None:
+                        job["state"] = _snapshot(state)
         finally:
             def finalize():
                 heartbeat_done.set()
                 if heartbeat_thread is not None:
                     heartbeat_thread.join(timeout=1)
-                # Serialize final lifecycle persistence with an arriving Kill.
-                with self._lock:
-                    job = self._jobs.get(token)
+                # A slow release for this task must not hold the registry
+                # lock or delay another task's Stop/submit/checkpoint.
+                with self._lifecycle(token):
+                    with self._lock:
+                        job = self._worker_job(token, cancellation)
                     if kill.is_set():
                         state.update(
                             status="killed", kill_requested=True, stop_requested=True,
@@ -499,29 +634,32 @@ class DocumentAnalysisJobs:
                             retry_in_seconds=0, retry_attempt=None,
                         )
                         state["updated_at"] = state["killed_at"]
+                        failed = False
                         try:
                             store.save(token, state)
                         except Exception:
-                            if job is not None:
-                                job["storage_failed"] = True
-                        finally:
-                            if job is not None:
+                            failed = True
+                        with self._lock:
+                            if job is not None and self._jobs.get(token) is job:
+                                if failed:
+                                    job["storage_failed"] = True
                                 job["state"] = _snapshot(state)
                     if remote:
                         try:
                             store.release(token)
                         except Exception:
-                            # Expiry provides recovery if the server cannot release
-                            # its own lease. Never overwrite a replacement worker.
+                            # The expired lease still fences replacement workers.
                             pass
-                    if job is not None and not job.get("storage_failed"):
-                        self._jobs.pop(token, None)
-                    elif job is not None:
-                        job["finished"] = True
-                        job.pop("cleanup_pending", None)
+                    with self._lock:
+                        if job is not None and self._jobs.get(token) is job:
+                            if not job.get("storage_failed"):
+                                self._jobs.pop(token, None)
+                            else:
+                                job["finished"] = True
+                                job.pop("cleanup_pending", None)
 
             with self._lock:
-                job = self._jobs.get(token)
+                job = self._worker_job(token, cancellation)
                 if job is not None:
                     job["coordinator_finished"] = True
             if cancellation.cancelled and cancellation.pending_count:
@@ -530,7 +668,7 @@ class DocumentAnalysisJobs:
                 # Keep this task protected and its cloud heartbeat alive until
                 # those requests exit, preventing duplicate resume calls.
                 with self._lock:
-                    job = self._jobs.get(token)
+                    job = self._worker_job(token, cancellation)
                     if job is not None:
                         job["cleanup_pending"] = True
                 def finish_after_requests():
@@ -549,22 +687,23 @@ class DocumentAnalysisJobs:
                 finalize()
 
     def stop(self, token, *, owner_id=None, force=False):
-        with self._lock:
-            job = self._jobs.get(token)
-            if job is not None and not job.get("finished"):
-                self._check_owner(job["state"], owner_id)
-                job["stop"].set()
-                if force:
-                    job["cancellation"].cancel()
-                job["state"]["stop_requested"] = True
-                store = job["store"]
-                if getattr(store, "remote", False):
-                    store.request_stop(token)
-                return True
-            store = self._store_for(token, owner_id=owner_id)
+        with self._lifecycle(token):
+            with self._lock:
+                job = self._jobs.get(token)
+                active = bool(job is not None and not job.get("finished"))
+                if active:
+                    self._check_owner(job["state"], owner_id)
+                    job["stop"].set()
+                    if force:
+                        job["cancellation"].cancel()
+                    job["state"]["stop_requested"] = True
+                    store = job["store"]
+            if not active:
+                store = self._store_for(token, owner_id=owner_id)
             if getattr(store, "remote", False):
-                return store.request_stop(token)
-            return False
+                accepted = store.request_stop(token)
+                return True if active else accepted
+            return active
 
     def force_stop(self, token, *, owner_id=None):
         """Stop waiting for pending calls without deleting saved progress.
@@ -576,43 +715,48 @@ class DocumentAnalysisJobs:
 
     def force_kill(self, token, *, owner_id=None):
         """Cancel outbound work and permanently delete this task and its results."""
-        with self._lock:
-            job = self._jobs.get(token)
-            active = bool(job is not None and not job.get("finished"))
-            store = job["store"] if active else self._store_for(token, owner_id=owner_id)
-            if job is not None:
-                self._check_owner(job["state"], owner_id)
-            else:
+        with self._lifecycle(token):
+            with self._lock:
+                job = self._jobs.get(token)
+                active = bool(job is not None and not job.get("finished"))
+                if job is not None:
+                    self._check_owner(job["state"], owner_id)
+                if active:
+                    store = job["store"]
+                    # Signal cancellation before waiting for storage. A failed
+                    # deletion remains retryable without new provider calls.
+                    job["stop"].set()
+                    job["cancellation"].cancel()
+                    job["state"]["stop_requested"] = True
+            if not active:
+                store = self._store_for(token, owner_id=owner_id)
+            if job is None:
                 saved = store.load(token)
                 if saved is None:
                     return False
                 self._check_owner(saved[0], owner_id)
-            if active:
-                # Cancellation takes effect before the deletion request. If
-                # storage is unavailable, the paused task remains visible and
-                # deletion can be retried without new provider calls.
-                job["stop"].set()
-                job["cancellation"].cancel()
-                job["state"]["stop_requested"] = True
             deleted = store.request_kill(token, active=active)
             if not isinstance(deleted, dict) or deleted.get("deleted") is not True:
                 raise CheckpointError("The document analysis was not deleted. Retry Kill.")
-            # Updates from a cancelled worker cannot republish a deleted task.
-            # SQLite/Supabase saves only update existing manifests, so a late
-            # response cannot recreate its source, checkpoints or results.
-            self._jobs.pop(token, None)
+            # Storage only updates existing manifests; a late response cannot
+            # recreate deleted source, checkpoints, or results.
+            self._discard_job(token, job)
             return True
 
     def delete(self, token, *, owner_id=None):
-        with self._lock:
+        with self._lifecycle(token):
             if self.is_active(token, owner_id=owner_id):
                 raise CheckpointError("Stop the analysis and wait for its in-flight requests before clearing it.")
             self.get(token, owner_id=owner_id)
-            self._store_for(token, owner_id=owner_id).delete(token)
-            self._jobs.pop(token, None)
+            store = self._store_for(token, owner_id=owner_id)
+            with self._lock:
+                job = self._jobs.get(token)
+            store.delete(token)
+            self._discard_job(token, job)
 
     def close(self):
         with self._lock:
+            self._closed = True
             for job in self._jobs.values():
                 job["stop"].set()
                 job["cancellation"].cancel()

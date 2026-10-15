@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -23,6 +25,7 @@ from src.background_jobs import (
     submit_background_job,
 )
 from src.components import render_direct_recall_diff
+from src.analysis_checkpoints import AnalysisCheckpointError
 from src.job_guard import finish_detection_job, render_run_button
 from src.game_continuation import (
     BOOK_TITLE,
@@ -173,9 +176,21 @@ def _browser_session_id() -> str:
     return value
 
 
-def _job_key(provider: str) -> str:
+def _job_key(provider: str, round_id: Optional[str] = None) -> str:
     slug = "openai" if provider == OPENAI_PROVIDER else "kimi"
-    return _key(f"{_browser_session_id()}:{slug}_background_job")
+    base = _key(f"{_browser_session_id()}:{slug}_background_job")
+    return f"{base}:{round_id}" if round_id else base
+
+
+def _provider_job_keys(provider: str) -> List[str]:
+    """Keep each submitted round independent, including pre-upgrade jobs."""
+    keys = [_job_key(provider)]
+    for row in _round_history():
+        job_keys = row.get("job_keys") if isinstance(row, dict) else None
+        value = job_keys.get(provider) if isinstance(job_keys, dict) else None
+        if isinstance(value, str) and value and value not in keys:
+            keys.append(value)
+    return keys
 
 
 def _load_styles() -> None:
@@ -220,7 +235,7 @@ def _provider_api_key(provider: str) -> str:
     return get_secret(default_secret).strip() if default_secret else ""
 
 def _any_job_running() -> bool:
-    return any(background_job_running(_job_key(provider)) for provider in _PROVIDERS)
+    return any(background_job_running(key) for provider in _PROVIDERS for key in _provider_job_keys(provider))
 
 
 def _request_clear() -> None:
@@ -228,14 +243,32 @@ def _request_clear() -> None:
 
 
 def _clear_local_cache() -> None:
-    job_keys = [_job_key(provider) for provider in _PROVIDERS]
+    job_keys = [key for provider in _PROVIDERS for key in _provider_job_keys(provider)]
+    active_keys = {key for key in job_keys if background_job_running(key)}
+    legacy_rounds = {str(st.session_state.get(_active_round_key(provider)) or "")
+                     for provider in _PROVIDERS if _job_key(provider) in active_keys}
+    active_rounds = [deepcopy(row) for row in _round_history()
+                     if str(row.get("id") or "") in legacy_rounds
+                     or (isinstance(row.get("job_keys"), dict)
+                         and any(key in active_keys for key in row["job_keys"].values()))]
+    # An active round owns its immutable result mapping until its worker finishes.
+    preserved = {_SESSION_ID_KEY: _browser_session_id()}
+    for provider in _PROVIDERS:
+        if _job_key(provider) in active_keys:
+            key = _active_round_key(provider)
+            if key in st.session_state:
+                preserved[key] = st.session_state[key]
     for key in list(st.session_state.keys()):
         rendered = str(key)
         if rendered.startswith(_PREFIX) or rendered == _CLEAR_KEY:
             st.session_state.pop(key, None)
+    st.session_state.update(preserved)
+    if active_rounds:
+        st.session_state[_key("round_history")] = active_rounds
     for job_key in job_keys:
-        forget_background_job(job_key)
-        st.session_state.pop(f"_background_job_delivered:{job_key}", None)
+        if job_key not in active_keys:
+            forget_background_job(job_key)
+            st.session_state.pop(f"_background_job_delivered:{job_key}", None)
 
 
 @st.dialog("Clear Copyright Challenge 2 cache", dismissible=False)
@@ -270,7 +303,6 @@ def _render_toolbar() -> None:
         "\U0001F5D1\uFE0F Clear Cache",
         key="_copyright_game2_clear_cache",
         help="Clear only this session's Challenge 2 settings and results.",
-        disabled=_any_job_running(),
         on_click=_request_clear,
         width="stretch",
     )
@@ -355,7 +387,7 @@ def _restore_saved_scaling_result() -> None:
 
 def _round_history() -> List[Dict[str, Any]]:
     value = st.session_state.get(_key("round_history"), [])
-    return list(value) if isinstance(value, list) else []
+    return [row for row in value if isinstance(row, dict)] if isinstance(value, list) else []
 
 
 def _record_round_provider(
@@ -388,8 +420,12 @@ def _record_round_provider(
 
 
 def _harvest_completed_job(provider: str) -> None:
-    job_key = _job_key(provider)
-    state = get_background_job(job_key)
+    for job_key in _provider_job_keys(provider):
+        _harvest_provider_job(provider, job_key)
+
+
+def _harvest_provider_job(provider: str, job_key: str) -> None:
+    state = get_background_job(job_key, include_result=False)
     if not isinstance(state, dict) or state.get("status") not in {"completed", "failed", "stopped"}:
         return
     token = str(state.get("finished_at") or state.get("status") or "completed")
@@ -397,9 +433,19 @@ def _harvest_completed_job(provider: str) -> None:
     if st.session_state.get(delivered_key) == token:
         return
 
+    state = get_background_job(job_key)
+    if not isinstance(state, dict):
+        return
     completed_at = _format_kst(state.get("finished_at"))
     result = state.get("result")
-    round_id = str(st.session_state.get(_active_round_key(provider)) or "")
+    round_id = next(
+        (str(row.get("id") or "") for row in _round_history()
+         if isinstance(row, dict) and isinstance(row.get("job_keys"), dict)
+         and row["job_keys"].get(provider) == job_key),
+        "",
+    )
+    if not round_id and job_key == _job_key(provider):
+        round_id = str(st.session_state.get(_active_round_key(provider)) or "")
     if round_id:
         _record_round_provider(
             round_id,
@@ -515,7 +561,7 @@ def _render_round_score_overview(providers: Dict[str, Any]) -> None:
             if isinstance(payload, dict) and payload.get("skipped"):
                 st.info(f"{provider} was skipped for this batch.")
             elif isinstance(payload, dict) and payload.get("stopped"):
-                st.info(f"{provider} stopped. Select Resume in History to continue.")
+                st.info(f"{provider} stopped. Select Resume in Process Manager to continue.")
             elif isinstance(payload, dict) and payload.get("error"):
                 st.info(f"No {provider} distribution is available because the run failed.")
             else:
@@ -767,26 +813,39 @@ def _start_scaling(
     prompt_method: str,
     prompt_mode: str,
     custom_template: Optional[str],
+    job_key: Optional[str] = None,
 ) -> bool:
-    job_key = _job_key(provider)
+    job_key = job_key or _job_key(provider, round_id)
     clicked_at = datetime.now(_KST).strftime("%Y-%m-%d %H:%M:%S KST")
 
     def execute(report) -> ScalingBatch:
         def update(current: int, total: int) -> None:
             report(current, total, f"Generated responses: {current}/{total}")
 
-        return run_provider_scaling(
-            api_key,
-            provider=provider,
-            model=model,
-            runs=runs,
-            temperature=temperature,
-            top_p=top_p,
-            prompt_method=prompt_method,
-            prompt_mode=prompt_mode,
-            custom_template=custom_template,
-            on_progress=update,
-        )
+        try:
+            result = run_provider_scaling(
+                api_key,
+                provider=provider,
+                model=model,
+                runs=runs,
+                temperature=temperature,
+                top_p=top_p,
+                prompt_method=prompt_method,
+                prompt_mode=prompt_mode,
+                custom_template=custom_template,
+                on_progress=update,
+            )
+        except AnalysisCheckpointError:
+            raise
+        except Exception as exc:
+            message = str(exc) or type(exc).__name__
+            if api_key:
+                message = message.replace(str(api_key), '[redacted]')
+            raise RuntimeError(message) from None
+        return replace(result, errors=tuple(
+            str(error).replace(str(api_key), '[redacted]') if api_key else str(error)
+            for error in result.errors
+        ))
 
     started = submit_background_job(
         job_key,
@@ -794,7 +853,13 @@ def _start_scaling(
         execute,
     )
     if started:
-        st.session_state[_active_round_key(provider)] = round_id
+        history = _round_history()
+        for row in history:
+            if str(row.get("id") or "") == round_id:
+                row.setdefault("job_keys", {})[provider] = job_key
+                row.setdefault("providers", {}).pop(provider, None)
+                break
+        st.session_state[_key("round_history")] = history
     return started
 
 
@@ -832,7 +897,6 @@ def _render_provider_workspace(
             )
 
     _render_stage_brief(prompt_preview)
-    any_running = _any_job_running()
     provider_settings = {
         OPENAI_PROVIDER: openai_settings,
         KIMI_PROVIDER: kimi_settings,
@@ -851,8 +915,7 @@ def _render_provider_workspace(
         "Run: Inference Scaling",
         type="primary",
         disabled=(
-            any_running
-            or not prompt_ready
+            not prompt_ready
             or not active_providers
             or not all_keys_ready
         ),
@@ -862,39 +925,34 @@ def _render_provider_workspace(
     status_columns = st.columns(2, gap="large")
     for column, provider in zip(status_columns, _PROVIDERS):
         with column:
-            render_background_job_status(
-                _job_key(provider),
-                completed_message=(
-                    f"{provider} scaling finished. Results and any request failures are available below."
-                ),
-            )
+            for job_key in _provider_job_keys(provider):
+                if background_job_running(job_key):
+                    render_background_job_status(job_key)
 
     if clicked:
         resume_background_key = st.session_state.pop("_analysis_resume_background_key", None)
-        round_id = uuid4().hex
-        started_at = datetime.now(_KST).strftime("%Y-%m-%d %H:%M:%S KST")
         history = _round_history()
-        history.append(
-            {
-                "id": round_id,
-                "started_at": started_at,
-                "providers": {},
-            }
-        )
-        st.session_state[_key("round_history")] = history
+        resumed_round = next(
+            (row for row in history if isinstance(row, dict)
+             and isinstance(row.get("job_keys"), dict)
+             and resume_background_key in row["job_keys"].values()),
+            None,
+        ) if resume_background_key else None
+        round_id = str(resumed_round["id"]) if resumed_round else uuid4().hex
+        started_at = datetime.now(_KST).strftime("%Y-%m-%d %H:%M:%S KST")
+        if resumed_round is None:
+            history.append({"id": round_id, "started_at": started_at, "providers": {}})
+            st.session_state[_key("round_history")] = history
 
         failed_to_start: List[str] = []
         for provider in _PROVIDERS:
-            if resume_background_key and _job_key(provider) != resume_background_key:
+            slug = "openai" if provider == OPENAI_PROVIDER else "kimi"
+            if resume_background_key and f":{slug}_background_job" not in resume_background_key:
+                if resumed_round is None:
+                    _record_round_provider(round_id, provider, completed_at=started_at, skipped=True)
                 continue
             model, temperature, top_p, runs, api_key = provider_settings[provider]
             if runs == 0:
-                forget_background_job(_job_key(provider))
-                st.session_state.pop(_active_round_key(provider), None)
-                st.session_state.pop(
-                    f"_background_job_delivered:{_job_key(provider)}",
-                    None,
-                )
                 _record_round_provider(
                     round_id,
                     provider,
@@ -913,6 +971,7 @@ def _render_provider_workspace(
                 prompt_method=method,
                 prompt_mode=mode,
                 custom_template=custom_template,
+                job_key=resume_background_key,
             )
             if not started:
                 failed_to_start.append(provider)
@@ -920,7 +979,7 @@ def _render_provider_workspace(
                     round_id,
                     provider,
                     completed_at=started_at,
-                    error="A background scaling job is already running.",
+                    error="The background scaling job could not be submitted.",
                 )
         if failed_to_start:
             st.error("Could not start: " + ", ".join(failed_to_start) + ".")
@@ -968,21 +1027,20 @@ def render_copyright_game2_page() -> None:
         _harvest_completed_job(provider)
 
     try:
-        running = _any_job_running()
         settings_container = st.container(
             border=True,
             key="copyright-game2-settings-card",
             gap="medium",
         )
         with settings_container:
-            method, mode, custom_template, preview = _render_prompt_settings(running)
+            method, mode, custom_template, preview = _render_prompt_settings(False)
         _render_provider_workspace(
             method,
             mode,
             custom_template,
             preview,
             bool(preview),
-            running,
+            False,
             settings_container,
         )
         _render_history()

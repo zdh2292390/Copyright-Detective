@@ -23,6 +23,7 @@ elif sys.path[0] != project_root_str:
 os.chdir(project_root_str)
 
 from src.auth import init_auth
+from src.page_jobs import apply_pending_page_job_view, render_page_jobs
 from src.history_ui import render_pending_task_deletion
 from src.analysis_recovery_ui import (
     apply_pending_analysis_restore, render_analysis_recovery,
@@ -35,6 +36,7 @@ from src.resumable_analysis import (
 from src.run_cancellation import AnalysisCancelled
 from src.job_guard import (
     finish_detection_job,
+    discard_unconsumed_detection_run,
     get_detection_job_run_id,
     handle_interrupted_job,
     install_widget_guards,
@@ -67,6 +69,7 @@ init_auth()
 
 try:
     apply_pending_analysis_restore()
+    apply_pending_page_job_view()
 except AnalysisCheckpointError as exc:
     st.error(str(exc))
 
@@ -100,7 +103,7 @@ render_header()
 # Recover from accidental reruns that interrupted a long-running job
 handle_interrupted_job()
 
-# Lock controls before sidebar widgets render. The page itself remains scrollable.
+# Render task status without restricting navigation or task configuration.
 render_active_job_lock()
 
 # Render sidebar and get configuration
@@ -113,6 +116,7 @@ _restore_feedback_slot = None
 _page_failed = False
 try:
     with page_analysis_scope(page, st.session_state):
+        render_page_jobs(page)
         _restore_feedback_slot = render_analysis_restore_feedback(page)
         render_analysis_recovery(page)
         api_key = saved_view_api_key(api_key)
@@ -165,7 +169,7 @@ except AnalysisCheckpointError as exc:
     if exc.kind == "killed":
         st.caption("Start a new analysis to run another task.")
     else:
-        st.caption("Saved successful calls are preserved. Choose Resume under History to continue.")
+        st.caption("Saved successful calls are preserved. Choose Resume in Process Manager to continue.")
 except Exception:
     _page_failed = True
     logger.exception("Unhandled page error on %s", page)
@@ -177,6 +181,7 @@ except Exception:
     if st.button("Retry page", key="_global_page_retry"):
         st.rerun()
 finally:
+    discard_unconsumed_detection_run()
     finish_analysis_restore_feedback(page, _restore_feedback_slot, failed=_page_failed)
     # Always release the run lock when this script finishes (success or error).
     if _script_job_run_id is not None and is_detection_job_running() and _script_job_run_id == get_detection_job_run_id():
